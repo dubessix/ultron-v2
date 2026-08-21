@@ -1,0 +1,32 @@
+{
+  "api_url": "http://127.0.0.1:8000",
+  "files": {
+    "assets/CalendarWidget-Cs8IxSNv.js": "cf046d01ea0aa6fe96547dc23382fea9e0ed377257500934eb5c647d345c8196",
+    "assets/CodeOptimizerWidget-Bhcz72EZ.js": "2190caf99614b50b6c5c5928e4f68534f630c9e75b0cf5bc58aac164d3a9ae8d",
+    "assets/CodingWidget-E5wkfFTm.js": "c6b3466fd3550e626ab14fa6cfb1713c265be13856b6fb1f39c0700902830af9",
+    "assets/DailyBriefingWidget-Bncyau3R.js": "7bbca837f8bd778575373d0ba4961c4c5f83c696c9e044b390b8bc998d8b862a",
+    "assets/DeepResearchWidget-Dpx0EcKT.js": "28eb49fcaa393d3c3b76b4e7154f7eb2690120e168cd83a916a5dfc6128e01dc",
+    "assets/FileExplorerWidget-BLk70twV.js": "dffb9e207bd699c374f09835460a3b0f79bdffd6be8dcd15394ac882db2ceed2",
+    "assets/GitCloneWidget-Blx8EMGf.js": "ad9fe764a33f9861fadb742ec32d1dea9c4d4d4f24918c42692e66d254d8bc00",
+    "assets/GitWidget-CX4uYVYl.js": "90a892ca84963305e26500aceb9dedd700a08e44c87eb01f7693317d3c03ccb6",
+    "assets/GithubSearchWidget-DmnhJoXY.js": "153d40c38693840a82f4dee7ec40fda0071d88f9dae8904ce44d24441b3b6282",
+    "assets/MarketWidget-BpV8eZHd.js": "592e1934eb5e75f89cfa543e5424274cf034bdef271324cf7af4fc6eb593820c",
+    "assets/MemoryWidget-Brurfnjo.js": "e3806455b8b627d499e5ce1d6fb6c3e09c1604cc9058757ea32608fe2a37797e",
+    "assets/MusicWidget-DoSsHTgO.js": "a440f504aa233eb522f8271b92d88843d3d9822efdf4a566bf8d445804f6cead",
+    "assets/NotificationWidget-C_Wi9jnO.js": "ae04691e9a383943d8bfb81d8870919dbd4a634f221221a161e126d2eb7988d5",
+    "assets/ReminderWidget-BSppG4Ak.js": "d26bc9ea610c862da811aab84ebee86947381001e4e3b18197fd360ecef63964",
+    "assets/SecurityGuardianWidget-_gpdc95u.js": "f4f585e855002c313413f3d7ca27d7c6d8a82eb0d4158dd56edd12bfde997c49",
+    "assets/SemanticCodeGraphWidget-BSVnrxQg.js": "9a9e0b61c1b202b737c9575d4b238de4f56c3c0a92a28ddb0142161accf25646",
+    "assets/SystemWidget-DaJGDrKv.js": "7e5d71814d27ba7dd2cfbb0880cd70820847b4d7867748f36376f103f2e8dcc9",
+    "assets/TerminalWidget-VOu04jvl.js": "5076b67453633125b7822d272a7c848c8df992e6069f0322cf5610fb0768f9b2",
+    "assets/TodoWidget-D6VHHlJX.js": "2f1cefeab9c3a3ff0bafa66b372c491da35bb3ba1e4810f5201c123f135d1882",
+    "assets/UniversalSearchWidget-BnHnMkzF.js": "b7cc3eb1c6e4470d3c36b1428e288152743b6cc62dd09d86f1662e3849d264d9",
+    "assets/WeatherWidget-DkLtW6s2.js": "3e260b19489e487ea75dea2b4327ba8982323ef4e090270413061bceee427b26",
+    "assets/WorldMonitorWidget-BOk9ctyA.js": "3d01ca1a347b81683d95b5cadb75cc7a3a495e6b4b9c011042b5d652e3411e66",
+    "assets/index-BSievMDw.css": "2bb5ecafd921cca8748529edb6d36035d85b67850020ac4851de1efad611020b",
+    "assets/index-NLFM2ALg.js": "f7b31939be887e13e7aa0a2bf31902678e1e3373e403038247cd203c26b3be1d",
+    "index.html": "107aba5ce92d32775d291a7f79fd1be52a8300c8e6d07d47ac6281179f530e70"
+  },
+  "source_digest": "a449429d0da63b573bf29ae063088139c31651c363f0e34d0ceb019df4857954",
+  "vite": "7.3.6"
+}

@@ -1,0 +1,17 @@
+include README.md
+include config.yaml
+include launcher.py
+include .env.example
+include requirements.txt
+include SETUP_ULTRON_WINDOWS.bat
+include SETUP_ULTRON_UBUNTU.sh
+include start_ultron.bat
+include start_ultron.sh
+include images/ultron_icon.ico
+include images/ultron_icon.png
+recursive-include frontend *.html *.json *.js *.jsx *.css
+recursive-include backend/app/personalities *.md
+recursive-include backend/app/skills *.md
+prune frontend/node_modules
+prune frontend/dist
+global-exclude __pycache__ *.py[cod]

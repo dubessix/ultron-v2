@@ -1,0 +1,162 @@
+# Ultron V1 - Production Configuration File
+# Target Environment: Windows 11 & Linux Ubuntu 24.04 (8GB RAM Host)
+
+ultron:
+  name: "ULTRON"
+  version: "1.0.0"
+  status: "personal-v1-release-candidate"
+
+server:
+  host: "127.0.0.1"
+  backend_port: 8000
+  frontend_port: 5173
+  startup_timeout_seconds: 45
+  enable_cors: true
+
+ai:
+  primary_provider: "groq"
+  secondary_provider: "gemini"
+  timeout_seconds: 30
+  max_retries: 3
+  rate_limit_backoff_base_seconds: 2.0
+  # Model IDs are configurable (env override: GROQ_CHAT_MODEL / GEMINI_CHAT_MODEL /
+  # NVIDIA_CHAT_MODEL / GEMINI_EMBEDDING_MODEL / GEMINI_EMBEDDING_DIMS).
+  # Verified valid as of 2026-08-14.
+  models:
+    groq: "llama-3.1-8b-instant"
+    gemini: "gemini-3.5-flash"
+    nvidia: "nvidia/nemotron-3-ultra-550b-a55b"
+    embedding: "gemini-embedding-001"
+  embedding_dimensions: 768
+
+memory:
+  short_term_limit: 50
+  cleanup_interval_days: 30
+  search_on_demand: true
+  database_name: "ultron.db"
+  vector_index_name: "ultron_vectors"
+  duplicate_similarity_threshold: 0.95
+  low_density_keywords:
+    - "hi"
+    - "hello"
+    - "hey"
+    - "greetings"
+    - "good morning"
+    - "good afternoon"
+    - "good night"
+    - "thanks"
+    - "thank you"
+    - "welcome"
+    - "test"
+
+cache:
+  enabled: true
+  max_items: 200
+  expiry_hours: 24
+
+durability:
+  # One verified SQLite snapshot per day. The newest 30 generations are kept.
+  automatic_backups: true
+  backup_interval_hours: 24
+  backup_generations: 30
+  integrity_check_interval_hours: 24
+  wal_checkpoint_interval_hours: 6
+  # Retention affects generated audit/cache/log data only—never chats or memories.
+  audit_retention_days: 90
+  cache_retention_days: 7
+  log_retention_days: 30
+  scheduler_poll_seconds: 900
+  restore_lock_timeout_seconds: 30
+
+voice:
+  enabled: false
+  auto_start: false
+  load_on_demand: true
+  provider: "edge_tts"
+  interruption_timeout_seconds: 15.0
+  streaming_enabled: true
+  wake_words:
+    - "ultron"
+    - "jarvis"
+    - "zora"
+    - "hey ultron"
+    - "ok ultron"
+    - "wake up"
+    - "activate"
+  ultron:
+    voice_id: "en-US-GuyNeural"
+    rate: "+5%"
+    pitch: "+0Hz"
+  zora:
+    voice_id: "en-IN-NeerjaNeural"
+    rate: "-5%"
+    pitch: "+2Hz"
+
+security:
+  confirm_level_2: true
+  confirm_level_3: true
+  # Secure default: tools may touch this project only. Add personal roots such as
+  # "~/Documents", "~/Downloads", or "D:/Projects" when you explicitly want them.
+  allowed_directories: ["."]
+  empty_allowed_policy: "project_only"
+  blocked_directories: ["/etc", "/var", "C:\\Windows", "C:\\System32"]
+  # Terminal commands are still exact-confirmation gated. This list is a second
+  # boundary: commands not listed here are rejected even if an LLM proposes them.
+  terminal_allowed_commands:
+    - git
+    - python
+    - python3
+    - pytest
+    - pip
+    - pip3
+    - node
+    - npm
+    - npx
+    - yarn
+    - pnpm
+    - uvicorn
+    - ls
+    - pwd
+    - cat
+    - grep
+    - find
+    - head
+    - tail
+    - echo
+    - printf
+    - diff
+    - sort
+    - wc
+    - cut
+    - awk
+    - sed
+    - make
+    - cmake
+    - go
+    - cargo
+    - rustc
+    - dotnet
+    - sleep
+
+performance:
+  simple_request_skip_planning: true
+  max_tools_per_request: 5
+  response_streaming: true
+  parallel_tool_execution: true
+  lazy_module_loading: true
+  background_tasks_enabled: true
+
+personalities:
+  default: "ultron"
+  auto_switch_enabled: true
+  stress_threshold: 0.75
+  cooldown_turns: 3
+  cooldown_duration_minutes: 5
+
+targets:
+  startup_seconds: 5.0
+  simple_response_seconds: 3.0
+  medium_response_seconds: 5.0
+  heavy_response_seconds: 15.0
+  max_ram_gb: 3.0
+  cpu_idle_percent: 5.0

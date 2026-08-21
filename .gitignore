@@ -1,0 +1,72 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Local configuration & keys
+.env
+config.local.yaml
+
+# Databases & Runtime Storage
+data/memory/*.db
+data/memory/*.db-journal
+data/memory/*.db-wal
+data/memory/*.db-shm
+data/memory/chroma/
+data/cache/
+
+# Node.js artifacts
+node_modules/
+frontend/dist/
+frontend/.ultron_*
+frontend/stats.html
+
+# Log files
+*.log
+logs/
+
+# IDE files
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Pip/package caches
+.cache/
+
+# Test temp artifacts (created by the test suite at fixed paths)
+tests/*_temp_file.txt
+tests/*_temp_file.txt.bak
+
+# Generated app-style launch wrappers
+app_shortcuts/

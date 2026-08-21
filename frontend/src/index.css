@@ -1,0 +1,207 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    background-color: #0A0A0F;
+    background-image: radial-gradient(circle at center, rgba(30, 30, 45, 0.4) 0%, rgba(10, 10, 15, 1) 100%);
+    color: #F5F5F7;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  }
+}
+
+@layer utilities {
+  .no-visible-scrollbar,
+  .scrollbar-thin,
+  .custom-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .no-visible-scrollbar::-webkit-scrollbar,
+  .scrollbar-thin::-webkit-scrollbar,
+  .custom-scrollbar::-webkit-scrollbar,
+  .ultron-widget-container *::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
+  .ultron-widget-container * {
+    scrollbar-width: none;
+  }
+}
+
+.ultron-core-canvas {
+  width: min(var(--core-size), 100%, calc(100vh - 150px));
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 1 / 1;
+  flex: none;
+}
+
+/* Keep the three-panel desktop composition useful in narrow laptop windows. */
+@media (min-width: 768px) and (max-width: 1100px) {
+  .ultron-workspace {
+    padding: 0.5rem !important;
+  }
+
+  .ultron-header {
+    margin-bottom: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+  }
+
+  .ultron-header-activity,
+  .ultron-header-subtitle,
+  .ultron-header-provider span,
+  .ultron-header-backend span {
+    display: none !important;
+  }
+
+  .ultron-header-provider,
+  .ultron-header-backend {
+    min-width: 2rem;
+    justify-content: center;
+  }
+
+  .ultron-grid {
+    gap: 0.5rem !important;
+  }
+
+  .ultron-sparkline {
+    display: none !important;
+  }
+
+  .ultron-detail-value {
+    font-size: 0.75rem !important;
+  }
+}
+
+/* A resized Codespaces/noVNC Chrome window can be much shorter than a laptop
+   screen. Compact vertically while keeping every panel and control present. */
+@media (min-width: 768px) and (max-height: 650px) {
+  .ultron-workspace {
+    padding: 0.5rem !important;
+  }
+
+  .ultron-header {
+    margin-bottom: 0.375rem !important;
+    padding-bottom: 0.25rem !important;
+  }
+
+  .ultron-grid {
+    gap: 0.5rem !important;
+  }
+
+  .ultron-left-panel {
+    display: grid !important;
+    grid-template-rows: auto auto auto;
+    gap: 0.2rem !important;
+    overflow: hidden !important;
+  }
+
+  .ultron-overview-panel,
+  .ultron-network-panel {
+    padding: 0.35rem !important;
+  }
+
+  .ultron-section-heading {
+    margin-bottom: 0.1rem !important;
+  }
+
+  .ultron-trend-grid,
+  .ultron-network-values,
+  .ultron-detail-grid {
+    gap: 0.25rem !important;
+  }
+
+  .ultron-trend-card {
+    padding: 0.2rem 0.4rem !important;
+  }
+
+  .ultron-trend-card-row {
+    min-height: 1.2rem !important;
+    margin-top: 0.1rem !important;
+  }
+
+  .ultron-network-icon {
+    width: 1.25rem !important;
+    height: 1.25rem !important;
+  }
+
+  .ultron-network-values {
+    margin-bottom: 0.25rem !important;
+  }
+
+  .ultron-network-value {
+    padding: 0.2rem 0.4rem !important;
+  }
+
+  .ultron-network-value > span:last-child {
+    margin-top: 0.1rem !important;
+    font-size: 0.72rem !important;
+  }
+
+  .ultron-rate-group {
+    gap: 0.25rem !important;
+  }
+
+  .ultron-detail-card {
+    min-height: 2.75rem !important;
+    padding: 0.3rem !important;
+  }
+
+  .ultron-detail-value {
+    margin-top: 0.15rem !important;
+    font-size: 0.72rem !important;
+  }
+
+  .ultron-detail-progress,
+  .ultron-detail-status {
+    margin-top: 0.15rem !important;
+  }
+
+  .ultron-detail-status {
+    padding: 0 0.3rem !important;
+    font-size: 0.38rem !important;
+  }
+
+  .ultron-core-panel {
+    padding: 0.5rem !important;
+  }
+
+  .ultron-core-status {
+    top: 0.5rem !important;
+    left: 0.5rem !important;
+  }
+
+  .ultron-core-controls {
+    bottom: 0.5rem !important;
+    transform: scale(0.82);
+    transform-origin: bottom center;
+  }
+
+  .ultron-right-panel {
+    gap: 0.4rem !important;
+    padding: 0.5rem !important;
+  }
+
+  .ultron-right-header {
+    padding-bottom: 0.3rem !important;
+  }
+}
+
+/* Base style for the interactive SVG filter container */
+.gooey-canvas {
+  filter: url(#gooey-blend);
+}

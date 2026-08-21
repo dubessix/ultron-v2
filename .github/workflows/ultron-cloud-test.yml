@@ -1,0 +1,165 @@
+name: Ultron Cloud Test
+run-name: Ultron Cloud Test by ${{ github.actor }}
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ultron-cloud-test-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  clean-cloud-acceptance:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Ubuntu 24.04 clean install and runtime
+            runner: ubuntu-24.04
+          - label: Windows cloud clean install and runtime
+            runner: windows-2025
+    env:
+      PYTHONUTF8: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_NO_INPUT: "1"
+      ULTRON_CLOUD_ACCEPTANCE: "1"
+      GROQ_API_KEY_1: ""
+      GEMINI_API_KEY_1: ""
+      NVIDIA_API_KEY_1: ""
+      TAVILY_API_KEY: ""
+      GITHUB_TOKEN_1: ""
+      GITHUB_USERNAME_1: ""
+      GH_TOKEN: ""
+      GITHUB_TOKEN: ""
+
+    steps:
+      - name: Download this exact Ultron version
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Select Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Create private Python environment on Ubuntu
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Create private Python environment on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          "$PWD\.venv\Scripts" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install Ultron test packages
+        run: |
+          python -c "import sys; print('Testing with', sys.executable, sys.version)"
+          python -m pip install -r requirements-dev.txt
+
+      - name: Prepare diagnostic output
+        run: python -c "from pathlib import Path; Path('cloud-test-results').mkdir(exist_ok=True)"
+
+      - name: Verify clean source and packaged installer
+        id: python_suite
+        continue-on-error: true
+        run: python -m pytest -q --junitxml=cloud-test-results/pytest.xml
+
+      - name: Independent Python verification
+        id: unittest_suite
+        continue-on-error: true
+        run: python -m unittest discover -s tests -p "test*.py"
+
+      - name: Build frontend from the locked package list
+        id: frontend_build
+        continue-on-error: true
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+
+      - name: Create and inspect real cloud shortcuts
+        id: shortcut_acceptance
+        continue-on-error: true
+        run: python .github/scripts/cloud_shortcut_acceptance.py
+
+      - name: Run isolated real Start, Health and Stop cycle
+        id: runtime_acceptance
+        continue-on-error: true
+        run: python .github/scripts/cloud_runtime_acceptance.py
+
+      - name: Confirm repository data was untouched
+        id: data_isolation
+        continue-on-error: true
+        run: python -c "from pathlib import Path; assert not Path('data').exists(), 'Cloud test touched source data/'; print('Source production data remained absent.')"
+
+      - name: Write Ubuntu result summary
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: |
+          {
+            echo "## Ultron — ${{ matrix.label }}"
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| Python suite | ${{ steps.python_suite.outcome }} |"
+            echo "| Independent suite | ${{ steps.unittest_suite.outcome }} |"
+            echo "| Frontend build | ${{ steps.frontend_build.outcome }} |"
+            echo "| App shortcuts/icons | ${{ steps.shortcut_acceptance.outcome }} |"
+            echo "| Start / Health / Stop | ${{ steps.runtime_acceptance.outcome }} |"
+            echo "| Source data isolation | ${{ steps.data_isolation.outcome }} |"
+            echo
+            echo "No real owner API key was supplied. Hardware and desktop interaction remain unverified."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Write Windows result summary
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          @"
+          ## Ultron — ${{ matrix.label }}
+          | Check | Result |
+          |---|---|
+          | Python suite | ${{ steps.python_suite.outcome }} |
+          | Independent suite | ${{ steps.unittest_suite.outcome }} |
+          | Frontend build | ${{ steps.frontend_build.outcome }} |
+          | App shortcuts/icons | ${{ steps.shortcut_acceptance.outcome }} |
+          | Start / Health / Stop | ${{ steps.runtime_acceptance.outcome }} |
+          | Source data isolation | ${{ steps.data_isolation.outcome }} |
+
+          No real owner API key was supplied. Hardware and Windows 11 desktop interaction remain unverified.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Keep cloud logs for seven days
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ultron-${{ runner.os }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ultron-cloud-artifacts
+            cloud-test-results
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Enforce all cloud acceptance gates
+        if: always()
+        env:
+          PYTHON_SUITE: ${{ steps.python_suite.outcome }}
+          UNITTEST_SUITE: ${{ steps.unittest_suite.outcome }}
+          FRONTEND_BUILD: ${{ steps.frontend_build.outcome }}
+          SHORTCUT_ACCEPTANCE: ${{ steps.shortcut_acceptance.outcome }}
+          RUNTIME_ACCEPTANCE: ${{ steps.runtime_acceptance.outcome }}
+          DATA_ISOLATION: ${{ steps.data_isolation.outcome }}
+        run: >-
+          python -c "import os,sys; names=('PYTHON_SUITE','UNITTEST_SUITE','FRONTEND_BUILD','SHORTCUT_ACCEPTANCE','RUNTIME_ACCEPTANCE','DATA_ISOLATION'); failed=[f'{name}={os.environ.get(name)}' for name in names if os.environ.get(name) != 'success']; print('Cloud acceptance failures: ' + (', '.join(failed) if failed else 'none')); sys.exit(bool(failed))"
