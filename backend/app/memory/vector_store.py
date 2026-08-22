@@ -190,6 +190,14 @@ class VectorStore:
                 """,
                 (msg_id, mem_type, content, sqlite3.Binary(vec_blob), metadata_str)
             )
+            from backend.app.memory.recall_index import index_vector_memory
+            index_vector_memory(
+                conn,
+                memory_id=msg_id,
+                mem_type=mem_type,
+                content=content,
+                metadata=enriched_metadata,
+            )
             conn.commit()
 
             # Opportunistic storage-retention guard (bounds long-term growth).
@@ -297,6 +305,16 @@ class VectorStore:
                 "UPDATE vector_memories SET content = ?, embedding = ?, metadata = ? WHERE id = ?;",
                 (content, sqlite3.Binary(blob), json.dumps(updated_metadata), msg_id),
             )
+            if cursor.rowcount > 0:
+                from backend.app.memory.recall_index import index_vector_memory
+                index_vector_memory(
+                    conn,
+                    memory_id=msg_id,
+                    mem_type=str(existing.get("type") or "episodic"),
+                    content=content,
+                    metadata=updated_metadata,
+                    created_at=str(existing.get("created_at") or ""),
+                )
             conn.commit()
             return cursor.rowcount > 0
 
@@ -328,6 +346,9 @@ class VectorStore:
             with get_db_connection() as conn:
                 cur = conn.cursor()
                 cur.execute("DELETE FROM vector_memories WHERE id = ?;", (msg_id,))
+                if cur.rowcount > 0:
+                    from backend.app.memory.recall_index import delete_recall_document
+                    delete_recall_document(conn, f"memory:{msg_id}")
                 conn.commit()
                 return cur.rowcount > 0
         except sqlite3.Error as e:
@@ -416,6 +437,9 @@ class VectorStore:
                         (mem_type, cutoff["id"]),
                     )
                     removed += cursor.rowcount
+            if removed:
+                from backend.app.memory.recall_index import mark_recall_index_dirty
+                mark_recall_index_dirty(conn)
             conn.commit()
         if removed:
             print(f"[VECTOR_STORE] Storage retention: pruned {removed} old memory rows (bounded to {max_per_type}/type).")

@@ -13,6 +13,8 @@ import re
 import sqlite3
 from typing import Any, Optional
 
+from backend.app.memory.recall_index import index_session_summary
+
 
 SUMMARY_SCHEMA_VERSION = 1
 RECENT_QUERY_LIMIT = 8
@@ -157,6 +159,7 @@ def refresh_session_summary(conn: sqlite3.Connection, session_id: str) -> Option
         "UPDATE sessions SET summary = ? WHERE id = ?",
         (json.dumps(summary, ensure_ascii=False, sort_keys=True), session_id),
     )
+    index_session_summary(conn, summary)
     conn.commit()
     return summary
 

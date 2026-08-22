@@ -65,15 +65,16 @@ export default function App() {
   const [notifications, setNotifications] = useState([]);
 
   // Add a new notification toast
-  const addNotification = (title, message, priority = "low") => {
+  const addNotification = useCallback((title, message, priority = "low") => {
     const newId = "notif_" + Date.now() + "_" + Math.random().toString(36).substr(2, 5);
     setNotifications(prev => [...prev, { id: newId, title, message, priority }]);
-  };
+  }, []);
 
-  // Dismiss an active notification toast
-  const dismissNotification = (id) => {
+  // Stable callback prevents NotificationToast's four-second timer from being
+  // restarted by unrelated health/metric renders.
+  const dismissNotification = useCallback((id) => {
     setNotifications(prev => prev.filter(notif => notif.id !== id));
-  };
+  }, []);
 
   // Keyboard Shortcuts (Requirement: Optional Fallback Controls)
   useEffect(() => {
@@ -540,7 +541,8 @@ export default function App() {
             structured_action: msg.structured_action || {},
             session_id: msg.session_id || null,
             provider_route: msg.provider_route || {},
-            pending_confirmation: msg.pending_confirmation || null
+            pending_confirmation: msg.pending_confirmation || null,
+            memory_provenance: msg.memory_provenance || []
           }, false);
         }
       };

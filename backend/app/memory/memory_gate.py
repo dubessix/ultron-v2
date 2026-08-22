@@ -51,7 +51,8 @@ class MemoryGate:
         r"\b(remember|recall|previous|earlier|before|last time|what did i|what did we|"
         r"what happened|you told|we discussed|we decided|my project|our plan|"
         r"you said|we were|context|from before|what was|what is my name|"
-        r"who am i|my goal|our stack|what are we building)\b",
+        r"who am i|my goal|our stack|what are we building|what do i prefer|"
+        r"my preference|next step|open task|pending task|unresolved|what bug|what issue)\b",
         re.IGNORECASE,
     )
 

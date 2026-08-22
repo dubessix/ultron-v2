@@ -54,6 +54,10 @@ class ChatResponse(BaseModel):
     intent: str = Field("", description="Detected intent for the turn.")
     pending_confirmation: Optional[Dict[str, Any]] = Field(None, description="One-time pending-action token awaiting user confirmation (bound to file+content).")
     provider_route: Dict[str, Any] = Field(default_factory=dict, description="Actual provider/model route used for this response.")
+    memory_provenance: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Content-free provenance for saved memory sources injected into this turn.",
+    )
 
 class ToolExecuteRequest(BaseModel):
     tool_id: str = Field(..., description="ID of the target registered tool.")
@@ -131,6 +135,7 @@ async def post_chat_message(request: ChatRequest) -> ChatResponse:
             events=result["events"],
             pending_confirmation=result.get("pending_confirmation"),
             provider_route=result.get("provider_route") or {},
+            memory_provenance=result.get("memory_provenance") or [],
         )
     except DatabaseMaintenanceError as e:
         raise HTTPException(

@@ -25,7 +25,7 @@ Server sequence:
 5. optional `widget` and broadcast events
 6. `done`
 
-`done` contains message/session/project IDs, effective personality, latency, coding/intent, structured action, provider route, events, and optional pending confirmation.
+`done` contains message/session/project IDs, effective personality, latency, coding/intent, structured action, provider route, events, optional pending confirmation, and content-free `memory_provenance` for saved sources injected into the turn.
 
 During database maintenance the server emits an `error` with `status: database_maintenance` and disconnects cleanly.
 

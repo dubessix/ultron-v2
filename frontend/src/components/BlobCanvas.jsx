@@ -1,216 +1,203 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { getPersonalityTheme } from '../theme/personalityTheme';
+import {
+  createFibonacciSphere,
+  mixRgb,
+  particleCountForViewport,
+  projectSpherePoint,
+  rotateSpherePoint,
+} from '../utils/sphereGeometry';
 
-/**
- * BlobCanvas Component (HTML5 Canvas 2D)
- * Renders a high-performance particle sphere and concentric orbital loops.
- * Reacts dynamically to 8 distinct cognitive states:
- * [idle | listening | thinking | planning | working | speaking | interrupted | background]
- * Refined with smooth mathematical transitions, noise offsets, and 60 FPS requestAnimationFrame.
- */
-export default function BlobCanvas({ 
-  aiState = "idle", 
-  personality = "ultron", 
-  amplitude = 0.0 
+function viewportClass() {
+  if (typeof window === 'undefined') return 'normal';
+  if (window.innerWidth >= 1700 && window.innerHeight >= 900) return 'fullhd';
+  if (window.innerWidth < 1100 || window.innerHeight < 650) return 'compact';
+  return 'normal';
+}
+
+function stateProfile(aiState, amplitude) {
+  const state = String(aiState || 'idle').toLowerCase();
+  const voiceAmplitude = Math.max(0, Math.min(1, Number(amplitude) || 0));
+  const profile = {
+    state,
+    speed: 0.00022,
+    alpha: 1,
+    scale: 1,
+    pulse: 0,
+    distortion: 0,
+    halo: false,
+    connections: false,
+  };
+  if (state === 'listening' || state === 'wake_word_detected') {
+    return { ...profile, speed: 0.00034, pulse: 0.045, halo: true };
+  }
+  if (state === 'thinking') {
+    return { ...profile, speed: 0.00078, scale: 1.025, distortion: 0.014 };
+  }
+  if (state === 'planning') {
+    return { ...profile, speed: 0.00042, scale: 1.015 };
+  }
+  if (state === 'working') {
+    return { ...profile, speed: 0.00055, connections: true };
+  }
+  if (state === 'speaking') {
+    return {
+      ...profile,
+      speed: 0.00035,
+      pulse: 0.02 + voiceAmplitude * 0.06,
+      distortion: 0.004 + voiceAmplitude * 0.012,
+    };
+  }
+  if (state === 'interrupted') {
+    return { ...profile, speed: 0.001, alpha: 0.35, distortion: 0.075 };
+  }
+  if (state === 'background' || state === 'sleep') {
+    return { ...profile, speed: 0.00007, alpha: 0.24, scale: 0.98 };
+  }
+  return profile;
+}
+
+/** Deterministic dense 3D point sphere rendered with Canvas 2D. */
+export default function BlobCanvas({
+  aiState = 'idle',
+  personality = 'ultron',
+  amplitude = 0,
 }) {
   const canvasRef = useRef(null);
   const animationRef = useRef(null);
-  const [isFullHdViewport, setIsFullHdViewport] = useState(() => (
-    typeof window !== 'undefined' && window.innerWidth >= 1700 && window.innerHeight >= 900
-  ));
+  const [presentation, setPresentation] = useState(viewportClass);
+  const isFullHdViewport = presentation === 'fullhd';
+  const theme = getPersonalityTheme(personality);
 
   useEffect(() => {
-    const updatePresentationSize = () => {
-      setIsFullHdViewport(window.innerWidth >= 1700 && window.innerHeight >= 900);
-    };
+    const updatePresentationSize = () => setPresentation(viewportClass());
     window.addEventListener('resize', updatePresentationSize);
     return () => window.removeEventListener('resize', updatePresentationSize);
   }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return undefined;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) return undefined;
 
-    // High-DPI hardware scaling with a roomier presentation on full-HD laptops.
-    const scale = window.devicePixelRatio || 1;
     const canvasSize = isFullHdViewport ? 640 : 520;
     const presentationScale = isFullHdViewport ? 1.2 : 1;
-    canvas.width = canvasSize * scale;
-    canvas.height = canvasSize * scale;
-    ctx.scale(scale, scale);
+    const deviceScale = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = canvasSize * deviceScale;
+    canvas.height = canvasSize * deviceScale;
+    ctx.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
 
     const width = canvasSize;
     const height = canvasSize;
-    const center = { x: width / 2, y: height / 2 };
+    const centerX = width / 2;
+    const centerY = height / 2;
+    const baseRadius = canvasSize * 0.385;
+    const particleCount = particleCountForViewport(window.innerWidth, window.innerHeight);
+    const particles = createFibonacciSphere(particleCount);
+    const profile = stateProfile(aiState, amplitude);
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const motionFactor = reduceMotion ? 0.25 : 1;
+    const pointScale = presentation === 'compact' ? 0.9 : presentationScale;
+    const startedAt = performance.now();
 
-    // Initialize 200 standard coordinate nodes forming a sphere
-    const particleCount = 200;
-    const particles = [];
-    for (let i = 0; i < particleCount; i++) {
-      const theta = (i / particleCount) * 2 * Math.PI;
-      particles.push({
-        theta,
-        phi: Math.acos((Math.random() * 2) - 1),
-        speed: 0.008 + Math.random() * 0.008,
-        size: 1.0 + Math.random() * 1.5,
-        drift: Math.random() * 2 * Math.PI
-      });
-    }
+    const renderLoop = (now) => {
+      const elapsed = now - startedAt;
+      const activeTheme = getPersonalityTheme(personality);
+      const pulse = 1 + Math.sin(elapsed * 0.006) * profile.pulse * motionFactor;
+      const yaw = elapsed * profile.speed * motionFactor;
+      const pitch = -0.18 + Math.sin(elapsed * 0.00009 * motionFactor) * 0.08;
+      const roll = Math.sin(elapsed * 0.00006 * motionFactor) * 0.07;
 
-    let angle = 0;
-    let time = 0;
-
-    const renderLoop = () => {
       ctx.clearRect(0, 0, width, height);
-      time += 0.04; // Smoother, slower physics delta step
-
-      const theme = getPersonalityTheme(personality);
-      const primaryColor = theme.coreParticle;
-      const glowColor = theme.coreGlow;
-
-      // Setup state-machine physics multipliers (Requirement: Unique animation profiles)
-      let rotationSpeed = 0.004;
-      let noiseAmplitude = 5.0;
-      let orbitRingVisible = false;
-      let connectivityLinesVisible = false;
-      let coreScale = 1.0;
-      let alphaMultiplier = 1.0;
-
-      const state_clean = (aiState || "idle").toLowerCase();
-
-      switch (state_clean) {
-        case "thinking":
-          rotationSpeed = 0.025;
-          noiseAmplitude = 16.0;
-          coreScale = 1.08;
-          break;
-        case "listening":
-        case "wake_word_detected":
-          rotationSpeed = 0.001;
-          noiseAmplitude = 4.0 + amplitude * 18.0;
-          coreScale = 1.15; // Expands slightly on wake
-          orbitRingVisible = true;
-          break;
-        case "speaking":
-          rotationSpeed = 0.006;
-          noiseAmplitude = 6.0 + Math.sin(time * 2.5) * 14.0; // Synchronized speech rhythm
-          coreScale = 1.05;
-          break;
-        case "planning":
-          rotationSpeed = 0.003;
-          orbitRingVisible = true; // Orbit rings appear
-          break;
-        case "working":
-          rotationSpeed = 0.012;
-          connectivityLinesVisible = true; // Random network lines appear
-          break;
-        case "interrupted":
-          rotationSpeed = 0.018;
-          noiseAmplitude = 22.0; // Brief distortion wave
-          alphaMultiplier = 0.35;  // Quick fade
-          break;
-        case "background":
-        case "sleep":
-          rotationSpeed = 0.0003;
-          noiseAmplitude = 0.8; // Dim, almost motionless
-          alphaMultiplier = 0.22;
-          break;
-        default: // idle
-          rotationSpeed = 0.004;
-          noiseAmplitude = 5.0;
-          coreScale = 1.0;
-          break;
-      }
-
-      angle += rotationSpeed;
-
-      // Draw concentric elliptical orbital rings (Concentric loops)
-      if (orbitRingVisible || state_clean === "planning" || state_clean === "idle" || state_clean === "working") {
-        ctx.save();
-        ctx.translate(center.x, center.y);
-        ctx.rotate(time * 0.015);
-        ctx.strokeStyle = theme.coreOrbit;
-        ctx.lineWidth = 1;
-
-        // Ellipse Loop 1
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 210 * presentationScale * coreScale, 72 * presentationScale * coreScale, Math.PI / 4, 0, 2 * Math.PI);
-        ctx.stroke();
-
-        // Ellipse Loop 2 (Counter tilted)
-        ctx.rotate(-time * 0.025);
-        ctx.beginPath();
-        ctx.ellipse(0, 0, 215 * presentationScale * coreScale, 77 * presentationScale * coreScale, -Math.PI / 6, 0, 2 * Math.PI);
-        ctx.stroke();
-
-        ctx.restore();
-      }
-
-      // Draw backing glowing neon core
+      const glowRadius = baseRadius * 0.92 * profile.scale * pulse;
+      const glow = ctx.createRadialGradient(centerX, centerY, 8, centerX, centerY, glowRadius);
+      glow.addColorStop(0, activeTheme.coreGlow);
+      glow.addColorStop(0.58, activeTheme.coreInnerGlow);
+      glow.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = glow;
+      ctx.globalAlpha = profile.alpha;
       ctx.beginPath();
-      const glowRadius = 170 * presentationScale * coreScale;
-      const radialGlow = ctx.createRadialGradient(center.x, center.y, 12, center.x, center.y, glowRadius);
-      radialGlow.addColorStop(0, glowColor);
-      radialGlow.addColorStop(1, "rgba(10, 10, 15, 0)");
-      ctx.fillStyle = radialGlow;
-      ctx.globalAlpha = alphaMultiplier;
-      ctx.arc(center.x, center.y, glowRadius, 0, 2 * Math.PI);
+      ctx.arc(centerX, centerY, glowRadius, 0, Math.PI * 2);
       ctx.fill();
+      ctx.globalAlpha = 1;
 
-      // Draw particle coordinate array
-      particles.forEach((p, idx) => {
-        const x_rot = Math.sin(p.phi) * Math.cos(p.theta + angle);
-        const y_rot = Math.cos(p.phi);
-        
-        // Compute current coordinates
-        const radialOffset = (138 + Math.sin(time + p.drift) * noiseAmplitude) * presentationScale * coreScale;
-        
-        const x = center.x + x_rot * radialOffset;
-        const y = center.y + y_rot * radialOffset;
+      const projected = particles.map((point) => {
+        const rotated = rotateSpherePoint(point, yaw, pitch, roll);
+        const distortion = profile.distortion
+          ? Math.sin(elapsed * 0.004 + point.phase * Math.PI * 2) * profile.distortion
+          : 0;
+        return projectSpherePoint(
+          rotated,
+          centerX,
+          centerY,
+          baseRadius,
+          profile.scale * pulse + distortion,
+        );
+      }).sort((left, right) => left.z - right.z);
 
+      for (const point of projected) {
+        const depth = point.depth;
+        const [red, green, blue] = mixRgb(
+          activeTheme.coreFarRgb,
+          activeTheme.coreNearRgb,
+          depth,
+        );
+        let alpha = (0.1 + depth * 0.8) * profile.alpha;
+        if (profile.state === 'thinking') alpha *= 1.07;
+        if (profile.state === 'listening' && depth > 0.62) alpha *= 1.14;
+        const pointRadius = (0.45 + depth * 1.5) * pointScale;
+        ctx.shadowBlur = depth > 0.84 ? 5 * pointScale : 0;
+        ctx.shadowColor = activeTheme.coreParticle;
+        ctx.fillStyle = `rgba(${red}, ${green}, ${blue}, ${Math.min(1, alpha)})`;
         ctx.beginPath();
-        ctx.fillStyle = primaryColor;
-        ctx.arc(x, y, p.size * presentationScale, 0, 2 * Math.PI);
+        ctx.arc(point.x, point.y, pointRadius, 0, Math.PI * 2);
         ctx.fill();
+      }
+      ctx.shadowBlur = 0;
 
-        // Dynamic network lines (Working state)
-        if (connectivityLinesVisible && idx < particles.length - 1 && idx % 10 === 0) {
-          const nextP = particles[idx + 1];
-          const nx_rot = Math.sin(nextP.phi) * Math.cos(nextP.theta + angle);
-          const ny_rot = Math.cos(nextP.phi);
-          const n_offset = (138 + Math.sin(time + nextP.drift) * noiseAmplitude) * presentationScale * coreScale;
-          const nx = center.x + nx_rot * n_offset;
-          const ny = center.y + ny_rot * n_offset;
+      if (profile.halo) {
+        ctx.globalAlpha = 0.55 * profile.alpha;
+        ctx.strokeStyle = activeTheme.coreOrbit;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, baseRadius * profile.scale * pulse * 1.04, 0, Math.PI * 2);
+        ctx.stroke();
+      }
 
+      if (profile.connections) {
+        const front = projected.filter((point) => point.depth > 0.58);
+        ctx.strokeStyle = activeTheme.coreLine;
+        ctx.lineWidth = 0.55;
+        ctx.globalAlpha = 0.65;
+        for (let index = 0; index + 37 < front.length; index += 84) {
+          const first = front[index];
+          const second = front[index + 37];
+          const distance = Math.hypot(first.x - second.x, first.y - second.y);
+          if (distance > baseRadius * 0.72) continue;
           ctx.beginPath();
-          ctx.strokeStyle = theme.coreLine;
-          ctx.lineWidth = 0.5;
-          ctx.moveTo(x, y);
-          ctx.lineTo(nx, ny);
+          ctx.moveTo(first.x, first.y);
+          ctx.lineTo(second.x, second.y);
           ctx.stroke();
         }
-      });
-      
-      ctx.globalAlpha = 1.0; // Reset alpha values
+      }
+
+      ctx.globalAlpha = 1;
       animationRef.current = requestAnimationFrame(renderLoop);
     };
 
-    renderLoop();
-
+    animationRef.current = requestAnimationFrame(renderLoop);
     return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current);
-      }
+      if (animationRef.current) cancelAnimationFrame(animationRef.current);
     };
-  }, [aiState, personality, amplitude, isFullHdViewport]);
+  }, [aiState, personality, amplitude, isFullHdViewport, presentation]);
 
   const displaySize = isFullHdViewport ? 640 : 520;
-
   return (
-    <canvas 
-      ref={canvasRef} 
+    <canvas
+      ref={canvasRef}
+      role="img"
+      aria-label={`${theme.name} dense particle core`}
       style={{ '--core-size': `${displaySize}px` }}
       className="ultron-core-canvas max-w-full aspect-square"
     />

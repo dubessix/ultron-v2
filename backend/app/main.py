@@ -406,6 +406,7 @@ async def websocket_chat_endpoint(websocket: WebSocket, client_id: str = "defaul
                 "events": result.get("events", []),
                 "provider_route": result.get("provider_route") or {},
                 "pending_confirmation": result.get("pending_confirmation"),
+                "memory_provenance": result.get("memory_provenance") or [],
             })
 
     except WebSocketDisconnect:

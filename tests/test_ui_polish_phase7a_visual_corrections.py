@@ -37,11 +37,13 @@ class TestCentreCoreScale(unittest.TestCase):
         self.assertIn("isFullHdViewport ? 640 : 520", source)
         self.assertIn("const width = canvasSize", source)
         self.assertIn("const height = canvasSize", source)
-        self.assertIn("138 + Math.sin", source)
-        self.assertIn("210 * presentationScale * coreScale", source)
-        self.assertIn("215 * presentationScale * coreScale", source)
+        self.assertIn("const baseRadius = canvasSize * 0.385", source)
+        self.assertIn("particleCountForViewport", source)
+        self.assertIn("createFibonacciSphere", source)
+        self.assertIn("projectSpherePoint", source)
         self.assertIn("const displaySize", source)
         self.assertIn("max-w-full", source)
+        self.assertNotIn("Math.random", source)
 
 
 if __name__ == "__main__":

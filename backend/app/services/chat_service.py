@@ -26,6 +26,7 @@ from backend.app.database.models import (
     update_session_project,
 )
 from backend.app.session.session_manager import SessionManager
+from backend.app.memory.recall_index import index_conversation_turn
 from backend.app.memory.session_summary import refresh_session_summary
 from backend.app.utils.text_cleaner import clean_text
 
@@ -96,6 +97,20 @@ async def process_chat_message(
             path_used="fast",
             response_ms=latency_ms,
         )
+        # M3: index the exact saved turn for project-scoped no-key FTS recall.
+        try:
+            index_conversation_turn(
+                conn,
+                message_id=result["id"],
+                session_id=resolved_session_id,
+                project_id=effective_project_id,
+                user_message=content,
+                ai_response=result["content"],
+                intent=result["intent"],
+            )
+        except Exception as exc:
+            print(f"[RECALL_INDEX] Conversation index skipped: {exc}")
+
         # M1: keep a bounded exact digest in the existing sessions.summary
         # column. Summary failure must never lose an already-saved chat turn.
         try:
@@ -119,4 +134,5 @@ async def process_chat_message(
         "provider_route": result.get("provider_route") or {
             "provider": None, "model": None, "cached": False, "offline": False
         },
+        "memory_provenance": result.get("memory_provenance") or [],
     }

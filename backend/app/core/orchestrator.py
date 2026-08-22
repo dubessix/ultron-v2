@@ -18,6 +18,9 @@ from backend.app.core.intent_analyzer import IntentAnalyzer
 from backend.app.core.confidence_engine import ConfidenceEngine
 from backend.app.core.decision_engine import DecisionEngine
 from backend.app.memory.memory_engine import MemoryEngine
+from backend.app.memory.recall_context import build_recall_context
+from backend.app.memory.recall_index import search_recall_index
+from backend.app.memory.session_summary import get_last_session_summary, load_session_summary
 from backend.app.memory.structured_memory import build_structured_turn_memory
 from backend.app.brain.llm_router import LLMRouter
 from backend.app.personalities.personality_engine import PersonalityEngine
@@ -281,57 +284,55 @@ class CognitiveOrchestrator:
         return "\n\n[PROJECT_CONTEXT]\n" + "\n\n".join(parts)
 
     async def _recall_long_term_memory(
-        self, user_prompt: str, force: bool = False, project_id: str = "personal"
-    ) -> str:
-        """
-        Human-like long-term recall: queries episodic + semantic memory for the
-        most relevant past events/concepts, returning a context block for the
-        system prompt.
-
-        Token-smart: by default it only recalls on memory/past-time questions
-        (see memory_gate). When force=True (e.g. a coding turn), it does a light
-        recall for project continuity across days. Always degrades gracefully.
-        """
+        self,
+        user_prompt: str,
+        force: bool = False,
+        project_id: str = "personal",
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build bounded recall from exact FTS, summaries, and semantic vectors."""
+        empty = {"context": "", "provenance": [], "characters": 0}
         try:
-            # Token saver: skip embedding recall unless memory-related or forced.
             if not force and not self.memory.gate.should_recall(user_prompt):
-                return ""
+                return empty
 
-            # Query both memory layers in parallel (low latency, async/network-bound).
+            from backend.app.database.db import get_db_connection
+            with get_db_connection() as conn:
+                current_summary = load_session_summary(conn, session_id) if session_id else None
+                previous_summary = get_last_session_summary(
+                    conn,
+                    project_id=project_id,
+                    exclude_session_id=session_id,
+                )
+                exact_documents = search_recall_index(
+                    conn,
+                    user_prompt,
+                    project_id=project_id,
+                    exclude_session_id=session_id,
+                    limit=12,
+                )
+
             past_events, past_concepts = await asyncio.gather(
                 self.memory.episodic.recall_related_events(
-                    user_prompt, limit=3, project_id=project_id
+                    user_prompt, limit=5, project_id=project_id
                 ),
                 self.memory.semantic.recall_related_concepts(
-                    user_prompt, limit=3, project_id=project_id
+                    user_prompt, limit=5, project_id=project_id
                 ),
             )
-
-            blocks = []
-            if past_events:
-                snippets = []
-                for item in past_events:
-                    sim = item.get("similarity", 0.0)
-                    if sim >= 0.45:
-                        snippets.append(item["content"])
-                if snippets:
-                    blocks.append("Relevant past events from your sessions:\n" + "\n".join("- " + s for s in snippets))
-
-            if past_concepts:
-                snippets = []
-                for item in past_concepts:
-                    sim = item.get("similarity", 0.0)
-                    if sim >= 0.45:
-                        snippets.append(item["content"])
-                if snippets:
-                    blocks.append("Knowledge/concepts you previously taught me:\n" + "\n".join("- " + s for s in snippets))
-
-            if not blocks:
-                return ""
-            return "\n\n[LONG_TERM_MEMORY]\n" + "\n\n".join(blocks) + "\n"
+            past_events = [item for item in past_events if item.get("similarity", 0.0) >= 0.45]
+            past_concepts = [item for item in past_concepts if item.get("similarity", 0.0) >= 0.45]
+            return build_recall_context(
+                project_id=project_id,
+                exact_documents=exact_documents,
+                current_summary=current_summary,
+                previous_summary=previous_summary,
+                vector_events=past_events,
+                vector_concepts=past_concepts,
+            )
         except Exception as e:
             print(f"[COGNITIVE_ORCHESTRATOR] Warning: Long-term recall skipped: {e}")
-            return ""
+            return empty
 
     async def _persist_turn_to_memory(
         self,
@@ -707,9 +708,13 @@ class CognitiveOrchestrator:
         # Jarvis-style long-term memory injection (episodic + semantic recall).
         # Force a light recall on coding turns so Ultron remembers the project
         # across days; otherwise recall only on explicit memory/past questions.
-        memory_context = await self._recall_long_term_memory(
-            user_prompt, force=coding_turn, project_id=project_id
+        memory_recall = await self._recall_long_term_memory(
+            user_prompt,
+            force=coding_turn,
+            project_id=project_id,
+            session_id=session_id,
         )
+        memory_context = memory_recall["context"]
         if memory_context:
             system_prompt += memory_context
 
@@ -1075,7 +1080,9 @@ class CognitiveOrchestrator:
             "personality": current_personality,
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "memory_type": "short_term",
-            "confidence": confidence
+            "confidence": confidence,
+            "recall_sources": memory_recall["provenance"],
+            "recall_characters": memory_recall["characters"],
         }
 
         return {
@@ -1097,6 +1104,7 @@ class CognitiveOrchestrator:
             "coding": coding_turn,
             "pending_confirmation": pending_confirmation,
             "provider_route": self.router.get_route_metadata(),
+            "memory_provenance": memory_recall["provenance"],
         }
 
     async def close(self) -> None:

@@ -42,17 +42,17 @@ class TestPhase10FrontendArchitecture(unittest.TestCase):
             self.assertNotIn("TX Signal load", content)
 
     def test_blob_canvas_coordinates(self):
-        """Test 3: Verify Canvas 2D drawing loops, requesting animation, and elliptical orbital ring coordinates."""
+        """Test 3: Verify deterministic dense Canvas 2D sphere animation."""
         canvas_path = COMPONENTS_DIR / "BlobCanvas.jsx"
-        
+
         with open(canvas_path, "r", encoding="utf-8") as f:
             content = f.read()
-            # Assert 60 FPS requestAnimationFrame is utilized
             self.assertIn("requestAnimationFrame", content)
             self.assertIn("cancelAnimationFrame", content)
-            # Assert elliptical orbital rings drawing is coded
-            self.assertIn("ellipse", content)
-            self.assertIn("rotate", content)
+            self.assertIn("createFibonacciSphere", content)
+            self.assertIn("rotateSpherePoint", content)
+            self.assertIn("projectSpherePoint", content)
+            self.assertNotIn("Math.random", content)
 
     def test_app_shell_grid_properties(self):
         """Test 4: Verify AppShell establishes the 3-panel widescreen grid layout."""

@@ -49,9 +49,11 @@ console.log(JSON.stringify({{
         self.assertIn("Personal Desktop Assistant", shell)
         self.assertNotIn("IRIS", shell)
         self.assertIn("getPersonalityTheme", core)
-        self.assertIn("theme.coreParticle", core)
-        self.assertIn("theme.coreGlow", core)
-        self.assertIn("theme.coreOrbit", core)
+        self.assertIn("activeTheme.coreParticle", core)
+        self.assertIn("activeTheme.coreGlow", core)
+        self.assertIn("activeTheme.coreOrbit", core)
+        self.assertIn("activeTheme.coreFarRgb", core)
+        self.assertIn("activeTheme.coreNearRgb", core)
 
     def test_zora_chat_widget_and_rail_accents_are_pink_not_purple(self):
         right = (COMPONENTS / "RightPanel.jsx").read_text(encoding="utf-8")

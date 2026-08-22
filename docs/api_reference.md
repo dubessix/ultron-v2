@@ -26,7 +26,7 @@ Returns configured/redacted key state and model IDs. `live=true` makes a small r
 }
 ```
 
-Response includes resolved session/project, content, personality, latency, structured action, events, provider route, and optional pending confirmation.
+Response includes resolved session/project, content, personality, latency, structured action, events, provider route, optional pending confirmation, and content-free `memory_provenance` describing any saved sources injected into the turn.
 
 ### `GET /api/history?session_id=<id>`
 
