@@ -18,6 +18,7 @@ from backend.app.core.intent_analyzer import IntentAnalyzer
 from backend.app.core.confidence_engine import ConfidenceEngine
 from backend.app.core.decision_engine import DecisionEngine
 from backend.app.memory.memory_engine import MemoryEngine
+from backend.app.memory.structured_memory import build_structured_turn_memory
 from backend.app.brain.llm_router import LLMRouter
 from backend.app.personalities.personality_engine import PersonalityEngine
 from backend.app.emotion.zora_trigger import ZoraTrigger
@@ -349,17 +350,17 @@ class CognitiveOrchestrator:
             # Token saver: only persist important turns (project/decision/plans).
             if not self.memory.gate.should_save(user_prompt):
                 return
-            # Keep stored entries short & focused to conserve storage.
-            entry = f"{user_prompt.strip()[:500]} -> {ai_response.strip()[:500]}"
+            record = build_structured_turn_memory(
+                user_prompt,
+                ai_response,
+                project_id=project_id,
+                session_id=session_id,
+            )
+            if record is None:
+                return
             await self.memory.episodic.record_event(
-                content=entry,
-                metadata={
-                    "kind": "conversation_turn",
-                    "project_id": project_id,
-                    "session_id": session_id,
-                    "category": "episodic",
-                    "importance": "normal",
-                }
+                content=record["content"],
+                metadata=record["metadata"],
             )
         except Exception as e:
             print(f"[COGNITIVE_ORCHESTRATOR] Warning: Memory persist skipped: {e}")

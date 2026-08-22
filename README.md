@@ -110,6 +110,7 @@ Default URLs:
 - Filesystem tools: are restricted to `security.allowed_directories` and reject sensitive/system paths and symlink escapes.
 - Database restore: accepts approved backup paths only, enters maintenance mode, creates a verified safety copy, and rolls back automatically if post-restore integrity fails.
 - Automatic backups: run daily by default with bounded generation retention.
+- Session and long-term memory: full conversations stay canonical in SQLite; deterministic redacted session summaries and structured project memories keep exact category, importance, source, hash and revision metadata. They do not invent facts.
 
 ## Main APIs
 
@@ -119,6 +120,8 @@ REST:
 - `POST /api/tools/execute`
 - `POST /api/actions/confirm`
 - `GET /api/history`
+- `GET /api/session-summary/{session_id}`
+- `GET /api/session-summary/last`
 - `POST /api/speak`
 - `GET /api/memory/recent`
 - `POST /api/db/backup`

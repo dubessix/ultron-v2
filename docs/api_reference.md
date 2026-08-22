@@ -32,6 +32,14 @@ Response includes resolved session/project, content, personality, latency, struc
 
 Returns the newest bounded session history in chronological display order.
 
+### `GET /api/session-summary/{session_id}`
+
+Returns the bounded deterministic digest stored in the existing session record. If missing, it is rebuilt from canonical saved conversations. Secret-like assignments/prefixes are redacted.
+
+### `GET /api/session-summary/last?project_id=personal&exclude_session_id=<id>`
+
+Returns the latest valid summary in one project, optionally excluding the current session. A missing previous summary returns `available: false` rather than fabricated content.
+
 ### `POST /api/personality`
 
 ```json
@@ -88,7 +96,7 @@ Preflights the speech provider and streams `audio/mpeg`. Immediate provider/no-a
 
 Returns recent project-scoped memories with bounded content preview.
 
-Memory write/list/correct/forget/export/restore/re-embed operations use `manage_memory` through the tool endpoint; destructive operations require exact confirmation.
+Memory write/list/organize/correct/forget/export/restore/re-embed operations use `manage_memory` through the tool endpoint; destructive operations require exact confirmation. M2 stores a stable category (`explicit`, `owner_preference`, `decision`, `project_fact`, `task`, `goal`, `problem`, `solution`, `session_event`), importance (`low`, `normal`, `high`, `critical`), project/session source, content hash and revision metadata. `organize` returns project-scoped category/importance/type counts.
 
 ## Database durability
 

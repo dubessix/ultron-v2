@@ -26,6 +26,7 @@ from backend.app.database.models import (
     update_session_project,
 )
 from backend.app.session.session_manager import SessionManager
+from backend.app.memory.session_summary import refresh_session_summary
 from backend.app.utils.text_cleaner import clean_text
 
 
@@ -95,6 +96,12 @@ async def process_chat_message(
             path_used="fast",
             response_ms=latency_ms,
         )
+        # M1: keep a bounded exact digest in the existing sessions.summary
+        # column. Summary failure must never lose an already-saved chat turn.
+        try:
+            refresh_session_summary(conn, resolved_session_id)
+        except Exception as exc:
+            print(f"[SESSION_SUMMARY] Refresh skipped: {exc}")
 
     raw_content = result["content"]
     return {

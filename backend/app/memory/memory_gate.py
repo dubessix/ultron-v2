@@ -67,6 +67,8 @@ class MemoryGate:
         r"\b(project|saas|app|build|build it|create|we should|our goal|"
         r"let'?s|tech stack|database|api|backend|frontend|feature|decision|"
         r"plan|roadmap|remember|keep in mind|important|i want|i will|"
+        r"i prefer|i like|i dislike|i don'?t want|we decided|decision|"
+        r"next step|bug|error|issue|problem|fixed|resolved|"
         r"start|deploy|launch)\b",
         re.IGNORECASE,
     )

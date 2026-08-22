@@ -12,6 +12,11 @@ from pydantic import BaseModel, Field
 
 from backend.app.database.db import DatabaseMaintenanceError, get_db_connection
 from backend.app.database.models import get_conversation_history
+from backend.app.memory.session_summary import (
+    get_last_session_summary,
+    load_session_summary,
+    refresh_session_summary,
+)
 from backend.app.core.orchestrator import CognitiveOrchestrator
 from backend.app.tools.tool_registry import ToolRegistry
 
@@ -192,6 +197,42 @@ async def get_session_history(session_id: str = Query(..., description="Target s
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to retrieve conversation logs: {str(e)}"
         ) from e
+
+
+@api_router.get("/session-summary/last", status_code=status.HTTP_200_OK)
+async def get_previous_session_summary(
+    project_id: str = Query("personal", min_length=1),
+    exclude_session_id: Optional[str] = Query(None),
+) -> dict:
+    """Return the latest stored deterministic summary in one project."""
+    try:
+        with get_db_connection() as conn:
+            summary = get_last_session_summary(
+                conn,
+                project_id=project_id.strip(),
+                exclude_session_id=exclude_session_id,
+            )
+        return {
+            "available": summary is not None,
+            "project_id": project_id.strip(),
+            "summary": summary,
+        }
+    except DatabaseMaintenanceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@api_router.get("/session-summary/{session_id}", status_code=status.HTTP_200_OK)
+async def get_saved_session_summary(session_id: str) -> dict:
+    """Return one summary, rebuilding it from canonical history if necessary."""
+    try:
+        with get_db_connection() as conn:
+            summary = load_session_summary(conn, session_id)
+            if summary is None:
+                summary = refresh_session_summary(conn, session_id)
+        return {"available": summary is not None, "session_id": session_id, "summary": summary}
+    except DatabaseMaintenanceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
 
 class SpeakRequest(BaseModel):
     text: str = Field(..., min_length=1, description="Text to speak.")
