@@ -323,9 +323,9 @@ export default function AppShell({
               </div>
             }>
               {key === "coding" ? (
-                <config.Component log={codingLog || []} />
+                <config.Component log={codingLog || []} personality={activePersonality} />
               ) : (
-                <config.Component />
+                <config.Component personality={activePersonality} />
               )}
             </React.Suspense>
           </WidgetContainer>

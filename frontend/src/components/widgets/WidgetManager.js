@@ -228,10 +228,10 @@ export const WIDGET_REGISTRY = {
   memory: {
     id: "memory",
     icon: Brain,
-    title: "Memory DB Viewer",
+    title: "Memory Console",
     category: "memory",
-    defaultWidth: 320,
-    defaultHeight: 280,
+    defaultWidth: 760,
+    defaultHeight: 620,
     Component: MemoryWidget
   },
   notification: {

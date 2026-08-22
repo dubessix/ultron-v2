@@ -264,6 +264,33 @@ async def speak_text(request: SpeakRequest):
 
     return StreamingResponse(audio_stream(), media_type="audio/mpeg")
 
+@api_router.get("/memory/ui", status_code=status.HTTP_200_OK)
+async def get_memory_ui(
+    project_id: str = Query("personal", min_length=1, max_length=128),
+    query: str = Query("", max_length=240),
+    category: Optional[str] = Query(None),
+    importance: Optional[str] = Query(None),
+    limit: int = Query(30, ge=1, le=100),
+):
+    """Return the safe, bounded M4 memory dashboard read model."""
+    from backend.app.memory.memory_ui import build_memory_ui_payload
+
+    try:
+        return build_memory_ui_payload(
+            project_id=project_id,
+            query=query,
+            category=category,
+            importance=importance,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except DatabaseMaintenanceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Memory UI query failed: {exc}") from exc
+
+
 @api_router.get("/memory/recent", status_code=status.HTTP_200_OK)
 async def get_recent_memories(
     limit: int = Query(5, ge=1, le=20),

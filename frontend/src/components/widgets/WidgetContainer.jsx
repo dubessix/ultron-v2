@@ -73,7 +73,7 @@ export default function WidgetContainer({
 
       {/* Embedded Inner Children Viewport (Lazy rendered/hidden on collapse) */}
       {!isCollapsed && (
-        <div className="max-h-60 flex-1 overflow-x-hidden overflow-y-auto p-4 select-text no-visible-scrollbar">
+        <div className={`${widgetId === "memory" ? "min-h-0" : "max-h-60"} flex-1 overflow-x-hidden overflow-y-auto p-4 select-text no-visible-scrollbar`}>
           {children}
         </div>
       )}

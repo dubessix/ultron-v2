@@ -20,7 +20,7 @@ The UI polls `/api/health` every five seconds. When health fails, backend status
 
 ## Voice
 
-`useVoice` owns browser Web Speech recognition. `POST /api/speak` provides audio; the UI reports non-2xx/provider/playback failures and supports local playback interruption.
+`useVoice` owns browser Web Speech recognition. `POST /api/speak` provides audio; the UI reports non-2xx/provider/playback failures and supports local playback interruption. Real microphone/conversational follow-up behavior remains a dedicated owner-hardware phase; automated browser/static checks are not described as audible acceptance.
 
 ## Widgets
 
@@ -31,6 +31,8 @@ Widgets use backend tool/REST results. Important rules:
 - Level 2/3 widgets use exact confirmation;
 - personality selection is persisted through `/api/personality` before the display changes;
 - destructive actions refresh from backend only after verified success.
+
+The M4 Memory Console remains a draggable/collapsible centre overlay. It reads `/api/memory/ui`, provides project/category/importance filters and local exact search, shows important memories beside session summaries, labels provenance/revision/timestamps, downloads a redacted JSON export, and sends correction/forget calls through the exact one-time confirmation flow.
 
 ## Build
 

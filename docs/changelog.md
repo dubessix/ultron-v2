@@ -1,5 +1,13 @@
 # Changelog
 
+## Memory and Core milestone (2026-08-22)
+
+- Added deterministic session summaries and structured project memories with redaction, importance, revisioned correction, and exact-confirmed forgetting.
+- Added durable project-scoped FTS recall, previous/current summary context, bounded conflict ordering, forgotten/corrected synchronization, and content-free provenance.
+- Rebuilt the Ultron/Zora centre Core as a deterministic adaptive Fibonacci particle shell with state reactions and reduced-motion support.
+- Added the M4 Memory Console: session summaries, important memories, project/category/importance filters, exact local search, redacted export, provenance/timestamps, and in-UI exact confirmation for correction/forgetting.
+- Updated the signed prebuilt frontend so normal setup receives the M4 interface without requiring Node/npm.
+
 ## Personal V1 repair series (2026-08-15)
 
 ### Phase 0–2

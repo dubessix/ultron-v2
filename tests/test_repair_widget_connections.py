@@ -70,7 +70,7 @@ class TestWidgetRegistryCompleteness(unittest.TestCase):
         coding = (WIDGET_DIR / "CodingWidget.jsx").read_text(encoding="utf-8")
         memory = (WIDGET_DIR / "MemoryWidget.jsx").read_text(encoding="utf-8")
         self.assertIn("log = []", coding)
-        self.assertIn("/api/memory/recent", memory)
+        self.assertIn("/api/memory/ui", memory)
         self.assertNotIn("Offline Fallback", coding + memory)
 
 

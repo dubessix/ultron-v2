@@ -123,14 +123,20 @@ class MemoryTool(BaseTool):
             rows = self.memory.vector_store.list_recent_memories(
                 limit=limit, mem_type=mem_type, project_id=project_id
             )
-            return {
-                "success": True,
-                "data": {
+            if action == "export":
+                from backend.app.memory.memory_ui import safe_export_memories
+
+                data = safe_export_memories(rows, project_id)
+            else:
+                data = {
                     "count": len(rows),
                     "project_id": project_id,
-                    "format": "json" if action == "export" else None,
+                    "format": None,
                     "memories": rows,
-                },
+                }
+            return {
+                "success": True,
+                "data": data,
                 "error": None,
             }
 

@@ -96,7 +96,21 @@ Preflights the speech provider and streams `audio/mpeg`. Immediate provider/no-a
 
 Returns recent project-scoped memories with bounded content preview.
 
-Memory write/list/organize/correct/forget/export/restore/re-embed operations use `manage_memory` through the tool endpoint; destructive operations require exact confirmation. M2 stores a stable category (`explicit`, `owner_preference`, `decision`, `project_fact`, `task`, `goal`, `problem`, `solution`, `session_event`), importance (`low`, `normal`, `high`, `critical`), project/session source, content hash and revision metadata. `organize` returns project-scoped category/importance/type counts.
+### `GET /api/memory/ui`
+
+Query parameters:
+
+```text
+project_id=personal
+query=SQLite
+category=decision
+importance=high
+limit=30
+```
+
+Returns the safe M4 dashboard read model: project-scoped memory cards, deterministic session summaries, counts, active filters, revision/correction state, timestamps, and content-safe provenance. Exact local search uses the durable recall index; embeddings, provider internals, correction hashes, and unredacted legacy secret-like text are not exposed.
+
+Memory write/list/organize/correct/forget/export/restore/re-embed operations use `manage_memory` through the tool endpoint; correction and forgetting require exact one-time confirmation. JSON export contains only bounded, redacted, restorable public fields. M2 stores a stable category (`explicit`, `owner_preference`, `decision`, `project_fact`, `task`, `goal`, `problem`, `solution`, `session_event`), importance (`low`, `normal`, `high`, `critical`), project/session source, content hash and revision metadata. `organize` returns project-scoped category/importance/type counts.
 
 ## Database durability
 

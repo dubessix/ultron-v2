@@ -51,7 +51,7 @@ export default function App() {
     weather: { visible: false, x: 200, y: 120 },
     market: { visible: false, x: 220, y: 140 },
     terminal: { visible: false, x: 240, y: 160 },
-    memory: { visible: false, x: 260, y: 180 },
+    memory: { visible: false, x: 300, y: 110 },
     notification: { visible: false, x: 280, y: 200 },
     system: { visible: false, x: 300, y: 220 },
     coding: { visible: false, x: 360, y: 300 },
