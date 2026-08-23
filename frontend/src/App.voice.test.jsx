@@ -183,6 +183,68 @@ describe('Voice C6 — canonical transport and response preservation', () => {
     expect(shellCapture.props.activityText).toContain('Waiting for confirmation: file_write');
   });
 
+  it('Stop Voice aborts an in-flight Edge TTS fetch before playback exists', async () => {
+    const OriginalAudio = global.Audio;
+    let capturedSignal = null;
+    let markSpeechStarted;
+    const speechStarted = new Promise((resolve) => { markSpeechStarted = resolve; });
+
+    global.Audio = class FakeAudio {
+      pause() {}
+      load() {}
+      play() {
+        queueMicrotask(() => this.onended?.());
+        return Promise.resolve();
+      }
+    };
+
+    try {
+      await renderConnectedApp(async (url, options = {}) => {
+        if (String(url).endsWith('/api/health')) {
+          return jsonResponse({ status: 'healthy', system_metrics: {} });
+        }
+        if (String(url).endsWith('/api/chat')) {
+          return jsonResponse(voiceResponse('speak now', {
+            content: 'This response should be interrupted.',
+            structured_action: { action: 'none' },
+            pending_confirmation: null,
+            coding: false,
+            events: [],
+          }));
+        }
+        if (String(url).endsWith('/api/speak')) {
+          capturedSignal = options.signal;
+          markSpeechStarted();
+          return await new Promise((_resolve, reject) => {
+            options.signal.addEventListener('abort', () => {
+              const error = new Error('aborted');
+              error.name = 'AbortError';
+              reject(error);
+            }, { once: true });
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      });
+
+      let commandPromise;
+      await act(async () => {
+        commandPromise = shellCapture.props.handleVoiceCommand('say the response');
+      });
+      await speechStarted;
+      expect(capturedSignal).toBeInstanceOf(AbortSignal);
+      expect(capturedSignal.aborted).toBe(false);
+
+      await act(async () => {
+        shellCapture.props.onVoiceStop();
+        await commandPromise;
+      });
+      expect(capturedSignal.aborted).toBe(true);
+      expect(shellCapture.props.voicePaused).toBe(false);
+    } finally {
+      global.Audio = OriginalAudio;
+    }
+  });
+
   it('uses a synchronous in-flight guard so same-tick voice turns cannot overlap', async () => {
     await renderConnectedApp(async (url) => {
       if (String(url).endsWith('/api/health')) {

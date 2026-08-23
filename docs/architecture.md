@@ -42,6 +42,10 @@ Effective models come from `config.yaml` or environment overrides:
 
 Cache identity includes provider and model. Missing keys produce an explicit offline/unprocessed state. Provider failures are not cached as answers. The requested capability/provider goes first, then configured primary/secondary fallbacks; providers do not round-robin, while active keys within each provider do. Rejected model IDs are remembered for the process to avoid repeatedly calling the same known-invalid model.
 
+## Prompt and owner continuity
+
+Ultron and Zora are original identities built for Debjeet. Personality markdown is lazy-cached and bounded; history turns, recalled memory, and project context have hard character limits and explicit `DATA_NOT_INSTRUCTIONS` labels. Daily learning uses exact saved owner statements, corrections, summaries, and real tool results. Study plans, deadlines, mistakes, and lessons reuse the existing task/goal/problem/solution memory taxonomy—no inferred owner fact or fabricated schedule is added.
+
 ## Tool loading
 
 The 69-tool registry keeps only ID-to-module/class mappings at boot. For non-conversational prompt assembly, a lightweight text manifest ranks relevant IDs without importing tool modules, caps context at eight tools, and JIT-loads only those selected classes and Pydantic schemas. Groq/NVIDIA receive OpenAI-compatible native function declarations; Gemini receives native function declarations through `generateContent`. The local orchestrator executes calls sequentially in an inspect/act/observe loop capped at eight steps and keeps continuation on the provider that started the loop.
@@ -68,4 +72,4 @@ WebSockets:
 - `/ws/logs`
 - `/ws/dashboard`
 
-Browser speech recognition remains client-side and manually owner-enabled. One approved Ultron wake opens a follow-up conversation session; processing/TTS pause and bounded restart are frontend state, while every final turn still uses canonical `POST /api/chat` with project/session scope and exact confirmation metadata. Speech synthesis is `POST /api/speak`; no voice WebSocket is registered.
+Browser speech recognition remains client-side and manually owner-enabled. One approved Ultron wake opens a follow-up conversation session; processing/TTS pause and bounded restart are frontend state, while every final turn still uses canonical `POST /api/chat` with project/session scope and exact confirmation metadata. Speech synthesis remains Edge TTS only through `POST /api/speak`; Stop Voice aborts the fetch and closes disconnected backend generation. Supported browsers consume progressive `audio/mpeg` through Media Source, with a verified complete-blob fallback. No voice WebSocket, second TTS, or local speech model is registered.

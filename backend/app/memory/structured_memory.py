@@ -72,21 +72,23 @@ _CATEGORY_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "task",
         re.compile(
-            r"\b(todo|to-do|need to|next step|remind me|must implement|action item|follow up)\b",
+            r"\b(todo|to-do|need to|next step|remind me|must implement|action item|"
+            r"follow up|study plan|study schedule|exam|deadline)\b",
             re.IGNORECASE,
         ),
     ),
     (
         "problem",
         re.compile(
-            r"\b(bug|error|issue|problem|broken|fails?|failure|not working|blocked)\b",
+            r"\b(bug|error|issue|problem|mistake|broken|fails?|failure|not working|blocked)\b",
             re.IGNORECASE,
         ),
     ),
     (
         "solution",
         re.compile(
-            r"\b(fixed|resolved|solution|workaround|repair(?:ed)?|root cause|corrected)\b",
+            r"\b(fixed|resolved|solution|lesson learned|workaround|repair(?:ed)?|"
+            r"root cause|corrected)\b",
             re.IGNORECASE,
         ),
     ),

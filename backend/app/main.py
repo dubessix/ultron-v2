@@ -322,7 +322,7 @@ async def websocket_chat_endpoint(websocket: WebSocket, client_id: str = "defaul
     """
     Main dialogue streaming channel.
     Accepts user text, runs the shared canonical chat service (same pipeline as
-    /api/chat), and streams the result token-by-token with progress + widget pushes.
+    /api/chat), and returns the completed result with progress + widget pushes.
     """
     await ws_manager.connect("chat", client_id, websocket)
     from backend.app.router import get_orchestrator
@@ -365,15 +365,12 @@ async def websocket_chat_endpoint(websocket: WebSocket, client_id: str = "defaul
                 confirmation_token=confirmation_token,
             )
 
-            # 3. Stream token-by-token (Requirement 1)
+            # 3. Provider calls currently complete before this transport frame.
+            # Send the exact result once—do not simulate token streaming with delays.
             response_content = result["content"] or ""
-            await websocket.send_json({"type": "stream_start"})
-            words = response_content.split(" ")
-            for idx, word in enumerate(words):
-                packet = f"{word} " if idx < len(words) - 1 else word
-                await websocket.send_json({"type": "token", "content": packet})
-                await asyncio.sleep(0.02)
-            await websocket.send_json({"type": "stream_end"})
+            await websocket.send_json({"type": "stream_start", "mode": "completed"})
+            await websocket.send_json({"type": "token", "content": response_content})
+            await websocket.send_json({"type": "stream_end", "mode": "completed"})
 
             # 4. Publish any events fired during the orchestrator pipeline
             for event in result.get("events", []):

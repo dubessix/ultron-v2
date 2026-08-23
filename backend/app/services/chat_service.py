@@ -46,6 +46,11 @@ async def process_chat_message(
     structured_action, coding, intent, events.
     """
     start_time = time.perf_counter()
+    content = str(content or "").strip()
+    if not content:
+        raise ValueError("Chat content cannot be empty.")
+    if len(content) > 12000:
+        raise ValueError("Chat content exceeds the 12,000-character safety limit.")
 
     # 1. Resolve active session (create it if it doesn't exist yet).
     session_data = SessionManager.get_or_create_session(session_id)

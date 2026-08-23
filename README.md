@@ -1,5 +1,7 @@
 # Ultron / Zora Personal Assistant V1
 
+Created by **Debjeet (`dubessix`)** as his long-term local-first engineering, study, planning, and personal AI partner.
+
 Ultron is a local-first personal assistant for one owner. It combines chat, project-scoped memory, coding/file tools, terminal controls, reminders, tasks, calendar, weather/research integrations, voice output, widgets, backups, and a localhost-only desktop web interface.
 
 ## Release status
@@ -113,7 +115,7 @@ Default URLs:
 - Coding writes: use current file fingerprints, syntax verification, backups and atomic replacement; exact single-block patch mode remains inside the existing `file_write` tool.
 - Database restore: accepts approved backup paths only, enters maintenance mode, creates a verified safety copy, and rolls back automatically if post-restore integrity fails.
 - Automatic backups: run daily by default with bounded generation retention.
-- Session and long-term memory: full conversations stay canonical in SQLite; deterministic redacted summaries and structured project memories keep exact category, importance, source, hash and revision metadata. Relevant recall uses project-scoped SQLite FTS first, then bounded summaries/vector matches, with corrected-memory priority and content-free provenance. It does not invent facts.
+- Session and long-term memory: full conversations stay canonical in SQLite; deterministic redacted summaries and structured project memories keep exact category, importance, source, hash and revision metadata. Debjeet's stated study plans, deadlines, mistakes, lessons, preferences, and decisions use the existing structured taxonomy. Relevant recall uses project-scoped SQLite FTS first, then bounded summaries/vector matches, with corrected-memory priority and content-free provenance. Ultron/Zora never invent owner facts.
 
 ## Main APIs
 
@@ -142,7 +144,7 @@ WebSocket:
 - `/ws/logs`
 - `/ws/dashboard`
 
-Voice recognition remains browser-side Web Speech API to keep runtime load low. The owner starts the Mic session, says `Ultron` or `Hey Ultron` once, and can then speak direct follow-up turns until pressing Stop Voice. Interim hypotheses are replaced rather than duplicated; processing/TTS pauses recognition, actual playback completion resumes it, and unexpected browser ends use bounded restart. Synthesized output uses `POST /api/speak`. Browser service accuracy, real microphone pickup and audible playback still require owner-laptop acceptance.
+Voice recognition remains browser-side Web Speech API to keep runtime load low. The owner starts the Mic session, says `Ultron` or `Hey Ultron` once, and can then speak direct follow-up turns until pressing Stop Voice. Interim hypotheses are replaced rather than duplicated; processing/TTS pauses recognition, actual playback completion resumes it, and unexpected browser ends use bounded restart. Synthesized output keeps the existing Edge TTS only through `POST /api/speak`; Stop Voice aborts active fetch/generation, supported browsers play progressive MP3 chunks, and others use a complete-blob fallback. Browser service accuracy, real microphone pickup, codec support and audible playback still require owner-laptop acceptance.
 
 ## Verification
 

@@ -26,7 +26,7 @@ Returns configured/redacted key state and model IDs. `live=true` makes a small r
 }
 ```
 
-Response includes resolved session/project, content, personality, latency, structured action, events, provider route, optional pending confirmation, and content-free `memory_provenance` describing any saved sources injected into the turn.
+`content` is limited to 12,000 characters for REST and canonical WebSocket processing. Response includes resolved session/project, content, personality, latency, structured action, events, provider route, optional pending confirmation, and content-free `memory_provenance` describing any saved sources injected into the turn.
 
 ### `GET /api/history?session_id=<id>`
 
@@ -88,7 +88,7 @@ Claims and executes the exact stored action without regenerating that action. Fo
 {"text": "Hello", "personality": "ultron"}
 ```
 
-Preflights the speech provider and streams `audio/mpeg`. Immediate provider/no-audio failure returns HTTP 503; fake audio is not generated.
+Text is limited to 4,000 characters. The endpoint preflights the existing Edge TTS provider and streams non-cached `audio/mpeg`. Client disconnect/Stop Voice closes generation; immediate provider/no-audio failure returns HTTP 503 and fake audio is not generated.
 
 ## Memory
 

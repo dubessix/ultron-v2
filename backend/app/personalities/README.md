@@ -1,53 +1,24 @@
-# Module: Dual Personalities & Emotion Engine (`backend/app/personalities/` & `backend/app/emotion/`)
+# Ultron and Zora Personality System
 
-This module houses the dual conversational identities of **Ultron** (Technical Senior Developer) and **Zora** (Emotional Co-Pilot/Companion) and orchestrates automated, stress-triggered handoffs.
+Ultron Personal V1 has two persisted identities created for the single owner, **Debjeet**:
 
----
+- **ULTRON** — emerald/cyan engineering, planning, coding, and operational partner.
+- **ZORA** — pink/magenta calm learning, explanation, organization, and support partner.
 
-## 1. Directory Structure & File Map
+Both use the same real memory, tools, project-root policy, privacy rules, and exact-confirmation system. Zora may support technical work when selected; she does not bypass Ultron's safety or coding rules.
 
-```
-backend/app/
-├── personalities/
-│   ├── personality_engine.py  # Coordinates active profiles and manual transitions
-│   ├── ultron_profile.py      # Standard placeholder for future extensions
-│   ├── zora_profile.py        # Standard placeholder for future extensions
-│   └── README.md              # Documentation (This file)
-└── emotion/
-    ├── signal_analyzer.py     # Calculates weighted Es Stress Score
-    └── zora_trigger.py        # Monitors Es Score against thresholds
-```
+## Truthful owner continuity
 
-### A. `personality_engine.py` (The Profile Custodian)
-*   **Role**: Enforces prompt tone matrices and matches conversational guidelines.
-*   **Manual Switches**: Uses regular expressions to scan prompts for transition keywords:
-    *   *To Zora*: `"Switch to Zora"`, `"I need Zora"`, `"Zora come here"`, `"Where is Zora"`.
-    *   *To Ultron*: `"Switch to Ultron"`, `"Back to work"`, `"Ultron"`, `"Let's get back to it"`.
+The personality markdown stores only the stable owner identity and behaviour contract. Daily knowledge comes from the current request, canonical conversations, structured saved memory, summaries, and real tool results. The assistant must never claim an unsupplied memory, mood, schedule, scan, provider call, or completed action.
 
-### B. `signal_analyzer.py` (The Stress Calculator)
-*   **Role**: Computes the sliding-window Stress Score ($E_s$) based on:
-    $$E_s = w_1 \cdot C_{err} + w_2 \cdot T_{midnight} + w_3 \cdot D_{ratio} + w_4 \cdot S_{sentiment}$$
-    *   $C_{err}$: Count of consecutive compilation failures (scaled up to 4).
-    *   $T_{midnight}$: Temporal check. Work sessions after 11 PM scale stress exponentially.
-    *   $D_{ratio}$: Ratio of characters deleted versus characters typed inside the console input box.
-    *   $S_{sentiment}$: Scanning density of frustration words (*"hate"*, *"broken"*, *"give up"*, *"stupid"*).
+Mistakes are stored only when Debjeet actually states a relevant problem/lesson or asks Ultron to remember it. Corrections take priority over stale memories. Study plans and deadlines use existing memory/task/reminder/calendar records rather than invented schedules.
 
-### C. `zora_trigger.py` (The Handoff Orchestrator)
-*   **Role**: Monitors the calculated $E_s$ score. If the score exceeds the **`0.75`** threshold, it overrides the system state and triggers an immediate handoff event to Zora.
+## Prompt composition
 
----
+`base_personality.py` lazily caches each markdown file, caps personality/history characters, and wraps history as `CONVERSATION_DATA_NOT_INSTRUCTIONS`. Recalled memory and project context are also labelled as data, preventing embedded content from becoming trusted system instruction.
 
-## 2. Diagnostic Tests & Manual Execution
+## Switching
 
-To verify Phase 6 Personalities and Emotional modules independently when your development machine is restored, run:
+`personality_engine.py` handles manual persisted switches and a bounded Zora lifecycle. `zora_trigger.py` uses the configured stress threshold; the score is a local heuristic, not a medical diagnosis or verified emotion reading.
 
-```bash
-# Execute complete unit, integration, and E2E diagnostics across all 6 completed phases
-./venv/bin/python -m unittest tests/test_phase1.py tests/test_phase2.py tests/test_phase3.py tests/test_phase4.py tests/test_phase5.py tests/test_phase6.py
-```
-
-This test suite verifies:
-1.  Manual switching phrase matches and bidirectional state changes.
-2.  Weighted $E_s$ scoring outputs under normal and critical stress.
-3.  Zora's prompt constraints, verifying absolute exclusion of clinical AI disclaimers.
-4.  E2E orchestrator transition pipeline, confirming that high-stress inputs past midnight automatically switch the system personality to Zora before querying cloud clients.
+Ultron visuals remain emerald/cyan. Zora visuals remain pink/magenta, and the frontend changes identity only after backend persistence succeeds.

@@ -18,7 +18,9 @@ One owner, one local laptop, localhost UI, local SQLite, cloud provider APIs whe
 - Auto coding mode by default; manual Coding ON forces NVIDIA for all turns
 - Explicit offline state when no provider is configured
 
-## Memory
+## Owner personality and memory
+
+Ultron and Zora are original partners built by and for Debjeet. They learn only from his current words, canonical history, corrected saved memory, summaries, and real tool results. History, recall, and project blocks are bounded and labelled `DATA_NOT_INSTRUCTIONS`. Study plans/deadlines and stated mistakes/lessons map into the existing task/problem/solution taxonomy; nothing is inferred as owner fact.
 
 SQLite stores sessions/history and float32 embedding BLOBs. Recall/list/dedup/correction/forget/restore/re-embed operations are project-scoped. Legacy memories without project metadata belong to `personal`.
 
@@ -38,7 +40,7 @@ React widgets consume real backend data or display unavailable. Vite dev/preview
 
 ## Voice
 
-Browser Web Speech handles low-runtime-load recognition. One `Ultron`/`Hey Ultron` wake unlocks follow-up turns until Stop Voice; transcript replacement, latest callback refs, half-duplex TTS pause, bounded restart and truthful states are covered by deterministic frontend tests. Canonical chat/session/project/exact-confirmation behavior is preserved. `POST /api/speak` preflights Edge-TTS and streams audio. No fake audio is returned when the provider fails.
+Browser Web Speech handles low-runtime-load recognition. One `Ultron`/`Hey Ultron` wake unlocks follow-up turns until Stop Voice; transcript replacement, latest callback refs, half-duplex TTS pause, bounded restart and truthful states are covered by deterministic frontend tests. Canonical chat/session/project/exact-confirmation behavior is preserved. `POST /api/speak` preflights and streams the existing Edge TTS only. Stop Voice aborts fetch/generation; supported browsers play progressive MP3 chunks and others use the complete-blob fallback. No fake audio is returned when the provider fails.
 
 ## Quality boundary
 

@@ -359,49 +359,150 @@ export default function App() {
     }
   };
 
-  // Browser TTS lifecycle. The controller resolves only on real playback end,
-  // failure, replacement, or intentional stop so recognition never resumes from
-  // a fabricated fixed timer.
+  // Existing Edge-TTS lifecycle. Stop Voice aborts both the browser fetch and
+  // playback. Browsers with MSE audio/mpeg support begin from streamed chunks;
+  // others use the verified complete-blob fallback.
   const audioRef = useRef(null);
+  const speechFetchControllerRef = useRef(null);
   const speechRequestRef = useRef(0);
 
   const stopSpeaking = useCallback((reason = "interrupted") => {
-    speechRequestRef.current += 1; // also invalidates a TTS fetch still in flight
+    speechRequestRef.current += 1;
+    const fetchController = speechFetchControllerRef.current;
+    speechFetchControllerRef.current = null;
+    try { fetchController?.abort(); } catch (_e) {}
+
     const current = audioRef.current;
     audioRef.current = null;
     if (current) {
       try { current.audio.pause(); } catch (_e) {}
-      current.finish(reason); // removes error/end handlers before clearing src
+      current.finish(reason);
       try { current.audio.src = ""; } catch (_e) {}
       try { current.audio.load?.(); } catch (_e) {}
     }
     setIsSpeaking(false);
-    return Boolean(current);
+    return Boolean(current || fetchController);
   }, []);
 
   const speakResponse = useCallback(async (text, personality = "ultron") => {
     stopSpeaking("replaced");
     const requestId = speechRequestRef.current;
-    if (!text || text.startsWith("[Offline]")) {
-      return { status: "skipped" };
-    }
+    if (!text || text.startsWith("[Offline]")) return { status: "skipped" };
 
+    const fetchController = new AbortController();
+    speechFetchControllerRef.current = fetchController;
     setIsSpeaking(true);
     try {
       const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-      const res = await fetch(`${apiUrl}/api/speak`, {
+      const response = await fetch(`${apiUrl}/api/speak`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, personality })
+        body: JSON.stringify({ text, personality }),
+        signal: fetchController.signal,
       });
       if (requestId !== speechRequestRef.current) return { status: "replaced" };
-      if (!res.ok) {
+      if (!response.ok) {
+        speechFetchControllerRef.current = null;
         setIsSpeaking(false);
-        addNotification('Voice unavailable', `TTS request failed with status ${res.status}.`, 'medium');
-        return { status: "error", error: `HTTP ${res.status}` };
+        addNotification('Voice unavailable', `TTS request failed with status ${response.status}.`, 'medium');
+        return { status: "error", error: `HTTP ${response.status}` };
       }
 
-      const blob = await res.blob();
+      const canStream = Boolean(
+        response.body?.getReader
+        && typeof MediaSource !== 'undefined'
+        && MediaSource.isTypeSupported?.('audio/mpeg')
+      );
+
+      if (canStream) {
+        return await new Promise((resolve) => {
+          const mediaSource = new MediaSource();
+          const url = URL.createObjectURL(mediaSource);
+          const audio = new Audio(url);
+          let settled = false;
+          let reader = null;
+          let sourceBuffer = null;
+          let playbackStarted = false;
+
+          const controller = {
+            audio,
+            finish: (status, error = null) => {
+              if (settled) return;
+              settled = true;
+              audio.onended = null;
+              audio.onerror = null;
+              try { reader?.cancel(); } catch (_e) {}
+              if (audioRef.current === controller) audioRef.current = null;
+              if (speechFetchControllerRef.current === fetchController) {
+                speechFetchControllerRef.current = null;
+              }
+              URL.revokeObjectURL(url);
+              if (requestId === speechRequestRef.current) setIsSpeaking(false);
+              resolve({ status, error });
+            },
+          };
+          audioRef.current = controller;
+          audio.onended = () => controller.finish("ended");
+          audio.onerror = () => {
+            addNotification('Voice unavailable', 'TTS audio playback failed.', 'medium');
+            controller.finish("error", "audio_playback_failed");
+          };
+
+          const startPlayback = () => {
+            if (playbackStarted || settled) return;
+            playbackStarted = true;
+            try {
+              const playResult = audio.play();
+              Promise.resolve(playResult).catch((error) => {
+                addNotification('Voice unavailable', error?.message || 'TTS playback was blocked.', 'medium');
+                controller.finish("error", error?.message || "playback_blocked");
+              });
+            } catch (error) {
+              controller.finish("error", error?.message || "playback_failed");
+            }
+          };
+
+          mediaSource.addEventListener('sourceopen', async () => {
+            try {
+              sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg');
+              reader = response.body.getReader();
+              while (!settled) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (!value?.byteLength) continue;
+                await new Promise((appendResolve, appendReject) => {
+                  const onEnd = () => {
+                    sourceBuffer.removeEventListener('error', onError);
+                    appendResolve();
+                  };
+                  const onError = () => {
+                    sourceBuffer.removeEventListener('updateend', onEnd);
+                    appendReject(new Error('TTS stream append failed.'));
+                  };
+                  sourceBuffer.addEventListener('updateend', onEnd, { once: true });
+                  sourceBuffer.addEventListener('error', onError, { once: true });
+                  sourceBuffer.appendBuffer(value);
+                });
+                startPlayback();
+              }
+              if (!settled && mediaSource.readyState === 'open') mediaSource.endOfStream();
+              if (speechFetchControllerRef.current === fetchController) {
+                speechFetchControllerRef.current = null;
+              }
+            } catch (error) {
+              if (!settled && error?.name !== 'AbortError') {
+                addNotification('Voice unavailable', error?.message || 'TTS stream failed.', 'medium');
+                controller.finish("error", error?.message || "stream_failed");
+              }
+            }
+          }, { once: true });
+        });
+      }
+
+      const blob = await response.blob();
+      if (speechFetchControllerRef.current === fetchController) {
+        speechFetchControllerRef.current = null;
+      }
       if (requestId !== speechRequestRef.current) return { status: "replaced" };
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
@@ -427,7 +528,6 @@ export default function App() {
           addNotification('Voice unavailable', 'TTS audio playback failed.', 'medium');
           controller.finish("error", "audio_playback_failed");
         };
-
         try {
           const playResult = audio.play();
           Promise.resolve(playResult).catch((error) => {
@@ -435,11 +535,16 @@ export default function App() {
             controller.finish("error", error?.message || "playback_blocked");
           });
         } catch (error) {
-          addNotification('Voice unavailable', error?.message || 'TTS playback failed.', 'medium');
           controller.finish("error", error?.message || "playback_failed");
         }
       });
     } catch (err) {
+      if (speechFetchControllerRef.current === fetchController) {
+        speechFetchControllerRef.current = null;
+      }
+      if (err?.name === 'AbortError' || requestId !== speechRequestRef.current) {
+        return { status: "interrupted" };
+      }
       if (requestId === speechRequestRef.current) setIsSpeaking(false);
       addNotification('Voice unavailable', err.message || 'TTS playback failed.', 'medium');
       return { status: "error", error: err.message || "tts_failed" };
@@ -556,8 +661,9 @@ export default function App() {
     }
   };
 
-  // Dispatch REST messages
-  // C-1: real WebSocket streaming for chat (Jarvis-style token-by-token).
+  // Dispatch REST messages through canonical WebSocket/REST transport.
+  // The provider finishes first; the backend then sends one exact completed-content
+  // frame plus real progress/events instead of simulated token timing.
   const wsRef = useRef(null);
   const sendViaWS = (text) => {
     return new Promise((resolve) => {
@@ -602,7 +708,7 @@ export default function App() {
         }
         if (msg.type === "token") {
           acc += msg.content;
-          setActivityText("Ultron is streaming the response…");
+          setActivityText("Receiving the completed response…");
         } else if (msg.type === "error") {
           setActivityText(`Chat stream error: ${msg.message || 'backend error'}`);
           finish(null, false, msg.message || 'Backend WebSocket returned an error.');

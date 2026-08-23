@@ -52,7 +52,8 @@ class MemoryGate:
         r"what happened|you told|we discussed|we decided|my project|our plan|"
         r"you said|we were|context|from before|what was|what is my name|"
         r"who am i|my goal|our stack|what are we building|what do i prefer|"
-        r"my preference|next step|open task|pending task|unresolved|what bug|what issue)\b",
+        r"my preference|my study|study plan|lesson learned|my mistake|next step|"
+        r"open task|pending task|unresolved|what bug|what issue)\b",
         re.IGNORECASE,
     )
 
@@ -69,8 +70,8 @@ class MemoryGate:
         r"let'?s|tech stack|database|api|backend|frontend|feature|decision|"
         r"plan|roadmap|remember|keep in mind|important|i want|i will|"
         r"i prefer|i like|i dislike|i don'?t want|we decided|decision|"
-        r"next step|bug|error|issue|problem|fixed|resolved|"
-        r"start|deploy|launch)\b",
+        r"next step|bug|error|issue|problem|mistake|lesson learned|fixed|resolved|"
+        r"study|exam|class|deadline|study plan|start|deploy|launch)\b",
         re.IGNORECASE,
     )
 

@@ -11,7 +11,6 @@ server:
   backend_port: 8000
   frontend_port: 5173
   startup_timeout_seconds: 45
-  enable_cors: true
 
 ai:
   primary_provider: "groq"
@@ -31,11 +30,6 @@ ai:
   embedding_dimensions: 768
 
 memory:
-  short_term_limit: 50
-  cleanup_interval_days: 30
-  search_on_demand: true
-  database_name: "ultron.db"
-  vector_index_name: "ultron_vectors"
   duplicate_similarity_threshold: 0.95
   low_density_keywords:
     - "hi"
@@ -49,11 +43,6 @@ memory:
     - "thank you"
     - "welcome"
     - "test"
-
-cache:
-  enabled: true
-  max_items: 200
-  expiry_hours: 24
 
 durability:
   # One verified SQLite snapshot per day. The newest 30 generations are kept.
@@ -70,12 +59,8 @@ durability:
   restore_lock_timeout_seconds: 30
 
 voice:
-  enabled: false
-  auto_start: false
-  load_on_demand: true
-  provider: "edge_tts"
-  interruption_timeout_seconds: 15.0
-  streaming_enabled: true
+  # Edge TTS is the single existing on-demand engine. These approved phrases are
+  # a release contract mirrored by the tested browser hook; no broad aliases.
   wake_words:
     - "hey ultron"
     - "ultron"
@@ -138,25 +123,6 @@ security:
     - dotnet
     - sleep
 
-performance:
-  simple_request_skip_planning: true
-  max_tools_per_request: 5
-  response_streaming: true
-  parallel_tool_execution: true
-  lazy_module_loading: true
-  background_tasks_enabled: true
-
 personalities:
-  default: "ultron"
-  auto_switch_enabled: true
   stress_threshold: 0.75
   cooldown_turns: 3
-  cooldown_duration_minutes: 5
-
-targets:
-  startup_seconds: 5.0
-  simple_response_seconds: 3.0
-  medium_response_seconds: 5.0
-  heavy_response_seconds: 15.0
-  max_ram_gb: 3.0
-  cpu_idle_percent: 5.0

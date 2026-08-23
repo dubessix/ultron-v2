@@ -105,7 +105,8 @@ class TestFrontendBackendConnectionSafety(unittest.TestCase):
         shell = (ROOT / "frontend" / "src" / "components" / "AppShell.jsx").read_text(encoding="utf-8")
         self.assertIn("activityText", app)
         self.assertIn("msg.detail", app)
-        self.assertIn("Ultron is streaming the response", app)
+        self.assertIn("Receiving the completed response", app)
+        self.assertNotIn("Ultron is streaming the response", app)
         self.assertIn("activityText", shell)
         self.assertIn("Claude-Code-style honest live activity text", shell)
 

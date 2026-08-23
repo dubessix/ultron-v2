@@ -1,5 +1,16 @@
 # Changelog
 
+## Final prompt/system/Edge-TTS polish F4 (2026-08-23)
+
+- Rewrote Ultron and Zora as concise original partners built by and for Debjeet: saved-truth daily learning, respectful mistake/lesson handling, realistic study/work planning, multilingual warmth, and no fabricated memory or background work.
+- Added bounded personality/history/skill composition and explicit `DATA_NOT_INSTRUCTIONS` boundaries for history, recall, and project context.
+- Added 12,000-character chat and 4,000-character speech limits; history turns are individually bounded and common credential text is redacted before prompt reuse.
+- Made coding-skill loading prompt-relevant and capped at 4,000 characters.
+- Connected study/deadline/mistake/lesson language to the existing structured-memory gate and taxonomy without adding a memory category.
+- Removed unused cache/performance/target/voice/personality settings that did not control runtime behaviour.
+- Kept Edge TTS only; Stop Voice now aborts active fetch/synthesis, the backend closes disconnected streams, and supported browsers play progressive MP3 chunks with a complete-blob fallback.
+- Paused the dense Core animation while the browser document is hidden.
+
 ## Native tool/coding-agent polish F3 (2026-08-23)
 
 - Added provider-native local function calling for Groq and NVIDIA OpenAI-compatible APIs plus Gemini function declarations; prompt sentinel JSON remains compatibility-only.

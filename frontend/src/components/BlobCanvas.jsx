@@ -102,6 +102,10 @@ export default function BlobCanvas({
     const startedAt = performance.now();
 
     const renderLoop = (now) => {
+      if (document.hidden) {
+        animationRef.current = null;
+        return;
+      }
       const elapsed = now - startedAt;
       const activeTheme = getPersonalityTheme(personality);
       const pulse = 1 + Math.sin(elapsed * 0.006) * profile.pulse * motionFactor;
@@ -183,12 +187,24 @@ export default function BlobCanvas({
       }
 
       ctx.globalAlpha = 1;
-      animationRef.current = requestAnimationFrame(renderLoop);
+      if (!document.hidden) animationRef.current = requestAnimationFrame(renderLoop);
     };
 
-    animationRef.current = requestAnimationFrame(renderLoop);
+    const handleVisibility = () => {
+      if (document.hidden) {
+        if (animationRef.current) cancelAnimationFrame(animationRef.current);
+        animationRef.current = null;
+        return;
+      }
+      if (!animationRef.current) animationRef.current = requestAnimationFrame(renderLoop);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    if (!document.hidden) animationRef.current = requestAnimationFrame(renderLoop);
     return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
       if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
     };
   }, [aiState, personality, amplitude, isFullHdViewport, presentation]);
 

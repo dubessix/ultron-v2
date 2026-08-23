@@ -4,6 +4,7 @@ The active technical blueprint is `docs/ultron_development_blueprint.md`.
 
 Summary:
 
+- created by Debjeet as his long-term Ultron/Zora engineering, study, planning, and personal partner;
 - single-owner, local-first assistant;
 - loopback React/FastAPI services;
 - cloud LLM routing with explicit offline behavior;

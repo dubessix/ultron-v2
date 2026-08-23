@@ -35,9 +35,14 @@ def get_orchestrator() -> CognitiveOrchestrator:
 # --- Pydantic Models for Input Validation and Type Safety ---
 
 class ChatRequest(BaseModel):
-    session_id: Optional[str] = Field(None, description="Active unique conversation UUID.")
-    project_id: Optional[str] = Field(None, description="Active project used to scope long-term memory.")
-    content: str = Field(..., min_length=1, description="Raw user prompt query content.")
+    session_id: Optional[str] = Field(None, max_length=128, description="Active unique conversation UUID.")
+    project_id: Optional[str] = Field(None, max_length=128, description="Active project used to scope long-term memory.")
+    content: str = Field(
+        ...,
+        min_length=1,
+        max_length=12000,
+        description="Bounded raw owner prompt content.",
+    )
     has_confirmed: bool = Field(False, description="User confirmation for a pending dangerous tool (delete/terminal).")
     confirmation_token: Optional[str] = Field(None, description="One-time token binding a confirmation to the exact file+content proposed.")
 
@@ -269,8 +274,11 @@ async def get_saved_session_summary(session_id: str) -> dict:
 
 
 class SpeakRequest(BaseModel):
-    text: str = Field(..., min_length=1, description="Text to speak.")
-    personality: str = Field("ultron", description="Personality voice: ultron or zora.")
+    text: str = Field(..., min_length=1, max_length=4000, description="Bounded text to speak.")
+    personality: Literal["ultron", "zora"] = Field(
+        "ultron",
+        description="Personality voice: ultron or zora.",
+    )
 
 @api_router.post("/speak", status_code=status.HTTP_200_OK)
 async def speak_text(request: SpeakRequest):
@@ -287,11 +295,24 @@ async def speak_text(request: SpeakRequest):
         raise HTTPException(status_code=503, detail=f"TTS unavailable: {exc}") from exc
 
     async def audio_stream():
-        yield first_chunk
-        async for chunk in stream:
-            yield chunk
+        try:
+            yield first_chunk
+            async for chunk in stream:
+                yield chunk
+        finally:
+            # Browser Stop Voice aborts the fetch; close the active Edge generator
+            # immediately instead of letting server synthesis continue unused.
+            try:
+                await stream.aclose()
+            except RuntimeError:
+                # Cancellation can finish the generator before this finally runs.
+                pass
 
-    return StreamingResponse(audio_stream(), media_type="audio/mpeg")
+    return StreamingResponse(
+        audio_stream(),
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-store"},
+    )
 
 @api_router.get("/memory/ui", status_code=status.HTTP_200_OK)
 async def get_memory_ui(
