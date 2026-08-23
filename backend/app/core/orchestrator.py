@@ -414,8 +414,11 @@ class CognitiveOrchestrator:
         if not path.is_file():
             return None
         try:
-            return hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError:
+            # Match FileReadTool's UTF-8 universal-newline view so the same text
+            # has one fingerprint on Windows CRLF and Linux LF checkouts.
+            content = path.read_text(encoding="utf-8")
+            return hashlib.sha256(content.encode("utf-8")).hexdigest()
+        except (OSError, UnicodeError):
             return None
 
     def _mark_coding_inspection(self, session_id: str, filepath: str) -> None:

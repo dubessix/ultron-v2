@@ -189,6 +189,12 @@ class TestCanonicalProjectRoot(unittest.TestCase):
 
 
 class TestPendingResumeAndCodeValidation(unittest.TestCase):
+    def test_coding_fingerprint_normalizes_windows_crlf_like_file_read(self):
+        target = isolated_test_artifact_path("f3_fingerprint", "windows_style.py")
+        target.write_bytes(b"VALUE = 1\r\n")
+        expected = hashlib.sha256(b"VALUE = 1\n").hexdigest()
+        self.assertEqual(CognitiveOrchestrator._file_fingerprint(str(target)), expected)
+
     def test_pending_action_keeps_private_bounded_resume_context(self):
         registry = PendingActionRegistry()
         created = registry.create(
