@@ -43,7 +43,7 @@ Pushes reported process RAM, CPU, and total RAM changes at bounded intervals.
 
 ## Voice
 
-There is no duplex voice WebSocket. Browser recognition uses the Web Speech API. TTS uses `POST /api/speak`, and browser playback handles interruption locally.
+There is no duplex voice WebSocket. Browser recognition uses the Web Speech API, and final voice turns use canonical REST `POST /api/chat` once with the latest session/project; they are not replayed through `/ws/chat`. TTS uses `POST /api/speak`, and browser playback/recognition pause handles half-duplex turn-taking locally.
 
 ## Transport notes
 

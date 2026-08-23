@@ -22,6 +22,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   // Coding Mode (NVIDIA brain) — manual toggle synced to backend /api/coding-mode
   const [codingMode, setCodingMode] = useState(false);
   const [codingModeSaving, setCodingModeSaving] = useState(false);
@@ -34,6 +35,11 @@ export default function App() {
   const [logs, setLogs] = useState([]);
   // One first-open briefing attempt per browser page; localStorage prevents repeats that day.
   const briefingAttemptedRef = useRef(false);
+  // Voice dispatch uses refs for same-tick exclusion and the latest canonical
+  // session, avoiding React render timing gaps without replaying a sent turn.
+  const sessionIdRef = useRef(sessionId);
+  const voiceRequestInFlightRef = useRef(false);
+  sessionIdRef.current = sessionId;
 
   // Widget floating toggle states (Requirement: Remember coordinates & state)
   const [widgetState, setWidgetState] = useState({
@@ -233,12 +239,10 @@ export default function App() {
         }]);
         addNotification('Daily briefing ready', 'Jarvis briefing loaded from current local and live sources.', 'low');
         setAiState('speaking');
-        speakResponse(text, activePersonality);
-        setActivityText("Daily briefing ready.");
-        setTimeout(() => {
-          setAiState('idle');
-          setActivityText("Ready — ask Ultron anything.");
-        }, 1200);
+        setActivityText("Daily briefing ready — speaking…");
+        await speakResponse(text, activePersonality);
+        setAiState('idle');
+        setActivityText("Ready — ask Ultron anything.");
       } catch (error) {
         setActivityText(`Daily briefing unavailable: ${error.message || 'no sourced data'}`);
         addNotification('Daily briefing unavailable', error.message || 'No values were substituted.', 'medium');
@@ -346,51 +350,94 @@ export default function App() {
     }
   };
 
-  // P1: speak the AI response aloud via /api/speak (real TTS).
-  // A module-level ref tracks the current Audio so barge-in / new speech can stop
-  // any in-progress playback (no overlapping voices).
+  // Browser TTS lifecycle. The controller resolves only on real playback end,
+  // failure, replacement, or intentional stop so recognition never resumes from
+  // a fabricated fixed timer.
   const audioRef = useRef(null);
+  const speechRequestRef = useRef(0);
 
-  const stopSpeaking = useCallback(() => {
-    if (audioRef.current) {
-      try { audioRef.current.pause(); } catch (_e) {}
-      try { audioRef.current.src = ""; } catch (_e) {}
-      audioRef.current = null;
+  const stopSpeaking = useCallback((reason = "interrupted") => {
+    speechRequestRef.current += 1; // also invalidates a TTS fetch still in flight
+    const current = audioRef.current;
+    audioRef.current = null;
+    if (current) {
+      try { current.audio.pause(); } catch (_e) {}
+      current.finish(reason); // removes error/end handlers before clearing src
+      try { current.audio.src = ""; } catch (_e) {}
+      try { current.audio.load?.(); } catch (_e) {}
     }
+    setIsSpeaking(false);
+    return Boolean(current);
   }, []);
 
-  const speakResponse = async (text, personality = "ultron") => {
-    if (!text || text.startsWith("[Offline]")) return; // no synthesized speech for unavailable AI output
+  const speakResponse = useCallback(async (text, personality = "ultron") => {
+    stopSpeaking("replaced");
+    const requestId = speechRequestRef.current;
+    if (!text || text.startsWith("[Offline]")) {
+      return { status: "skipped" };
+    }
+
+    setIsSpeaking(true);
     try {
-      // Stop any currently-playing TTS before starting a new one (barge-in / no overlap).
-      stopSpeaking();
       const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
       const res = await fetch(`${apiUrl}/api/speak`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, personality })
       });
+      if (requestId !== speechRequestRef.current) return { status: "replaced" };
       if (!res.ok) {
+        setIsSpeaking(false);
         addNotification('Voice unavailable', `TTS request failed with status ${res.status}.`, 'medium');
-        return;
+        return { status: "error", error: `HTTP ${res.status}` };
       }
+
       const blob = await res.blob();
+      if (requestId !== speechRequestRef.current) return { status: "replaced" };
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
-      audioRef.current = audio;
-      await audio.play().catch(() => {});
-      audio.onended = () => {
-        if (audioRef.current === audio) audioRef.current = null;
-        URL.revokeObjectURL(url);
-      };
-      audio.onerror = () => {
-        if (audioRef.current === audio) audioRef.current = null;
-        URL.revokeObjectURL(url);
-      };
+
+      return await new Promise((resolve) => {
+        let settled = false;
+        const controller = {
+          audio,
+          finish: (status, error = null) => {
+            if (settled) return;
+            settled = true;
+            audio.onended = null;
+            audio.onerror = null;
+            if (audioRef.current === controller) audioRef.current = null;
+            URL.revokeObjectURL(url);
+            if (requestId === speechRequestRef.current) setIsSpeaking(false);
+            resolve({ status, error });
+          },
+        };
+        audioRef.current = controller;
+        audio.onended = () => controller.finish("ended");
+        audio.onerror = () => {
+          addNotification('Voice unavailable', 'TTS audio playback failed.', 'medium');
+          controller.finish("error", "audio_playback_failed");
+        };
+
+        try {
+          const playResult = audio.play();
+          Promise.resolve(playResult).catch((error) => {
+            addNotification('Voice unavailable', error?.message || 'TTS playback was blocked.', 'medium');
+            controller.finish("error", error?.message || "playback_blocked");
+          });
+        } catch (error) {
+          addNotification('Voice unavailable', error?.message || 'TTS playback failed.', 'medium');
+          controller.finish("error", error?.message || "playback_failed");
+        }
+      });
     } catch (err) {
+      if (requestId === speechRequestRef.current) setIsSpeaking(false);
       addNotification('Voice unavailable', err.message || 'TTS playback failed.', 'medium');
+      return { status: "error", error: err.message || "tts_failed" };
     }
-  };
+  }, [addNotification, stopSpeaking]);
+
+  useEffect(() => () => { stopSpeaking("unmounted"); }, [stopSpeaking]);
 
   // Toggle individual widget visibility
   const toggleWidget = (widgetId) => {
@@ -405,10 +452,11 @@ export default function App() {
 
   // Submit a command directly (used by wake-word voice input)
   const handleVoiceCommand = async (text) => {
-    if (!text.trim() || isProcessing) return;
+    const userText = String(text || "").trim();
+    if (!userText || isProcessing || voiceRequestInFlightRef.current) return;
+    voiceRequestInFlightRef.current = true;
     // Barge-in: the user is speaking — stop any in-progress TTS immediately.
     stopSpeaking();
-    const userText = text.trim();
     setInputValue("");
     setIsProcessing(true);
     setAiState("thinking");
@@ -422,28 +470,40 @@ export default function App() {
       const response = await fetch(`${apiUrl}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, content: userText })
+        body: JSON.stringify({
+          session_id: sessionIdRef.current,
+          project_id: "personal",
+          content: userText,
+        })
       });
 
       if (response.ok) {
         const data = await response.json();
-        if (!sessionId) setSessionId(data.session_id);
+        if (data.session_id) {
+          sessionIdRef.current = data.session_id;
+          setSessionId(data.session_id);
+        }
         setMessages(prev => [...prev, {
           id: data.id,
           sender: "ai",
           text: data.content,
           personality: data.personality,
-          response_ms: data.response_ms
+          response_ms: data.response_ms,
+          project_id: data.project_id || "personal",
+          intent: data.intent || "",
+          provider_route: data.provider_route || {},
+          memory_provenance: data.memory_provenance || [],
+          events: data.events || [],
+          pending_confirmation: data.pending_confirmation || null,
         }]);
         setAiState("speaking");
         setActivityText("Voice command processed — speaking the response…");
-        speakResponse(data.content, data.personality || "ultron");
-        setTimeout(() => {
+        void speakResponse(data.content, data.personality || "ultron").then(() => {
           setAiState("idle");
           if (!data.pending_confirmation?.confirmation_token) {
-            setActivityText("Ready — ask Ultron anything.");
+            setActivityText("Ready — listening for your next turn.");
           }
-        }, 1200);
+        });
         const structured = data.structured_action;
         if (structured && structured.action === "open_widget") {
           const targetWidgetId = structured.widget_id;
@@ -453,6 +513,14 @@ export default function App() {
           }));
         }
         handleCodingResponse(data);
+        if (data.events?.length) {
+          const voiceLogs = data.events
+            .filter(event => event.type === "log" && event.log)
+            .map(event => ({ level: event.log.level, message: event.log.message }));
+          if (voiceLogs.length) {
+            setLogs(prev => [...prev, ...voiceLogs].slice(-80));
+          }
+        }
         if (data.pending_confirmation?.confirmation_token) {
           setPendingAction(data.pending_confirmation);
           setActivityText(`Waiting for confirmation: ${data.pending_confirmation.tool_id}.`);
@@ -474,6 +542,7 @@ export default function App() {
       setAiState("idle");
       setActivityText("Voice command dropped — backend is offline.");
     } finally {
+      voiceRequestInFlightRef.current = false;
       setIsProcessing(false);
     }
   };
@@ -609,13 +678,7 @@ export default function App() {
         
         setAiState("speaking");
         setActivityText(data.coding ? "Coding response ready — updating coding tools…" : "Response ready — speaking…");
-        speakResponse(data.content, data.personality || "ultron");
-        setTimeout(() => {
-          setAiState("idle");
-          if (!data.pending_confirmation?.confirmation_token) {
-            setActivityText("Ready — ask Ultron anything.");
-          }
-        }, 1200);
+        let speechSequence = speakResponse(data.content, data.personality || "ultron");
         handleCodingResponse(data);
         if (data.pending_confirmation?.confirmation_token) {
           setPendingAction(data.pending_confirmation);
@@ -635,11 +698,21 @@ export default function App() {
           const logLines = data.events.filter(e => e.type === "log").map(e => ({ level: e.log.level, message: e.log.message }));
           if (logLines.length) {
             setLogs(prev => [...prev, ...logLines].slice(-80));
-            // Speak the Jarvis narration live (info lines only, skip the final Done.)
+            // Preserve both spoken outputs without replacing the response audio.
             const narration = logLines.find(l => l.level === "info");
-            if (narration) speakResponse(narration.message, data.personality || "ultron");
+            if (narration) {
+              speechSequence = speechSequence.then(() =>
+                speakResponse(narration.message, data.personality || "ultron")
+              );
+            }
           }
         }
+        void speechSequence.then(() => {
+          setAiState("idle");
+          if (!data.pending_confirmation?.confirmation_token) {
+            setActivityText("Ready — ask Ultron anything.");
+          }
+        });
       } else {
         setMessages(prev => [...prev, {
           id: "error_" + Date.now(),
@@ -682,6 +755,8 @@ export default function App() {
         widgetState={widgetState}
         toggleWidget={toggleWidget}
         handleVoiceCommand={handleVoiceCommand}
+        voicePaused={isProcessing || isSpeaking}
+        onVoiceStop={stopSpeaking}
         codingMode={codingMode}
         toggleCodingMode={toggleCodingMode}
         codingModeSaving={codingModeSaving}

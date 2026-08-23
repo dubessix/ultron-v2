@@ -39,7 +39,7 @@ The coverage gate measures application code (`backend` and `launcher`) and curre
 
 ## Live-check policy
 
-Automated tests mock provider/network/device edges to be deterministic. They do not automatically consume real provider quotas or assume hardware. Live Groq/Gemini/NVIDIA/Tavily/GitHub, Windows, browser GUI, microphone/TTS playback, and Spotify checks are separately marked PASS, FAIL, or BLOCKED.
+Automated tests mock provider/network/device edges to be deterministic. The frontend voice suite injects a controlled `SpeechRecognition` implementation to verify one-wake multi-turn flow, interim replacement, latest-session callbacks, processing/TTS pause, bounded restart, Stop Voice, canonical metadata and truthful UI states. This does not consume a microphone and is not acoustic or audible proof. Live Groq/Gemini/NVIDIA/Tavily/GitHub, Windows, real browser microphone/TTS playback, echo behavior, Spotify and owner-laptop soak checks are separately marked PASS, FAIL, or BLOCKED.
 
 ## Failure handling
 

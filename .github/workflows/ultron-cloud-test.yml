@@ -83,6 +83,13 @@ jobs:
         continue-on-error: true
         run: python -m unittest discover -s tests -p "test*.py"
 
+      - name: Verify one-wake browser voice contracts
+        id: frontend_voice
+        continue-on-error: true
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run test:voice
+
       - name: Build frontend from the locked package list
         id: frontend_build
         continue-on-error: true
@@ -115,6 +122,7 @@ jobs:
             echo "|---|---|"
             echo "| Python suite | ${{ steps.python_suite.outcome }} |"
             echo "| Independent suite | ${{ steps.unittest_suite.outcome }} |"
+            echo "| Voice conversation suite | ${{ steps.frontend_voice.outcome }} |"
             echo "| Frontend build | ${{ steps.frontend_build.outcome }} |"
             echo "| App shortcuts/icons | ${{ steps.shortcut_acceptance.outcome }} |"
             echo "| Start / Health / Stop | ${{ steps.runtime_acceptance.outcome }} |"
@@ -133,6 +141,7 @@ jobs:
           |---|---|
           | Python suite | ${{ steps.python_suite.outcome }} |
           | Independent suite | ${{ steps.unittest_suite.outcome }} |
+          | Voice conversation suite | ${{ steps.frontend_voice.outcome }} |
           | Frontend build | ${{ steps.frontend_build.outcome }} |
           | App shortcuts/icons | ${{ steps.shortcut_acceptance.outcome }} |
           | Start / Health / Stop | ${{ steps.runtime_acceptance.outcome }} |
@@ -157,9 +166,10 @@ jobs:
         env:
           PYTHON_SUITE: ${{ steps.python_suite.outcome }}
           UNITTEST_SUITE: ${{ steps.unittest_suite.outcome }}
+          FRONTEND_VOICE: ${{ steps.frontend_voice.outcome }}
           FRONTEND_BUILD: ${{ steps.frontend_build.outcome }}
           SHORTCUT_ACCEPTANCE: ${{ steps.shortcut_acceptance.outcome }}
           RUNTIME_ACCEPTANCE: ${{ steps.runtime_acceptance.outcome }}
           DATA_ISOLATION: ${{ steps.data_isolation.outcome }}
         run: >-
-          python -c "import os,sys; names=('PYTHON_SUITE','UNITTEST_SUITE','FRONTEND_BUILD','SHORTCUT_ACCEPTANCE','RUNTIME_ACCEPTANCE','DATA_ISOLATION'); failed=[f'{name}={os.environ.get(name)}' for name in names if os.environ.get(name) != 'success']; print('Cloud acceptance failures: ' + (', '.join(failed) if failed else 'none')); sys.exit(bool(failed))"
+          python -c "import os,sys; names=('PYTHON_SUITE','UNITTEST_SUITE','FRONTEND_VOICE','FRONTEND_BUILD','SHORTCUT_ACCEPTANCE','RUNTIME_ACCEPTANCE','DATA_ISOLATION'); failed=[f'{name}={os.environ.get(name)}' for name in names if os.environ.get(name) != 'success']; print('Cloud acceptance failures: ' + (', '.join(failed) if failed else 'none')); sys.exit(bool(failed))"

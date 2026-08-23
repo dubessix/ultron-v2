@@ -20,7 +20,7 @@ The UI polls `/api/health` every five seconds. When health fails, backend status
 
 ## Voice
 
-`useVoice` owns browser Web Speech recognition. `POST /api/speak` provides audio; the UI reports non-2xx/provider/playback failures and supports local playback interruption. Real microphone/conversational follow-up behavior remains a dedicated owner-hardware phase; automated browser/static checks are not described as audible acceptance.
+`useVoice` owns browser Web Speech recognition. Mic ON first waits for `Ultron`/`Hey Ultron`; that one wake unlocks direct follow-up turns until Stop Voice. Final/interim results are index-safe, the latest session callback is used, and one synchronous in-flight guard prevents overlapping REST turns. Recognition aborts during processing/TTS, ignores buffered late results, and resumes after actual playback end/error/stop. Unexpected browser ends use one bounded restart timer (500 ms base, 4 s cap, five attempts). `POST /api/speak` provides audio, and exact confirmation tokens remain backend-issued and unchanged. Automated fake-recognizer/browser checks verify state wiring, not real microphone accuracy or audible acceptance.
 
 ## Widgets
 
@@ -39,6 +39,7 @@ The M4 Memory Console remains a draggable/collapsible centre overlay. It reads `
 ```bash
 cd frontend
 npm ci
+npm run test:voice
 npm audit --audit-level=low
 npm run build
 ```

@@ -1,5 +1,16 @@
 # Changelog
 
+## One-wake voice conversation milestone (2026-08-23)
+
+- Kept browser Web Speech as the low-runtime-load STT path; no always-on Python microphone service or local Whisper/openWakeWord runtime was added.
+- Added one `Ultron`/`Hey Ultron` wake per Mic session followed by direct multi-turn conversation until Stop Voice.
+- Replaced interim hypotheses by result index, restricted broad legacy wake triggers, accepted punctuation, and routed through the latest session callback.
+- Added half-duplex processing/TTS pause, actual playback completion/error settlement, object-URL cleanup, and Stop Voice audio cancellation.
+- Added deduplicated bounded recognition restart and explicit fatal/recoverable error handling.
+- Preserved canonical project/session, response provenance/events/coding/widget actions and exact confirmation tokens while blocking same-tick overlap/replay.
+- Added truthful waiting/active/paused/reconnecting/heard-text UI states for Ultron and Zora.
+- Added cumulative Vitest/jsdom voice contracts to local and Windows/Ubuntu cloud gates; real owner microphone and audible TTS remain hardware acceptance.
+
 ## Memory and Core milestone (2026-08-22)
 
 - Added deterministic session summaries and structured project memories with redaction, importance, revisioned correction, and exact-confirmed forgetting.

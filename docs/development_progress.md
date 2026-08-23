@@ -1,6 +1,6 @@
 # Development Progress
 
-Status date: 2026-08-15 (Asia/Calcutta)
+Status date: 2026-08-23 (Asia/Calcutta)
 
 ## Completed repair phases
 
@@ -20,18 +20,20 @@ Status date: 2026-08-15 (Asia/Calcutta)
 
 ## Current automated evidence
 
-Final local gate output for the Phase 10 commit candidate:
+Latest local gate output for the M1–M4/Core/one-wake voice commit candidate:
 
-- pytest: 284 passed plus 17 subtests;
-- independent unittest: 277 passed;
-- application coverage: 70%, with `fail_under = 70`;
+- pytest: 428 passed plus 33 subtests;
+- independent unittest: 415 passed;
+- application coverage: 71%, with `fail_under = 70`;
+- frontend voice conversation suite: 22 passed;
 - Python runtime/dev requirement audits: no known vulnerabilities;
 - npm lockfile audit: no known vulnerabilities;
 - `pip check`: no broken requirements;
 - Ruff actionable correctness gate: passed;
 - Bandit: zero medium/high findings (reviewed low defensive/subprocess patterns remain informational);
-- frontend Vite 7 production build: passed;
-- isolated PEP 517 wheel install, setup, doctor, backend import, two launcher cycles, clean shutdown, and port reuse: passed;
+- frontend Vite 7 production build and 26-file signed prebuilt manifest: passed;
+- PEP 517 wheel: 184 files with voice source/tests/prebuilt present;
+- actual isolated no-key browser state/compact checks passed with controlled SpeechRecognition; this is not real microphone proof;
 - production `data/`: absent before and after automated gates.
 
 Counts may increase in later maintenance; command output from the current commit remains the source of truth.

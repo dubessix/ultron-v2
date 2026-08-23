@@ -37,6 +37,8 @@ export default function AppShell({
   widgetState,
   toggleWidget,
   handleVoiceCommand,
+  voicePaused,
+  onVoiceStop,
   codingMode,
   toggleCodingMode,
   codingModeSaving,
@@ -76,14 +78,36 @@ export default function AppShell({
   const [voiceEnabled, setVoiceEnabled] = useState(false);
   const voice = useVoice({
     enabled: voiceEnabled,
+    paused: Boolean(voicePaused),
     onCommand: (cmd) => {
       if (handleVoiceCommand) handleVoiceCommand(cmd);
     }
   });
 
   const handleMicToggle = () => {
-    setVoiceEnabled((prev) => !prev);
+    setVoiceEnabled((previous) => {
+      const next = !previous;
+      if (!next) onVoiceStop?.("voice_session_stopped");
+      return next;
+    });
   };
+
+  const voiceButtonLabel = voiceEnabled ? "Stop voice session" : "Start voice session";
+  const voiceStatusText = !voiceEnabled
+    ? "Voice session off."
+    : voice.voiceError
+      ? voice.voiceError
+      : voicePaused
+        ? aiState === "speaking"
+          ? "Voice paused — Ultron is speaking."
+          : "Voice paused — Ultron is working."
+        : !voice.isListening
+          ? "Voice reconnecting…"
+          : voice.wakeDetected
+            ? "Wake phrase heard — speak your command."
+            : voice.conversationActive
+              ? "Voice conversation active — listening for your next turn."
+              : "Say “Ultron” once to start the voice conversation.";
 
   return (
     <div
@@ -180,7 +204,11 @@ export default function AppShell({
           <div className="ultron-core-status absolute top-6 left-6 font-mono text-[9px] text-[#8B8B96] flex items-center gap-2 2xl:left-8 2xl:top-8 2xl:text-[10px]">
             <span>CORE STATUS:</span>
             <span className={`uppercase tracking-wider font-bold ${voice.wakeDetected ? accentText : "text-[#7DD3FC]"}`}>
-              {voice.wakeDetected ? "WAKED" : aiState}
+              {voice.wakeDetected
+                ? "WAKE DETECTED"
+                : voice.conversationActive && voice.isListening
+                  ? "VOICE ACTIVE"
+                  : aiState}
             </span>
           </div>
 
@@ -246,33 +274,66 @@ export default function AppShell({
             {/* Mic icon — real wake-word listening toggle with pulse-ring effect */}
             <button
               onClick={handleMicToggle}
-              aria-label={voice.isListening ? "Stop voice listening" : "Enable voice listening"}
+              aria-label={voiceButtonLabel}
+              aria-pressed={voiceEnabled}
               className={`relative flex h-8 w-8 items-center justify-center rounded-full border transition-all duration-500 ${
-                voice.voiceError
+                voiceEnabled && voice.voiceError
                   ? "border-rose-400/35 bg-rose-500/10 text-rose-300"
-                  : voice.isListening
-                    ? isZora
-                      ? "text-pink-400 border-pink-400/40 bg-pink-500/10"
-                      : "text-emerald-400 border-emerald-400/40 bg-emerald-500/10"
-                    : "border-white/[0.10] bg-white/[0.025] text-white/40 hover:border-white/20 hover:text-white/75"
+                  : voiceEnabled && voicePaused
+                    ? "border-amber-400/30 bg-amber-500/10 text-amber-200"
+                    : voiceEnabled && voice.isListening
+                      ? isZora
+                        ? "text-pink-400 border-pink-400/40 bg-pink-500/10"
+                        : "text-emerald-400 border-emerald-400/40 bg-emerald-500/10"
+                      : voiceEnabled
+                        ? "border-sky-400/25 bg-sky-500/[0.07] text-sky-300"
+                        : "border-white/[0.10] bg-white/[0.025] text-white/40 hover:border-white/20 hover:text-white/75"
               }`}
-              title={voice.voiceError || (voice.isListening ? "Listening for wake word... (click to stop)" : "Enable voice (click to start listening)")}
+              title={voiceEnabled ? `${voiceStatusText} Click to stop.` : "Start browser voice session"}
             >
-              <Mic size={15} strokeWidth={1.8} aria-hidden="true" className={voice.isListening ? "animate-pulse" : ""} />
-              {voice.isListening && (
+              <Mic
+                size={15}
+                strokeWidth={1.8}
+                aria-hidden="true"
+                className={voiceEnabled && voice.isListening && !voicePaused ? "animate-pulse" : ""}
+              />
+              {voiceEnabled && voice.isListening && !voicePaused && (
                 <span className={`absolute inset-0 rounded-full animate-ping opacity-40 ${isZora ? "bg-pink-400/40" : "bg-emerald-400/40"}`} />
               )}
             </button>
           </div>
 
-          {/* Voice listening hint */}
-          {voice.isListening && (
-            <div className={`absolute bottom-6 right-6 text-[8px] font-mono uppercase tracking-widest ${isZora ? "text-pink-300/80" : "text-emerald-300/80"}`}>
-              {voice.wakeDetected ? "Wake word heard — speak your command..." : "Listening for wake word..."}
+          {/* Truthful voice-session status; never infer active listening from the Mic toggle alone. */}
+          {voiceEnabled && !voice.voiceError && (
+            <div className="pointer-events-none absolute bottom-20 right-6 max-w-72 space-y-1.5 text-right font-mono">
+              <div
+                data-testid="voice-status"
+                className={`text-[8px] uppercase tracking-widest ${
+                  voicePaused
+                    ? "text-amber-200/85"
+                    : isZora
+                      ? "text-pink-300/80"
+                      : "text-emerald-300/80"
+                }`}
+              >
+                {voiceStatusText}
+              </div>
+              {voice.conversationActive && voice.heardText && (
+                <div
+                  data-testid="voice-heard-text"
+                  className="max-w-72 truncate rounded border border-white/[0.07] bg-black/20 px-2 py-1 text-[7px] normal-case tracking-normal text-white/40"
+                  title={voice.heardText}
+                >
+                  Heard: {voice.heardText}
+                </div>
+              )}
             </div>
           )}
-          {voice.voiceError && (
-            <div className="absolute bottom-6 right-6 max-w-52 rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-right font-mono text-[8px] leading-relaxed text-rose-200">
+          {voiceEnabled && voice.voiceError && (
+            <div
+              data-testid="voice-status"
+              className="pointer-events-none absolute bottom-20 right-6 max-w-64 rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-right font-mono text-[8px] leading-relaxed text-rose-200"
+            >
               {voice.voiceError}
             </div>
           )}

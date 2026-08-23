@@ -59,7 +59,7 @@ Widgets read SQLite records. Invalid reminder times are rejected instead of sile
 
 ## Voice
 
-Browser recognition requires microphone permission and a supported Web Speech implementation. Speech output uses `POST /api/speak`; immediate provider failure returns unavailable rather than fake audio. ffmpeg may be needed for optional media workflows.
+Browser recognition requires microphone permission, network/service availability where the browser uses cloud recognition, and a supported Web Speech implementation. Click the Mic control once, say `Ultron` or `Hey Ultron` once, then continue with direct follow-up turns; the visible `Voice conversation active` state remains until Stop Voice. During processing or TTS the recognizer pauses to avoid hearing Ultron's own speaker output, then resumes after actual playback settlement. `Voice reconnecting` is shown during bounded browser restart rather than pretending to listen. Speech output uses `POST /api/speak`; immediate provider failure returns unavailable rather than fake audio. Real microphone, audible TTS and echo behavior must be checked on the owner laptop.
 
 ## System and external data
 

@@ -35,7 +35,7 @@ React widgets consume real backend data or display unavailable. Vite dev/preview
 
 ## Voice
 
-Browser Web Speech handles recognition. `POST /api/speak` preflights Edge-TTS and streams audio. No fake audio is returned when the provider fails.
+Browser Web Speech handles low-runtime-load recognition. One `Ultron`/`Hey Ultron` wake unlocks follow-up turns until Stop Voice; transcript replacement, latest callback refs, half-duplex TTS pause, bounded restart and truthful states are covered by deterministic frontend tests. Canonical chat/session/project/exact-confirmation behavior is preserved. `POST /api/speak` preflights Edge-TTS and streams audio. No fake audio is returned when the provider fails.
 
 ## Quality boundary
 

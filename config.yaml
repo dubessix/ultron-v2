@@ -76,13 +76,8 @@ voice:
   interruption_timeout_seconds: 15.0
   streaming_enabled: true
   wake_words:
-    - "ultron"
-    - "jarvis"
-    - "zora"
     - "hey ultron"
-    - "ok ultron"
-    - "wake up"
-    - "activate"
+    - "ultron"
   ultron:
     voice_id: "en-US-GuyNeural"
     rate: "+5%"

@@ -33,6 +33,9 @@ def test_cloud_workflow_runs_real_shortcut_runtime_and_data_checks():
     required = (
         "python -m pytest -q",
         "python -m unittest discover",
+        "npm --prefix frontend run test:voice",
+        "Voice conversation suite",
+        "FRONTEND_VOICE",
         "npm --prefix frontend run build",
         "cloud_shortcut_acceptance.py",
         "cloud_runtime_acceptance.py",

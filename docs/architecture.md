@@ -62,4 +62,4 @@ WebSockets:
 - `/ws/logs`
 - `/ws/dashboard`
 
-Browser speech recognition remains client-side. Speech synthesis is `POST /api/speak`; no voice WebSocket is registered.
+Browser speech recognition remains client-side and manually owner-enabled. One approved Ultron wake opens a follow-up conversation session; processing/TTS pause and bounded restart are frontend state, while every final turn still uses canonical `POST /api/chat` with project/session scope and exact confirmation metadata. Speech synthesis is `POST /api/speak`; no voice WebSocket is registered.

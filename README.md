@@ -139,7 +139,7 @@ WebSocket:
 - `/ws/logs`
 - `/ws/dashboard`
 
-Voice recognition is browser-side Web Speech API; synthesized output uses `POST /api/speak`.
+Voice recognition remains browser-side Web Speech API to keep runtime load low. The owner starts the Mic session, says `Ultron` or `Hey Ultron` once, and can then speak direct follow-up turns until pressing Stop Voice. Interim hypotheses are replaced rather than duplicated; processing/TTS pauses recognition, actual playback completion resumes it, and unexpected browser ends use bounded restart. Synthesized output uses `POST /api/speak`. Browser service accuracy, real microphone pickup and audible playback still require owner-laptop acceptance.
 
 ## Verification
 
@@ -151,7 +151,7 @@ python -m coverage report -m
 python -m pip_audit -r requirements-dev.txt --progress-spinner off
 ruff check backend tests launcher.py setup.py
 bandit -q -r backend
-cd frontend && npm audit --audit-level=low && npm run build
+cd frontend && npm run test:voice && npm audit --audit-level=low && npm run build
 ```
 
 Tests redirect SQLite, cache, backups, and generated artifacts to isolated temporary storage. The test session hashes production `data/` before and after execution.
