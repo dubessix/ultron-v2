@@ -1,5 +1,12 @@
 # Changelog
 
+## Final brain-truth polish F1 (2026-08-23)
+
+- Replaced the retired Groq chat default with the official `openai/gpt-oss-20b` replacement and made validation reject known retired Groq IDs.
+- Connected existing primary/secondary provider, timeout, attempt and cooldown-backoff configuration to runtime routing.
+- Kept provider selection capability-ordered and per-provider API keys round-robin; known rejected provider/model pairs are skipped for the rest of the process.
+- Clarified modes: Coding Auto routes coding intents to NVIDIA; manual Coding ON forces NVIDIA for every turn.
+
 ## One-wake voice conversation milestone (2026-08-23)
 
 - Kept browser Web Speech as the low-runtime-load STT path; no always-on Python microphone service or local Whisper/openWakeWord runtime was added.

@@ -67,13 +67,13 @@ Effective model IDs are in `config.yaml` and may be overridden with environment 
 
 | Purpose | Default | Override |
 |---|---|---|
-| Groq chat | `llama-3.1-8b-instant` | `GROQ_CHAT_MODEL` |
+| Groq chat | `openai/gpt-oss-20b` | `GROQ_CHAT_MODEL` |
 | Gemini chat | `gemini-3.5-flash` | `GEMINI_CHAT_MODEL` |
 | NVIDIA coding | `nvidia/nemotron-3-ultra-550b-a55b` | `NVIDIA_CHAT_MODEL` |
 | Gemini embedding | `gemini-embedding-001` | `GEMINI_EMBEDDING_MODEL` |
 | Embedding dimensions | `768` | `GEMINI_EMBEDDING_DIMS` |
 
-Provider secrets belong only in the git-ignored `.env` or process environment. Tokens are never stored in repository files, Git remotes, or progress-tracker JSON.
+Provider order, timeout, bounded attempts, and cooldown backoff use the existing `ai` configuration. Providers are capability/preference ordered rather than round-robin; API keys still rotate inside each provider. Coding mode defaults to **Auto** (coding intents use NVIDIA); manual Coding ON forces NVIDIA for every turn. Provider secrets belong only in the git-ignored `.env` or process environment. Tokens are never stored in repository files, Git remotes, or progress-tracker JSON.
 
 ## Daily operation
 

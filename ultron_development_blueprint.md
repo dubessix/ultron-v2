@@ -16,7 +16,7 @@ Summary:
 
 Current models:
 
-- `llama-3.1-8b-instant`
+- `openai/gpt-oss-20b`
 - `gemini-3.5-flash`
 - `nvidia/nemotron-3-ultra-550b-a55b`
 - `gemini-embedding-001`

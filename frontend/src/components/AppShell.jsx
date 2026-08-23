@@ -250,10 +250,10 @@ export default function AppShell({
                   ? "bg-sky-500/10 border-sky-400/30 text-sky-300 shadow-[0_0_15px_rgba(56,189,248,0.2)]"
                   : "border-white/[0.10] bg-white/[0.02] text-white/45 hover:border-white/20 hover:text-white/75"
               }`}
-              title={codingMode ? "Coding Mode ON (NVIDIA brain for all turns). Click to revert to auto." : "Coding Mode OFF (auto-detect). Click to force NVIDIA coding brain."}
+              title={codingMode ? "Forced NVIDIA mode for all turns. Click to return to Auto." : "Auto mode: coding intents use NVIDIA. Click to force NVIDIA for every turn."}
             >
               <Code2 size={12} strokeWidth={1.8} aria-hidden="true" />
-              <span>{codingModeSaving ? "Updating" : codingMode ? "Coding ON" : "Coding"}</span>
+              <span>{codingModeSaving ? "Updating" : codingMode ? "Coding ON" : "Coding Auto"}</span>
             </button>
 
             <span className="h-5 w-px bg-white/[0.08]" aria-hidden="true" />

@@ -282,7 +282,7 @@ export default function App() {
     if (codingModeSaving) return;
     const next = !codingMode;
     setCodingModeSaving(true);
-    setActivityText(`${next ? 'Enabling' : 'Disabling'} coding mode…`);
+    setActivityText(next ? 'Enabling forced NVIDIA coding mode…' : 'Returning coding mode to Auto…');
     try {
       const result = await api('/api/coding-mode', {
         method: 'POST',
@@ -290,8 +290,9 @@ export default function App() {
       });
       if (!result.success) throw new Error('Backend rejected the coding-mode update.');
       setCodingMode(Boolean(result.coding_mode));
-      setActivityText(`Coding mode ${result.coding_mode ? 'enabled' : 'disabled'}.`);
-      addNotification('Coding Mode', `Coding mode ${result.coding_mode ? 'enabled' : 'disabled'}.`, 'low');
+      const modeLabel = result.coding_mode ? 'Forced NVIDIA' : 'Auto';
+      setActivityText(`Coding mode: ${modeLabel}.`);
+      addNotification('Coding Mode', `Coding mode: ${modeLabel}.`, 'low');
     } catch (err) {
       setActivityText(`Coding mode unchanged: ${err.message || 'backend offline'}`);
       addNotification('Coding Mode unchanged', err.message || 'Backend offline.', 'medium');

@@ -210,6 +210,8 @@ class TestReleaseDocumentation(unittest.TestCase):
         documents = list(ROOT.glob("*.md")) + list((ROOT / "docs").glob("*.md"))
         combined = "\n".join(path.read_text(encoding="utf-8") for path in documents)
         forbidden = (
+            "llama-3.1-8b-instant",
+            "llama-3.3-70b-versatile",
             "gemini-1.5-flash",
             "text-embedding-004",
             "nvidia/nemotron-3-ultra-550b-a55b:free",

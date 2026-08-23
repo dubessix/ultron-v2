@@ -8,11 +8,14 @@ One owner, one local laptop, localhost UI, local SQLite, cloud provider APIs whe
 
 ## Brain
 
-- Groq chat default: `llama-3.1-8b-instant`
+- Groq chat default: `openai/gpt-oss-20b`
 - Gemini fallback: `gemini-3.5-flash`
 - NVIDIA coding: `nvidia/nemotron-3-ultra-550b-a55b`
 - Embedding: `gemini-embedding-001`, configurable dimensions (default 768)
-- Provider/model-aware cache and redacted key-state rotation
+- Config-driven primary/secondary order, timeout, bounded attempts and cooldown backoff
+- Capability-ordered providers (not provider round-robin) with per-provider key rotation
+- Provider/model-aware cache and rejected-model process guard
+- Auto coding mode by default; manual Coding ON forces NVIDIA for all turns
 - Explicit offline state when no provider is configured
 
 ## Memory

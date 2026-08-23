@@ -17,11 +17,11 @@ import yaml
 
 from backend.app.install_paths import CONFIG_PATH
 
-# Currently-valid, long-runway defaults (verified against provider docs 2026-08-14):
-#   - gemini-3.5-flash    : stable flagship flash, valid to ~May 2027
-#   - gemini-embedding-001: stable embeddings, flexible dims, valid to >=May 2028
+# Current defaults verified against provider documentation on 2026-08-23.
+# Groq shut down llama-3.1-8b-instant on 2026-08-16 and names
+# openai/gpt-oss-20b as its direct replacement.
 _DEFAULTS = {
-    "groq": "llama-3.1-8b-instant",
+    "groq": "openai/gpt-oss-20b",
     "gemini": "gemini-3.5-flash",
     "nvidia": "nvidia/nemotron-3-ultra-550b-a55b",
     "embedding": "gemini-embedding-001",
@@ -47,6 +47,43 @@ def _load_ai_config() -> dict:
         return cfg.get("ai", {}) or {}
     except Exception:
         return {}
+
+
+_PROVIDERS = ("groq", "gemini", "nvidia")
+
+
+def _bounded_number(value, default: float, minimum: float, maximum: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(minimum, min(number, maximum))
+
+
+def get_ai_runtime_settings() -> dict:
+    """Return bounded provider routing/retry settings from the existing config."""
+    config = _load_ai_config()
+    primary = str(config.get("primary_provider") or "groq").strip().lower()
+    if primary not in _PROVIDERS:
+        primary = "groq"
+
+    secondary = str(config.get("secondary_provider") or "gemini").strip().lower()
+    if secondary not in _PROVIDERS or secondary == primary:
+        secondary = next(provider for provider in _PROVIDERS if provider != primary)
+
+    # `max_retries` is retained as the legacy config key, but interpreted as the
+    # total bounded attempts per provider to preserve the previous three-attempt
+    # Groq/NVIDIA behavior without an off-by-one retry surprise.
+    max_attempts = int(_bounded_number(config.get("max_retries"), 3, 1, 4))
+    return {
+        "primary_provider": primary,
+        "secondary_provider": secondary,
+        "timeout_seconds": _bounded_number(config.get("timeout_seconds"), 30.0, 5.0, 120.0),
+        "max_attempts": max_attempts,
+        "backoff_base_seconds": _bounded_number(
+            config.get("rate_limit_backoff_base_seconds"), 2.0, 0.5, 10.0
+        ),
+    }
 
 
 def get_model(provider: str) -> str:
@@ -99,6 +136,8 @@ def validate_model_config() -> dict:
         if not value or any(ch.isspace() for ch in value):
             errors.append(f"{provider} model ID is empty or contains whitespace")
 
+    if models["groq"] in {"llama-3.1-8b-instant", "llama-3.3-70b-versatile"}:
+        errors.append(f"Groq model is retired: {models['groq']}")
     if "gemini-1.5" in models["gemini"]:
         errors.append("Gemini 1.5 chat models are retired")
     if models["embedding"] in {"text-embedding-004", "embedding-001"}:

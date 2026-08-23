@@ -10,16 +10,12 @@ import httpx
 
 from backend.app.brain.api_key_manager import APIKeyManager
 from backend.app.brain.cache_policy import BaseCachePolicy, HeuristicKeywordCachePolicy
-from backend.app.brain.model_config import get_model
+from backend.app.brain.model_config import get_ai_runtime_settings, get_model
 from backend.app.brain.smart_cache import SmartCache
 
 
 class LLMRouter:
-    _CASCADE: ClassVar[dict[str, list[str]]] = {
-        "groq": ["groq", "gemini", "nvidia"],
-        "gemini": ["gemini", "groq", "nvidia"],
-        "nvidia": ["nvidia", "groq", "gemini"],
-    }
+    _PROVIDERS: ClassVar[tuple[str, ...]] = ("groq", "gemini", "nvidia")
     _TEMPORARY_STATUS: ClassVar[set[int]] = {408, 425, 500, 502, 503, 504}
     _AUTH_STATUS: ClassVar[set[int]] = {401, 403}
 
@@ -32,8 +28,15 @@ class LLMRouter:
         self.key_manager = key_manager or APIKeyManager()
         self.cache = cache or SmartCache()
         self.cache_policy = cache_policy or HeuristicKeywordCachePolicy()
+        settings = get_ai_runtime_settings()
+        self.primary_provider = settings["primary_provider"]
+        self.secondary_provider = settings["secondary_provider"]
+        self.request_timeout = settings["timeout_seconds"]
+        self.provider_attempts = settings["max_attempts"]
+        self.backoff_base_seconds = settings["backoff_base_seconds"]
+        self._rejected_models: dict[tuple[str, str], str] = {}
         self.limits = httpx.Limits(max_keepalive_connections=5, max_connections=20)
-        self.client = httpx.AsyncClient(limits=self.limits, timeout=30.0)
+        self.client = httpx.AsyncClient(limits=self.limits, timeout=self.request_timeout)
         # Context-local metadata stays correct when several sessions route concurrently.
         self._route_context: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
             f"ultron_llm_route_{id(self)}",
@@ -78,6 +81,27 @@ class LLMRouter:
             return self._execute_nvidia_pipeline
         raise ValueError(f"Unsupported provider: {provider}")
 
+    def get_provider_order(self, provider_preference: str | None = None) -> list[str]:
+        """Return stable capability preference + configured fallback order.
+
+        Providers are not round-robin: that would change behavior/personality
+        between turns. API keys still rotate within each provider.
+        """
+        requested = str(provider_preference or "").strip().lower()
+        ordered = []
+        for provider in (
+            requested if requested in self._PROVIDERS else None,
+            self.primary_provider,
+            self.secondary_provider,
+            *self._PROVIDERS,
+        ):
+            if provider and provider not in ordered:
+                ordered.append(provider)
+        return ordered
+
+    def _cooldown_seconds(self, multiplier: float) -> int:
+        return max(1, int(round(self.backoff_base_seconds * multiplier)))
+
     async def get_completions(
         self,
         system_prompt: str,
@@ -86,20 +110,23 @@ class LLMRouter:
         provider_preference: str = "groq",
     ) -> str:
         """Route to configured providers without allowing mock/error cache pollution."""
-        pref = provider_preference.lower()
-        if pref not in self._CASCADE:
-            pref = "groq"
+        provider_order = self.get_provider_order(provider_preference)
         cache_skip = self.cache_policy.should_bypass_cache(system_prompt, user_prompt)
         last_error = None
         configured_provider_seen = False
 
-        for provider in self._CASCADE[pref]:
+        for provider in provider_order:
             if not self.key_manager.has_real_key(provider):
                 print(f"[LLM_ROUTER] No configured key for '{provider}' — skipping.")
                 continue
 
             configured_provider_seen = True
             model = get_model(provider)
+            rejected_reason = self._rejected_models.get((provider, model))
+            if rejected_reason:
+                last_error = RuntimeError(rejected_reason)
+                print(f"[LLM_ROUTER] Skipping rejected model {provider}/{model}.")
+                continue
             cache_key = self._generate_cache_hash(
                 system_prompt, user_prompt, temperature, provider, model
             )
@@ -139,23 +166,32 @@ class LLMRouter:
         """Update key state safely and return 'retry' or raise a config/request error."""
         status = response.status_code
         if status == 429:
-            self.key_manager.mark_key_cooling(provider, key, duration_sec=60)
+            self.key_manager.mark_key_cooling(
+                provider, key, duration_sec=self._cooldown_seconds(30)
+            )
             return "retry"
         if status in self._AUTH_STATUS:
             self.key_manager.mark_key_failed(provider, key)
             return "retry"
         if status in self._TEMPORARY_STATUS:
-            self.key_manager.mark_key_cooling(provider, key, duration_sec=30)
+            self.key_manager.mark_key_cooling(
+                provider, key, duration_sec=self._cooldown_seconds(15)
+            )
             return "retry"
 
         # 400/404/422 normally indicate a bad model ID or payload, not a bad key.
+        # Remember the rejected provider/model pair for this process so every
+        # later turn does not repeatedly pay for the same known-invalid request.
         detail = (response.text or "").replace("\n", " ")[:200]
-        raise RuntimeError(f"{provider} rejected request with HTTP {status}: {detail}")
+        message = f"{provider} rejected request with HTTP {status}: {detail}"
+        if status in {400, 404, 422}:
+            self._rejected_models[(provider, get_model(provider))] = message
+        raise RuntimeError(message)
 
     async def _execute_groq_pipeline(self, system_prompt: str, user_prompt: str, temperature: float) -> str:
         url = "https://api.groq.com/openai/v1/chat/completions"
         provider = "groq"
-        for attempt in range(3):
+        for attempt in range(self.provider_attempts):
             key = self.key_manager.get_active_key(provider)
             payload = {
                 "model": get_model(provider),
@@ -171,11 +207,13 @@ class LLMRouter:
                     url,
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                     json=payload,
-                    timeout=20.0,
+                    timeout=self.request_timeout,
                 )
             except httpx.RequestError as exc:
-                self.key_manager.mark_key_cooling(provider, key, duration_sec=30)
-                if attempt == 2:
+                self.key_manager.mark_key_cooling(
+                    provider, key, duration_sec=self._cooldown_seconds(15)
+                )
+                if attempt == self.provider_attempts - 1:
                     raise RuntimeError(f"Groq network attempts exhausted: {exc}") from exc
                 continue
             if response.status_code != 200:
@@ -190,7 +228,7 @@ class LLMRouter:
     async def _execute_gemini_pipeline(self, system_prompt: str, user_prompt: str, temperature: float) -> str:
         provider = "gemini"
         model = get_model(provider)
-        for attempt in range(2):
+        for attempt in range(self.provider_attempts):
             key = self.key_manager.get_active_key(provider)
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
             payload = {
@@ -204,11 +242,13 @@ class LLMRouter:
                     url,
                     headers={"Content-Type": "application/json"},
                     json=payload,
-                    timeout=25.0,
+                    timeout=self.request_timeout,
                 )
             except httpx.RequestError as exc:
-                self.key_manager.mark_key_cooling(provider, key, duration_sec=30)
-                if attempt == 1:
+                self.key_manager.mark_key_cooling(
+                    provider, key, duration_sec=self._cooldown_seconds(15)
+                )
+                if attempt == self.provider_attempts - 1:
                     raise RuntimeError(f"Gemini network attempts exhausted: {exc}") from exc
                 continue
             if response.status_code != 200:
@@ -223,7 +263,7 @@ class LLMRouter:
     async def _execute_nvidia_pipeline(self, system_prompt: str, user_prompt: str, temperature: float) -> str:
         provider = "nvidia"
         url = "https://integrate.api.nvidia.com/v1/chat/completions"
-        for attempt in range(3):
+        for attempt in range(self.provider_attempts):
             key = self.key_manager.get_active_key(provider)
             payload = {
                 "model": get_model(provider),
@@ -239,11 +279,13 @@ class LLMRouter:
                     url,
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                     json=payload,
-                    timeout=40.0,
+                    timeout=self.request_timeout,
                 )
             except httpx.RequestError as exc:
-                self.key_manager.mark_key_cooling(provider, key, duration_sec=30)
-                if attempt == 2:
+                self.key_manager.mark_key_cooling(
+                    provider, key, duration_sec=self._cooldown_seconds(15)
+                )
+                if attempt == self.provider_attempts - 1:
                     raise RuntimeError(f"NVIDIA network attempts exhausted: {exc}") from exc
                 continue
             if response.status_code != 200:

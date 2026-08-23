@@ -54,9 +54,8 @@ class CognitiveOrchestrator:
         # Coding Mode state
         # - manual: toggled by the user (on/off) — SHARED module-level so it persists
         # - auto: a CODING intent triggers NVIDIA coding provider automatically
+        # False = Auto (CODING intents use NVIDIA); True = force NVIDIA for all turns.
         self.coding_mode: bool = _SHARED_CODING_MODE
-        self.coding_manual_override: bool = _SHARED_CODING_MODE
-        self.coding_auto_detect: bool = True
         self.max_coding_steps: int = 8  # bound multi-file tasks to prevent runaway loops
         
         # Local event tracking array
@@ -71,23 +70,23 @@ class CognitiveOrchestrator:
     def set_coding_mode(self, enabled: bool) -> None:
         """Manually toggle coding mode.
 
-        - enabled=True  -> arm NVIDIA coding (CODING intents use NVIDIA). Persists globally.
-        - enabled=False -> disarm coding (all turns use Groq). Persists globally.
-        Either way, NVIDIA is only ever used on CODING intents — never on normal chat.
+        - enabled=True  -> force NVIDIA for every turn. Persists process-wide.
+        - enabled=False -> Auto mode: only CODING intents use NVIDIA; other turns
+                           use the configured primary provider.
         """
         global _SHARED_CODING_MODE
-        self.coding_auto_detect = bool(enabled)
         self.coding_mode = bool(enabled)
         _SHARED_CODING_MODE = bool(enabled)
-        print(f"[COGNITIVE_ORCHESTRATOR] Coding mode {'ON (armed)' if enabled else 'OFF'}.")
+        print(
+            f"[COGNITIVE_ORCHESTRATOR] "
+            f"{'Coding force mode ON' if enabled else 'Coding mode AUTO'}."
+        )
 
     def _should_use_coding_provider(self, intent: str, user_prompt: str) -> bool:
         """True if this turn should use the NVIDIA coding provider.
 
-        NVIDIA is reserved for CODING turns only. Reads the SHARED global flag so a
-        manual coding-mode toggle (from any endpoint) takes effect on the shared
-        brain too. Normal conversation NEVER routes to NVIDIA — saving its limit
-        for coding.
+        Reads the process-shared manual flag so every transport sees the same mode.
+        Manual ON forces NVIDIA for all turns; Auto mode reserves it for CODING.
         """
         # Manual ON forces NVIDIA for all turns; otherwise only CODING intents use it.
         if _SHARED_CODING_MODE:
@@ -150,7 +149,7 @@ class CognitiveOrchestrator:
                 system_prompt="You are Jarvis, a warm human assistant. Be brief, varied, natural.",
                 user_prompt=prompt,
                 temperature=0.9,
-                provider_preference="groq"
+                provider_preference=self.router.primary_provider
             )
             if narration and not narration.startswith("[Offline]") and narration.strip():
                 lines.append(("info", narration.strip()))
@@ -611,10 +610,10 @@ class CognitiveOrchestrator:
         # Step 3: ANALYZE INTENT
         intent = self.intent_analyzer.analyze(user_prompt)
 
-        # Step 3b: CODING MODE — pick the right brain/provider for this turn.
-        # Coding tasks use the NVIDIA coding model; everything else uses Groq.
+        # Step 3b: CODING MODE — force NVIDIA only when manual force mode is ON
+        # or Auto detects CODING; every other turn uses configured primary routing.
         coding_turn = self._should_use_coding_provider(intent, user_prompt)
-        provider_for_turn = "nvidia" if coding_turn else "groq"
+        provider_for_turn = "nvidia" if coding_turn else self.router.primary_provider
 
         # Step 4: COMPUTE CONFIDENCE
         confidence = self.confidence_engine.calculate_confidence(user_prompt, intent)

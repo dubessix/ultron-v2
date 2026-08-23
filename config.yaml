@@ -17,13 +17,14 @@ ai:
   primary_provider: "groq"
   secondary_provider: "gemini"
   timeout_seconds: 30
+  # Legacy key name; runtime treats this as total attempts per provider (1-4).
   max_retries: 3
   rate_limit_backoff_base_seconds: 2.0
   # Model IDs are configurable (env override: GROQ_CHAT_MODEL / GEMINI_CHAT_MODEL /
   # NVIDIA_CHAT_MODEL / GEMINI_EMBEDDING_MODEL / GEMINI_EMBEDDING_DIMS).
-  # Verified valid as of 2026-08-14.
+  # Verified against provider documentation on 2026-08-23.
   models:
-    groq: "llama-3.1-8b-instant"
+    groq: "openai/gpt-oss-20b"
     gemini: "gemini-3.5-flash"
     nvidia: "nvidia/nemotron-3-ultra-550b-a55b"
     embedding: "gemini-embedding-001"

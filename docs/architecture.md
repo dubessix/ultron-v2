@@ -35,12 +35,12 @@ Tests redirect database, cache, backup, logs, and generated files into temporary
 
 Effective models come from `config.yaml` or environment overrides:
 
-- Groq: `llama-3.1-8b-instant`
+- Groq: `openai/gpt-oss-20b`
 - Gemini: `gemini-3.5-flash`
 - NVIDIA: `nvidia/nemotron-3-ultra-550b-a55b`
 - Embeddings: `gemini-embedding-001` (768 dimensions by default)
 
-Cache identity includes provider and model. Missing keys produce an explicit offline/unprocessed state. Provider failures are not cached as answers.
+Cache identity includes provider and model. Missing keys produce an explicit offline/unprocessed state. Provider failures are not cached as answers. The requested capability/provider goes first, then configured primary/secondary fallbacks; providers do not round-robin, while active keys within each provider do. Rejected model IDs are remembered for the process to avoid repeatedly calling the same known-invalid model.
 
 ## Security controls
 
