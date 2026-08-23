@@ -24,7 +24,7 @@ SQLite stores sessions/history and float32 embedding BLOBs. Recall/list/dedup/co
 
 ## Tools and safety
 
-Filesystem, terminal, Git/GitHub, browser/search, weather/research, music/Spotify, reminders, tasks, calendar, memory, security, conversion, coding analysis, world monitor, and system telemetry are registered lazily.
+Filesystem, terminal, Git/GitHub, browser/search, weather/research, music/Spotify, reminders, tasks, calendar, memory, security, conversion, coding analysis, world monitor, and system telemetry remain available through 69 lazily registered IDs. Prompt assembly ranks IDs from a lightweight manifest, caps context at eight relevant tools, and imports only those selected classes and real input schemas; direct execution stays JIT by ID.
 
 Filesystem roots are configurable and fail closed. Level 2/3 actions require exact one-time confirmation. Coding modifications are sequential, inspected, pre-verified, backed up, and atomically replaced.
 

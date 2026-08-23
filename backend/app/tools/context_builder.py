@@ -1,64 +1,230 @@
-"""
-Ultron Tool Context Builder
-Selects and filters relevant tools based on user prompt context, minimizing LLM token waste.
-Satisfies SOLID, KISS, and Clean Architecture standards.
-"""
+"""Prompt-scoped tool selection without importing the complete tool catalogue."""
+
+from __future__ import annotations
 
 import json
-from typing import List
+import re
+from typing import ClassVar, Iterable, List, TYPE_CHECKING
+
 from backend.app.tools.tool_base import BaseTool
 
-class ToolContextBuilder:
-    def __init__(self) -> None:
-        pass
+if TYPE_CHECKING:
+    from backend.app.tools.tool_registry import ToolRegistry
 
-    def filter_relevant_tools(self, user_prompt: str, registered_tools: List[BaseTool]) -> List[BaseTool]:
-        """
-        Heuristically filters registered tools by scanning prompt keywords against tool tags, names, and descriptions.
-        If the prompt is generic, limits metadata injection to avoid token waste.
-        """
-        clean_prompt = user_prompt.lower()
-        
-        # If the user prompt is extremely short or generic conversational greetings, return empty list
-        if len(clean_prompt.split()) < 3 and any(word in clean_prompt for word in ["hi", "hello", "hey", "thanks"]):
+
+class ToolContextBuilder:
+    """Choose a small relevant tool slice before any tool module is imported."""
+
+    MAX_RELEVANT_TOOLS = 8
+
+    # Lightweight match hints intentionally live outside tool classes. Reading
+    # them does not import Pydantic schemas, subprocess helpers, or integrations.
+    # Every registered ID is also matched automatically as words (underscores
+    # become spaces), so no tool becomes unreachable when wording is explicit.
+    _TOOL_MATCH_TERMS: ClassVar[dict[str, tuple[str, ...]]] = {
+        "file_read": (
+            "read",
+            "load",
+            "load config",
+            "config file",
+            "view file",
+            "open file",
+            "file contents",
+        ),
+        "file_write": ("write file", "save file", "edit file", "update file", "fix code"),
+        "find_files": ("find file", "find files", "locate file", "glob", "file search"),
+        "terminal_run": ("run", "terminal", "shell command", "command line", "pytest"),
+        "open_calculator": ("calculator", "calculate", "do the math"),
+        "open_chrome": ("open chrome", "launch chrome", "start browser"),
+        "open_vscode": ("open vscode", "visual studio code", "launch editor", "open ide"),
+        "weather_tool": ("weather", "forecast", "temperature", "rain", "climate"),
+        "tavily_research": ("research", "deep research", "web research", "source summary"),
+        "git_status": ("git status", "working tree", "uncommitted", "current branch"),
+        "git_clone": ("git clone", "clone repo", "clone repository"),
+        "system_metrics": ("system metrics", "cpu", "ram", "memory usage", "disk usage", "battery"),
+        "create_folder": ("create folder", "make folder", "new directory", "mkdir"),
+        "rename_folder": ("rename folder", "rename directory"),
+        "delete_folder": ("delete folder", "remove folder", "delete directory", "rmdir"),
+        "copy_folder": ("copy folder", "copy directory", "duplicate folder"),
+        "move_folder": ("move folder", "move directory"),
+        "list_contents": ("list folder", "list directory", "folder contents", "directory contents"),
+        "compress_folder": ("compress folder", "zip folder", "archive folder", "tar folder"),
+        "extract_zip": ("extract zip", "unzip", "extract archive"),
+        "organize_folder": ("organize folder", "organise folder", "sort files", "clean folder"),
+        "open_url": ("open url", "open website", "open web page"),
+        "open_new_tab": ("new tab", "open tab"),
+        "close_tab": ("close tab",),
+        "refresh_page": ("refresh page", "reload page"),
+        "browser_back": ("browser back", "previous page", "go back page"),
+        "browser_forward": ("browser forward", "next page", "go forward page"),
+        "close_browser": ("close browser", "quit browser"),
+        "download_file": ("download file", "download url", "fetch file"),
+        "read_current_page": ("read page", "read url", "scrape page", "page contents"),
+        "google_search": ("google search", "search google", "web search"),
+        "github_search": ("github search", "search github", "search repository"),
+        "stackoverflow_search": ("stackoverflow", "stack overflow", "coding answer"),
+        "reddit_search": ("reddit search", "search reddit", "reddit discussion"),
+        "image_search": ("image search", "search images", "find image", "find icon"),
+        "news_search": ("news search", "latest news", "world news"),
+        "video_search": ("video search", "youtube search", "find tutorial", "find video"),
+        "play_music": ("play music", "play local song", "play audio file"),
+        "pause_music": ("pause music", "pause local music"),
+        "resume_music": ("resume music", "resume local music"),
+        "next_track": ("next track", "next local song"),
+        "previous_track": ("previous track", "previous local song"),
+        "stop_music": ("stop music", "stop local music"),
+        "set_volume": ("set volume", "system volume", "change volume"),
+        "current_track": ("current track", "local track", "what is playing locally"),
+        "open_spotify": ("open spotify", "launch spotify"),
+        "spotify_play": ("spotify play", "play on spotify", "spotify song"),
+        "spotify_search_artist": ("spotify artist", "search artist on spotify"),
+        "spotify_playlist": ("spotify playlist", "play playlist on spotify"),
+        "spotify_pause": ("pause spotify", "spotify pause"),
+        "spotify_resume": ("resume spotify", "spotify resume"),
+        "spotify_next": ("next spotify track", "spotify next", "skip on spotify"),
+        "spotify_prev": ("previous spotify track", "spotify previous"),
+        "spotify_set_volume": ("spotify volume", "set spotify volume"),
+        "spotify_current_track": ("spotify current track", "what is playing on spotify"),
+        "optimize_code": ("optimize code", "optimise code", "refactor code", "code quality"),
+        "semantic_code_graph": ("semantic graph", "code graph", "callers", "dependencies", "ast graph"),
+        "manage_reminder": ("reminder", "alarm", "remind me", "snooze reminder"),
+        "manage_task": ("task", "todo", "backlog", "subtask", "task priority"),
+        "manage_calendar": ("calendar", "meeting", "time slot", "day planner", "schedule event"),
+        "security_scan": ("security scan", "secret scan", "dependency audit", "vulnerability scan"),
+        "daily_briefing": ("daily briefing", "morning briefing", "today summary"),
+        "manage_memory": ("remember", "forget memory", "correct memory", "memory export", "recall memory"),
+        "search_inside_documents": (
+            "search inside file",
+            "search documents",
+            "find text",
+            "grep",
+            "search source",
+        ),
+        "convert_file_format": ("convert file", "json to csv", "csv to json", "change file format"),
+        "world_monitor": ("world monitor", "earthquake", "geopolitics", "global outage", "world risk"),
+        "github_integration": (
+            "git commit",
+            "git push",
+            "pull request",
+            "github issue",
+            "create repository",
+        ),
+        "database_restore": ("restore database", "database backup", "restore backup", "database restore"),
+        "universal_search": (
+            "universal search",
+            "search my files tasks reminders",
+            "search everything",
+            "local search",
+        ),
+    }
+
+    _CODING_DEFAULTS = (
+        "file_read",
+        "find_files",
+        "file_write",
+        "terminal_run",
+        "git_status",
+    )
+
+    @staticmethod
+    def _normalize(value: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
+
+    @classmethod
+    def _contains_phrase(cls, normalized_prompt: str, phrase: str) -> bool:
+        normalized_phrase = cls._normalize(phrase)
+        if not normalized_phrase:
+            return False
+        return f" {normalized_phrase} " in f" {normalized_prompt} "
+
+    def select_relevant_tool_ids(
+        self,
+        user_prompt: str,
+        registered_ids: Iterable[str],
+        *,
+        coding_turn: bool = False,
+        limit: int = MAX_RELEVANT_TOOLS,
+    ) -> list[str]:
+        """Rank registered IDs using only lightweight text hints, capped at eight."""
+        prompt = self._normalize(user_prompt)
+        if not prompt:
             return []
 
-        relevant_tools = []
-        for tool in registered_tools:
-            # Match keywords inside tool ID, tags, name, or description
-            matched = False
-            if tool.id in clean_prompt or tool.category.lower() in clean_prompt:
-                matched = True
-            else:
-                for tag in tool.tags:
-                    if tag.lower() in clean_prompt:
-                        matched = True
-                        break
-                        
-            if matched:
-                relevant_tools.append(tool)
+        ordered_ids = list(dict.fromkeys(registered_ids))
+        registered = set(ordered_ids)
+        scores: dict[str, int] = {}
 
-        # Fallback: If no specific tools matched but prompt is technical, inject all non-dangerous tools
-        if not relevant_tools and any(word in clean_prompt for word in ["file", "run", "code", "terminal", "write", "read"]):
-            # Filter out level 3 dangerous tools to protect system bounds
-            relevant_tools = [t for t in registered_tools if t.permission_level < 3]
+        for tool_id in ordered_ids:
+            id_phrase = tool_id.replace("_", " ")
+            score = 0
+            if self._contains_phrase(prompt, id_phrase):
+                score += 100
+            for term in self._TOOL_MATCH_TERMS.get(tool_id, ()):
+                if self._contains_phrase(prompt, term):
+                    words = len(self._normalize(term).split())
+                    score += 10 + (words * 4)
+            if score:
+                scores[tool_id] = score
 
-        return relevant_tools
+        if coding_turn:
+            for tool_id in self._CODING_DEFAULTS:
+                if tool_id in registered:
+                    scores[tool_id] = scores.get(tool_id, 0) + 1
+
+        bounded_limit = min(self.MAX_RELEVANT_TOOLS, max(1, int(limit)))
+        order = {tool_id: index for index, tool_id in enumerate(ordered_ids)}
+        ranked = sorted(scores, key=lambda tool_id: (-scores[tool_id], order[tool_id]))
+        return ranked[:bounded_limit]
+
+    def load_relevant_tools(
+        self,
+        user_prompt: str,
+        registry: "ToolRegistry",
+        *,
+        coding_turn: bool = False,
+        limit: int = MAX_RELEVANT_TOOLS,
+    ) -> list[BaseTool]:
+        """JIT-load only the selected tool classes and their argument schemas."""
+        selected_ids = self.select_relevant_tool_ids(
+            user_prompt,
+            registry.get_registered_ids(),
+            coding_turn=coding_turn,
+            limit=limit,
+        )
+        tools = []
+        for tool_id in selected_ids:
+            tool = registry.get_tool(tool_id)
+            if tool is not None:
+                tools.append(tool)
+        return tools
+
+    def filter_relevant_tools(
+        self,
+        user_prompt: str,
+        registered_tools: List[BaseTool],
+    ) -> List[BaseTool]:
+        """Compatibility helper for already-loaded custom/test tool collections."""
+        selected_ids = self.select_relevant_tool_ids(
+            user_prompt,
+            (tool.id for tool in registered_tools),
+        )
+        by_id = {tool.id: tool for tool in registered_tools}
+        return [by_id[tool_id] for tool_id in selected_ids if tool_id in by_id]
 
     def build_system_prompt_fragment(self, relevant_tools: List[BaseTool]) -> str:
-        """Assembles a clean, structured system prompt fragment of only selected tool schemas."""
+        """Assemble a structured fragment from selected tools only."""
         if not relevant_tools:
-            return "No local tools are currently required for this conversational exchange."
+            return "No local tools are required for this exchange."
 
-        fragment = "You have access to the following local system tools:\n\n"
+        metadata = []
         for tool in relevant_tools:
-            meta = tool.get_metadata()
-            fragment += (
-                f"- Tool ID: {meta['id']}\n"
-                f"  Name: {meta['name']}\n"
-                f"  Description: {meta['description']}\n"
-                f"  Permission Level: {meta['permission_level']}\n"
-                f"  Input Schema: {json.dumps(meta['input_schema']['properties'])}\n"
-                f"  Usage Examples: {', '.join(meta['usage_examples'])}\n\n"
+            item = tool.get_metadata()
+            metadata.append(
+                {
+                    "tool_id": item["id"],
+                    "description": item["description"],
+                    "permission_level": item["permission_level"],
+                    "input_schema": item["input_schema"],
+                }
             )
-        return fragment
+        return json.dumps(metadata, separators=(",", ":"), ensure_ascii=True)

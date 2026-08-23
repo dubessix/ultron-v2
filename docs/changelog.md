@@ -1,5 +1,12 @@
 # Changelog
 
+## Real lazy-tool polish F2 (2026-08-23)
+
+- Replaced prompt-time `get_all_tools()` with a lightweight prompt-scoped selector capped at eight relevant tools.
+- JIT-imports only selected tool classes and includes their real Pydantic input schemas; greetings import no tool modules.
+- Preserved all 69 registered IDs, direct JIT execution, path validation, exact confirmation, sequential execution, and audit behavior.
+- Kept native provider function calling outside this phase.
+
 ## Final brain-truth polish F1 (2026-08-23)
 
 - Replaced the retired Groq chat default with the official `openai/gpt-oss-20b` replacement and made validation reject known retired Groq IDs.

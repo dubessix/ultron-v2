@@ -42,6 +42,10 @@ Effective models come from `config.yaml` or environment overrides:
 
 Cache identity includes provider and model. Missing keys produce an explicit offline/unprocessed state. Provider failures are not cached as answers. The requested capability/provider goes first, then configured primary/secondary fallbacks; providers do not round-robin, while active keys within each provider do. Rejected model IDs are remembered for the process to avoid repeatedly calling the same known-invalid model.
 
+## Tool loading
+
+The 69-tool registry keeps only ID-to-module/class mappings at boot. For non-conversational prompt assembly, a lightweight text manifest ranks relevant IDs without importing tool modules, caps context at eight tools, and JIT-loads only those selected classes and Pydantic schemas. Direct execution still resolves any registered tool by ID through the same registry; validation, path guards, exact confirmation, sequential execution, and audit behavior are unchanged.
+
 ## Security controls
 
 - approved-directory and sensitive/system path enforcement;

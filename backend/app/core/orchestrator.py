@@ -25,6 +25,7 @@ from backend.app.memory.structured_memory import build_structured_turn_memory
 from backend.app.brain.llm_router import LLMRouter
 from backend.app.personalities.personality_engine import PersonalityEngine
 from backend.app.emotion.zora_trigger import ZoraTrigger
+from backend.app.tools.context_builder import ToolContextBuilder
 from backend.app.tools.tool_registry import ToolRegistry
 
 # Shared module-level coding-mode flag. New CognitiveOrchestrator instances read
@@ -50,6 +51,7 @@ class CognitiveOrchestrator:
         self.router = llm_router or LLMRouter()
         self.personalities = personality_engine or PersonalityEngine()
         self.zora_trigger = zora_trigger or ZoraTrigger()
+        self.tool_context_builder = ToolContextBuilder()
         
         # Coding Mode state
         # - manual: toggled by the user (on/off) — SHARED module-level so it persists
@@ -203,19 +205,31 @@ class CognitiveOrchestrator:
         except (json.JSONDecodeError, ValueError):
             return []
 
-    def _compile_tools_metadata(self) -> str:
-        """Collects descriptions and schema metrics from our registry dynamically (OCP compliant)."""
+    def _compile_tools_metadata(
+        self,
+        user_prompt: str,
+        *,
+        coding_turn: bool = False,
+    ) -> str:
+        """Compile schemas for at most eight prompt-relevant JIT tools."""
         registry = ToolRegistry()
-        tools_list = registry.get_all_tools()
-        meta = []
-        for t in tools_list:
-            schema = t.args_model.model_json_schema() if t.args_model else {}
-            meta.append({
-                "tool_id": t.id,
-                "description": t.description,
-                "arguments": list(schema.get("properties", {}).keys())
-            })
-        return json.dumps(meta, indent=2)
+        tools = self.tool_context_builder.load_relevant_tools(
+            user_prompt,
+            registry,
+            coding_turn=coding_turn,
+        )
+        metadata = []
+        for tool in tools:
+            item = tool.get_metadata()
+            metadata.append(
+                {
+                    "tool_id": item["id"],
+                    "description": item["description"],
+                    "permission_level": item["permission_level"],
+                    "input_schema": item["input_schema"],
+                }
+            )
+        return json.dumps(metadata, separators=(",", ":"), ensure_ascii=True)
 
     def _scan_project_context(self, max_depth: int = 3) -> str:
         """
@@ -734,18 +748,19 @@ class CognitiveOrchestrator:
             except Exception as e:
                 print(f"[COGNITIVE_ORCHESTRATOR] Warning: skill loading skipped: {e}")
 
-        # Append tools metadata for LLM-driven autonomous execution.
-        # Fix 13: on 'fast' speed-track (simple chat) skip the heavy 65-tool dump to
-        # save tokens/latency; include it on medium/heavy/coding turns where tools matter.
+        # Fast conversational turns need no tools. Other turns select at most
+        # eight prompt-relevant IDs using a lightweight manifest, then JIT-import
+        # only those selected classes/schemas in a worker thread.
         if speed_track == "fast" and not coding_turn:
             system_prompt += (
                 "\n\nNote: this is a simple conversational turn. No tool execution is needed."
             )
         else:
-            # Phase 3/Point-22: the tool-metadata dump JIT-loads every tool (imports
-            # modules + walks schemas). Run it in a worker thread so it can never
-            # block the async event loop and freeze the assistant.
-            tools_metadata_str = await asyncio.to_thread(self._compile_tools_metadata)
+            tools_metadata_str = await asyncio.to_thread(
+                self._compile_tools_metadata,
+                user_prompt,
+                coding_turn=coding_turn,
+            )
             system_prompt += (
                 f"\n\n[AVAILABLE_TOOLS_METADATA]\n{tools_metadata_str}\n\n"
             "First, answer the user briefly and warmly like a human personal assistant "
