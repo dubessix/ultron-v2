@@ -108,6 +108,9 @@ Default URLs:
 - Optional hardware sensor missing: returns `Unavailable`; it does not invent temperature, battery, latency, or uptime.
 - Destructive/system tools: require a one-time token bound to the exact action, session, and canonical arguments.
 - Filesystem tools: are restricted to `security.allowed_directories` and reject sensitive/system paths and symlink escapes.
+- Native tool agent: loads at most eight relevant schemas, runs at most eight sequential inspect/act/observe steps, and binds relative paths to `security.project_roots[project_id]`.
+- Cloud egress: local file content requires exact confirmation before it is returned to a provider; tool results are bounded and common credential patterns are redacted.
+- Coding writes: use current file fingerprints, syntax verification, backups and atomic replacement; exact single-block patch mode remains inside the existing `file_write` tool.
 - Database restore: accepts approved backup paths only, enters maintenance mode, creates a verified safety copy, and rolls back automatically if post-restore integrity fails.
 - Automatic backups: run daily by default with bounded generation retention.
 - Session and long-term memory: full conversations stay canonical in SQLite; deterministic redacted summaries and structured project memories keep exact category, importance, source, hash and revision metadata. Relevant recall uses project-scoped SQLite FTS first, then bounded summaries/vector matches, with corrected-memory priority and content-free provenance. It does not invent facts.

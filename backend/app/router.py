@@ -181,7 +181,36 @@ async def confirm_pending_action(request: ConfirmActionRequest) -> Dict[str, Any
         confirmation_token=request.confirmation_token,
         session_id=request.session_id,
         timeout=180.0,
+        include_resume_context=True,
     )
+    resume_context = result.pop("_resume_context", None)
+    confirmed_action = result.pop("_confirmed_action", None)
+    if result.get("success") and resume_context:
+        resume_result = dict(result)
+        resume_result["_confirmed_action"] = confirmed_action
+        resumed = await get_orchestrator().resume_agent_after_confirmation(
+            resume_context,
+            resume_result,
+        )
+        original_data = result.get("data") or {}
+        return {
+            "success": True,
+            "data": {
+                "message": resumed.get("content") or "Confirmed action completed.",
+                "agent_resumed": True,
+                "agent_resume_success": bool(resumed.get("success", True)),
+                "confirmed_tool": (confirmed_action or {}).get("tool_id"),
+                "confirmation_result": {
+                    key: value
+                    for key, value in original_data.items()
+                    if key != "content"
+                },
+            },
+            "error": None,
+            "metadata": result.get("metadata") or {},
+            "pending_confirmation": resumed.get("pending_confirmation"),
+            "tools_used": resumed.get("called_tool_ids") or [],
+        }
     return result
 
 

@@ -142,6 +142,47 @@ describe('Voice C6 — canonical transport and response preservation', () => {
     expect(shellCapture.props.widgetState.memory.visible).toBe(true);
   });
 
+  it('keeps a resumed agent next-confirmation visible after the first approval', async () => {
+    await renderConnectedApp(async (url) => {
+      if (String(url).endsWith('/api/health')) {
+        return jsonResponse({ status: 'healthy', system_metrics: {} });
+      }
+      if (String(url).endsWith('/api/chat')) {
+        return jsonResponse(voiceResponse('first pending action'));
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    await act(async () => {
+      await shellCapture.props.handleVoiceCommand('start confirmed agent work');
+    });
+    apiMocks.api.mockImplementation(async (path) => {
+      if (path === '/api/actions/confirm') {
+        return {
+          success: true,
+          data: { message: 'Read confirmed; write now needs approval.' },
+          pending_confirmation: {
+            confirmation_token: 'f3-next-token-1234567890',
+            tool_id: 'file_write',
+            message: 'Confirm the exact write.',
+          },
+        };
+      }
+      if (path === '/api/providers/status') return { providers: {}, live_checked: false };
+      return { success: true };
+    });
+
+    await act(async () => {
+      await shellCapture.props.onConfirmRun();
+    });
+
+    expect(shellCapture.props.pendingAction).toMatchObject({
+      confirmation_token: 'f3-next-token-1234567890',
+      tool_id: 'file_write',
+    });
+    expect(shellCapture.props.activityText).toContain('Waiting for confirmation: file_write');
+  });
+
   it('uses a synchronous in-flight guard so same-tick voice turns cannot overlap', async () => {
     await renderConnectedApp(async (url) => {
       if (String(url).endsWith('/api/health')) {

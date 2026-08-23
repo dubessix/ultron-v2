@@ -1,5 +1,15 @@
 # Changelog
 
+## Native tool/coding-agent polish F3 (2026-08-23)
+
+- Added provider-native local function calling for Groq and NVIDIA OpenAI-compatible APIs plus Gemini function declarations; prompt sentinel JSON remains compatibility-only.
+- Added a sequential inspect/act/observe loop capped at eight tool steps and locked continuation to the provider that started the native tool conversation.
+- Bound agent paths to configured canonical project roots and rejected project escapes even when another global directory is allowlisted.
+- Added exact confirmation before local file content can be returned to a cloud model, bounded/redacted tool-result egress, and private in-memory confirmation resume state.
+- Confirmation now resumes the original agent history; the frontend keeps any next exact confirmation visible.
+- Added file-read SHA-256 fingerprints, exact fingerprint patch mode inside the existing `file_write` tool, stale-write rejection, and JSX/TS/TSX syntax validation through existing esbuild tooling when available.
+- Persisted actual tools/widgets in canonical conversation history. No new runtime package or tool ID was added.
+
 ## Real lazy-tool polish F2 (2026-08-23)
 
 - Replaced prompt-time `get_all_tools()` with a lightweight prompt-scoped selector capped at eight relevant tools.

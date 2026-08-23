@@ -25,7 +25,16 @@ from backend.app.security.confirmation_gate import ConfirmationGate
 from backend.app.security.pending_actions import get_pending_action_registry
 
 
-_SENSITIVE_ARGUMENT_MARKERS = ("content", "password", "token", "secret", "authorization", "api_key")
+_SENSITIVE_ARGUMENT_MARKERS = (
+    "content",
+    "search_text",
+    "replace_text",
+    "password",
+    "token",
+    "secret",
+    "authorization",
+    "api_key",
+)
 
 
 def _redact_audit_arguments(value: Any, key: str = "") -> Any:
@@ -250,6 +259,8 @@ class ToolRegistry:
         session_id: Optional[str] = None,
         timeout: float = 30.0,
         max_retries: int = 0,
+        require_confirmation: bool = False,
+        resume_context: Optional[Dict[str, Any]] = None,
         _confirmation_prevalidated: bool = False,
     ) -> Dict[str, Any]:
         """
@@ -311,9 +322,10 @@ class ToolRegistry:
 
         # 2. Exact one-time confirmation for every Level 2/3 action. A raw
         # has_confirmed=True boolean is never authorization by itself.
-        requires_confirmation = self.gate.manager.requires_manual_confirmation(
-            permission_level
+        requires_confirmation = bool(require_confirmation) or (
+            self.gate.manager.requires_manual_confirmation(permission_level)
         )
+        confirmation_level = max(permission_level, 2) if require_confirmation else permission_level
         if requires_confirmation and not _confirmation_prevalidated:
             pending = get_pending_action_registry()
             if has_confirmed and confirmation_token:
@@ -324,7 +336,12 @@ class ToolRegistry:
                     args_payload,
                 )
                 if not validation["valid"]:
-                    created = pending.create(tool_id, session_id, args_payload)
+                    created = pending.create(
+                        tool_id,
+                        session_id,
+                        args_payload,
+                        resume_context=resume_context,
+                    )
                     self._log_audit_transaction(
                         tool.name, args_payload, 0, False, session_id,
                         permission_level,
@@ -338,11 +355,16 @@ class ToolRegistry:
                             f"Confirmation rejected ({validation['reason']}). "
                             f"Approve the newly-issued exact action for '{tool_id}'."
                         ),
-                        "required_permission_level": permission_level,
+                        "required_permission_level": confirmation_level,
                         **created,
                     }
             else:
-                created = pending.create(tool_id, session_id, args_payload)
+                created = pending.create(
+                    tool_id,
+                    session_id,
+                    args_payload,
+                    resume_context=resume_context,
+                )
                 self._log_audit_transaction(
                     tool.name, args_payload, 0, False, session_id,
                     permission_level, "PENDING_CONFIRMATION",
@@ -352,7 +374,7 @@ class ToolRegistry:
                     "status": "PENDING_CONFIRMATION",
                     "tool_id": tool_id,
                     "message": f"Tool '{tool_id}' requires exact one-time confirmation.",
-                    "required_permission_level": permission_level,
+                    "required_permission_level": confirmation_level,
                     **created,
                 }
 
@@ -426,8 +448,9 @@ class ToolRegistry:
         session_id: Optional[str],
         *,
         timeout: float = 30.0,
+        include_resume_context: bool = False,
     ) -> Dict[str, Any]:
-        """Claim and execute the exact stored action without another LLM call."""
+        """Claim and execute the exact stored action without regenerating it."""
         claimed = get_pending_action_registry().claim(confirmation_token, session_id)
         if not claimed["valid"]:
             return {
@@ -437,7 +460,7 @@ class ToolRegistry:
                 "status": "CONFIRMATION_REJECTED",
             }
         action = claimed["action"]
-        return await self.execute_tool(
+        result = await self.execute_tool(
             tool_id=action["tool_id"],
             args=action["arguments"],
             session_id=session_id,
@@ -445,3 +468,10 @@ class ToolRegistry:
             max_retries=0,
             _confirmation_prevalidated=True,
         )
+        if include_resume_context:
+            result["_resume_context"] = action.get("resume_context")
+            result["_confirmed_action"] = {
+                "tool_id": action["tool_id"],
+                "arguments": action["arguments"],
+            }
+        return result

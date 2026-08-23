@@ -70,7 +70,7 @@ Controls the shared coding-provider override.
 }
 ```
 
-Level 2/3 tools return `PENDING_CONFIRMATION` with a token bound to the exact session, tool, and canonical arguments.
+Level 2/3 tools return `PENDING_CONFIRMATION` with a token bound to the exact session, tool, and canonical arguments. Native cloud-agent `file_read` also requires this exact confirmation before local content can leave the machine; direct local read-only API use remains Level 0.
 
 ### `POST /api/actions/confirm`
 
@@ -78,7 +78,7 @@ Level 2/3 tools return `PENDING_CONFIRMATION` with a token bound to the exact se
 {"confirmation_token": "...", "session_id": "frontend_tools"}
 ```
 
-Claims and executes the stored action without a second LLM call. Tokens expire and cannot be replayed.
+Claims and executes the exact stored action without regenerating that action. For a paused native agent, the backend then resumes the original provider/history with the real confirmed result; the response may contain the next `pending_confirmation`. Tokens expire and cannot be replayed.
 
 ## Voice
 

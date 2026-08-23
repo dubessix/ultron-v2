@@ -231,14 +231,10 @@ class CognitiveOrchestrator:
             )
         return json.dumps(metadata, separators=(",", ":"), ensure_ascii=True)
 
-    def _scan_project_context(self, max_depth: int = 3) -> str:
-        """
-        Codex-style: scans the project root for structure so Ultron knows what it's
-        working on (folders, key files, manifest). Returns a concise text summary.
-        Deliberately bounded (shallow, capped) so it never hangs or bloats context.
-        """
+    def _scan_project_context(self, project_root: str, max_depth: int = 3) -> str:
+        """Scan only the canonical active project, shallowly and with hard bounds."""
         from pathlib import Path
-        root = Path(__file__).resolve().parent.parent.parent.parent  # project root
+        root = Path(project_root).expanduser().resolve(strict=True)
         ignore = {".git", "node_modules", "__pycache__", ".cache", "dist", "build",
                   ".venv", "venv", "data", "uploads", "images"}
         lines = []
@@ -265,13 +261,24 @@ class CognitiveOrchestrator:
                         lines.append(f"{indent}{e.name}")
         return "\n".join(lines[:120])
 
-    async def _get_project_context_block(self, project_id: str = "personal") -> str:
-        """Combine project-scoped stored state + live scan into a prompt block for coding.
+    async def _get_project_context_block(
+        self,
+        project_id: str = "personal",
+        project_root: Optional[str] = None,
+    ) -> str:
+        """Combine project-scoped stored state + canonical live scan for coding.
 
         The directory scan runs in a worker thread (asyncio.to_thread) so a large
         project can never block the event loop and freeze the assistant.
         """
         parts = []
+        if not project_root:
+            from backend.app.security.path_guard import resolve_project_root
+            root_decision = resolve_project_root(project_id)
+            project_root = root_decision.get("path") if root_decision.get("safe") else None
+        if project_root:
+            parts.append(f"Active project root: {project_root}")
+
         # Stored project facts (name, stack, goals)
         stored = []
         for key in ("project_name", "tech_stack", "project_goal", "project_structure"):
@@ -283,9 +290,13 @@ class CognitiveOrchestrator:
         if stored:
             parts.append("\n".join(stored))
 
-        # Live structure scan — off the event loop.
+        # Live structure scan — off the event loop and bound to the active root.
         try:
-            scan = await asyncio.to_thread(self._scan_project_context)
+            scan = (
+                await asyncio.to_thread(self._scan_project_context, project_root)
+                if project_root
+                else ""
+            )
         except Exception as e:
             print(f"[COGNITIVE_ORCHESTRATOR] Warning: project scan failed: {e}")
             scan = ""
@@ -470,6 +481,417 @@ class CognitiveOrchestrator:
             result["detail"] = f"verification failed to run: {e}"
         return result
 
+    @staticmethod
+    def _redact_agent_egress(value: Any, key: str = "") -> Any:
+        """Redact common credentials before any local tool result reaches a cloud LLM."""
+        lowered = key.lower()
+        if any(marker in lowered for marker in ("password", "token", "secret", "authorization", "api_key")):
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {
+                str(item_key): CognitiveOrchestrator._redact_agent_egress(item, str(item_key))
+                for item_key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [CognitiveOrchestrator._redact_agent_egress(item, key) for item in value[:100]]
+        if isinstance(value, str):
+            text = value[:12000]
+            patterns = (
+                r"\bgsk_[A-Za-z0-9]{20,}\b",
+                r"\bAIzaSy[A-Za-z0-9_-]{20,}\b",
+                r"\b(?:ghp|github_pat)_[A-Za-z0-9_]{20,}\b",
+            )
+            for pattern in patterns:
+                text = re.sub(pattern, "[REDACTED_SECRET]", text)
+            return text
+        return value
+
+    @classmethod
+    def _agent_result_content(cls, tool_id: str, result: dict) -> str:
+        safe = cls._redact_agent_egress(
+            {
+                "tool": tool_id,
+                "success": bool(result.get("success")),
+                "data": result.get("data") or {},
+                "error": result.get("error"),
+            }
+        )
+        encoded = json.dumps(safe, separators=(",", ":"), default=str)
+        if len(encoded) > 12000:
+            encoded = json.dumps(
+                {
+                    "tool": tool_id,
+                    "success": bool(result.get("success")),
+                    "truncated": True,
+                    "preview": encoded[:11500],
+                },
+                separators=(",", ":"),
+            )
+        return encoded
+
+    @staticmethod
+    def _agent_pending_confirmation(result: dict, tool_id: str) -> dict:
+        return {
+            "tool_id": result.get("tool_id") or tool_id,
+            "confirmation_token": result.get("confirmation_token"),
+            "message": result.get("message"),
+            "required_permission_level": result.get("required_permission_level"),
+            "summary": result.get("summary") or {},
+            "arguments_hash": result.get("arguments_hash"),
+            "expires_in_seconds": result.get("expires_in_seconds"),
+        }
+
+    @staticmethod
+    def _agent_result_item(tool_id: str, arguments: dict, result: dict) -> dict:
+        item = {
+            "tool": tool_id,
+            "args": arguments,
+            "success": bool(result.get("success")),
+            "result": result.get("data") or {},
+            "error": result.get("error"),
+        }
+        if result.get("status") == "PENDING_CONFIRMATION":
+            item.update(
+                {
+                    "status": "PENDING_CONFIRMATION",
+                    **CognitiveOrchestrator._agent_pending_confirmation(result, tool_id),
+                }
+            )
+        return item
+
+    async def _execute_native_agent_call(
+        self,
+        call: dict,
+        *,
+        registry: ToolRegistry,
+        coding_turn: bool,
+        session_id: str,
+        project_root: Optional[str],
+        resume_context: dict,
+    ) -> tuple[dict, dict]:
+        """Validate, project-bind, confirm and execute one native tool request."""
+        tool_id = str(call.get("name") or "")
+        arguments = call.get("arguments") or {}
+        if call.get("arguments_error") or not isinstance(arguments, dict):
+            return arguments if isinstance(arguments, dict) else {}, {
+                "success": False,
+                "data": {},
+                "error": f"Invalid native arguments: {call.get('arguments_error') or 'object required'}",
+            }
+        if not project_root:
+            return arguments, {
+                "success": False,
+                "data": {},
+                "error": "Active project root is unavailable or not allowlisted.",
+            }
+
+        from backend.app.security.path_guard import resolve_agent_tool_arguments
+        resolved = resolve_agent_tool_arguments(tool_id, arguments, project_root)
+        if not resolved["safe"]:
+            return resolved["arguments"], {
+                "success": False,
+                "data": {},
+                "error": (
+                    f"Agent path blocked ({resolved['reason']})"
+                    + (f": {resolved['path']}" if resolved.get("path") else "")
+                ),
+            }
+        arguments = resolved["arguments"]
+        tool = registry.get_tool(tool_id)
+        if tool is None:
+            return arguments, {
+                "success": False,
+                "data": {},
+                "error": f"Tool '{tool_id}' is not registered.",
+            }
+        if hasattr(tool, "workspace_root"):
+            from pathlib import Path
+            tool.workspace_root = Path(project_root).resolve(strict=True)
+
+        filepath = str(arguments.get("filepath") or "")
+        current_fingerprint = self._file_fingerprint(filepath) if filepath else None
+        if coding_turn and tool_id == "file_write" and current_fingerprint is not None:
+            if not self._has_current_coding_inspection(session_id, filepath):
+                return arguments, {
+                    "success": False,
+                    "data": {},
+                    "error": "Existing file must be read successfully before a coding write.",
+                }
+            expected = str(arguments.get("expected_sha256") or "").lower()
+            if expected != current_fingerprint.lower():
+                return arguments, {
+                    "success": False,
+                    "data": {},
+                    "error": (
+                        "Native coding writes require the exact SHA-256 returned by the "
+                        "latest file_read; inspect the file again."
+                    ),
+                }
+
+        result = await registry.execute_tool(
+            tool_id=tool_id,
+            args=arguments,
+            session_id=session_id,
+            max_retries=0,
+            # Local file content is private. Native cloud-agent reads require an
+            # exact owner confirmation even though direct local file_read stays L0.
+            require_confirmation=(tool_id == "file_read"),
+            resume_context=resume_context,
+        )
+        if result.get("success") and coding_turn and filepath:
+            if tool_id in {"file_read", "file_write"}:
+                self._mark_coding_inspection(session_id, filepath)
+        return arguments, result
+
+    async def _run_native_agent_loop(
+        self,
+        response: dict,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+        tools: list[dict],
+        session_id: str,
+        project_id: str,
+        project_root: Optional[str],
+        coding_turn: bool,
+        provider_for_turn: str,
+        conversation: Optional[list[dict]] = None,
+        steps_used: int = 0,
+        called_tool_ids: Optional[list[str]] = None,
+        tool_results: Optional[list[dict]] = None,
+    ) -> dict:
+        """Mechanical inspect/act/observe loop with exact confirmation pauses."""
+        history = list(conversation or [])
+        called = list(called_tool_ids or [])
+        results = list(tool_results or [])
+        provider_lock = response.get("provider")
+        registry = ToolRegistry()
+
+        while True:
+            calls = response.get("tool_calls") or []
+            if not calls:
+                content = str(response.get("content") or "").strip()
+                if not content and results:
+                    content = "The requested verified tool work completed."
+                return {
+                    "content": content,
+                    "called_tool_ids": called,
+                    "tool_results": results,
+                    "pending_confirmation": None,
+                    "steps_used": steps_used,
+                }
+
+            history.append(
+                {
+                    "role": "assistant",
+                    "content": str(response.get("content") or ""),
+                    "tool_calls": calls,
+                    "provider_state": response.get("provider_state"),
+                }
+            )
+            for index, call in enumerate(calls):
+                tool_id = str(call.get("name") or "")
+                if steps_used >= self.max_coding_steps:
+                    return {
+                        "content": (
+                            f"Stopped safely after {self.max_coding_steps} tool steps. "
+                            "Ask me to continue the remaining work."
+                        ),
+                        "called_tool_ids": called,
+                        "tool_results": results,
+                        "pending_confirmation": None,
+                        "steps_used": steps_used,
+                    }
+                steps_used += 1
+                called.append(tool_id)
+                skipped_calls = calls[index + 1 :]
+                resume_context = {
+                    "version": 1,
+                    "kind": "native_agent",
+                    "session_id": session_id,
+                    "project_id": project_id,
+                    "project_root": project_root,
+                    "system_prompt": system_prompt,
+                    "user_prompt": user_prompt,
+                    "tools": tools,
+                    "conversation": history,
+                    "provider": provider_lock,
+                    "provider_for_turn": provider_for_turn,
+                    "coding_turn": coding_turn,
+                    "steps_used": steps_used,
+                    "called_tool_ids": called,
+                    "tool_results": results,
+                    "pending_call": call,
+                    "skipped_calls": skipped_calls,
+                }
+                arguments, result = await self._execute_native_agent_call(
+                    call,
+                    registry=registry,
+                    coding_turn=coding_turn,
+                    session_id=session_id,
+                    project_root=project_root,
+                    resume_context=resume_context,
+                )
+                item = self._agent_result_item(tool_id, arguments, result)
+                results.append(item)
+                if result.get("status") == "PENDING_CONFIRMATION":
+                    self._dispatch_log("info", f"Waiting for exact confirmation: {tool_id}")
+                    return {
+                        "content": (
+                            "Waiting for your exact confirmation before continuing "
+                            f"the {tool_id} step."
+                        ),
+                        "called_tool_ids": called,
+                        "tool_results": results,
+                        "pending_confirmation": self._agent_pending_confirmation(
+                            result,
+                            tool_id,
+                        ),
+                        "steps_used": steps_used,
+                    }
+
+                history.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(call.get("id") or f"call-{steps_used}"),
+                        "name": tool_id,
+                        "content": self._agent_result_content(tool_id, result),
+                    }
+                )
+                if not result.get("success"):
+                    self._dispatch_log("error", f"Tool {tool_id} failed safely.")
+                    if coding_turn:
+                        return {
+                            "content": f"Stopped safely because {tool_id} failed: {result.get('error')}",
+                            "called_tool_ids": called,
+                            "tool_results": results,
+                            "pending_confirmation": None,
+                            "steps_used": steps_used,
+                        }
+                else:
+                    self._dispatch_log("success", f"Tool completed: {tool_id}")
+
+            response = await self.router.get_completions_with_tools(
+                system_prompt,
+                user_prompt,
+                tools,
+                conversation=history,
+                temperature=0.3,
+                provider_preference=provider_for_turn,
+                provider_lock=provider_lock,
+            )
+
+    async def resume_agent_after_confirmation(
+        self,
+        resume_context: Optional[dict],
+        confirmed_result: dict,
+    ) -> dict:
+        """Serialize confirmation resume with normal shared-orchestrator turns."""
+        async with self._request_lock:
+            return await self._resume_agent_after_confirmation_unlocked(
+                resume_context,
+                confirmed_result,
+            )
+
+    async def _resume_agent_after_confirmation_unlocked(
+        self,
+        resume_context: Optional[dict],
+        confirmed_result: dict,
+    ) -> dict:
+        if not isinstance(resume_context, dict) or resume_context.get("kind") != "native_agent":
+            return {
+                "content": confirmed_result.get("error") or "Confirmed action completed.",
+                "called_tool_ids": [],
+                "tool_results": [],
+                "pending_confirmation": None,
+                "success": bool(confirmed_result.get("success")),
+            }
+        call = resume_context.get("pending_call") or {}
+        tool_id = str(call.get("name") or "")
+        arguments = (confirmed_result.get("_confirmed_action") or {}).get("arguments") or (
+            call.get("arguments") or {}
+        )
+        history = list(resume_context.get("conversation") or [])
+        results = list(resume_context.get("tool_results") or [])
+        # Replace the pending placeholder with the real confirmed result.
+        if results and results[-1].get("status") == "PENDING_CONFIRMATION":
+            results.pop()
+        results.append(self._agent_result_item(tool_id, arguments, confirmed_result))
+
+        filepath = str(arguments.get("filepath") or "")
+        if confirmed_result.get("success") and filepath and tool_id in {"file_read", "file_write"}:
+            self._mark_coding_inspection(str(resume_context.get("session_id") or ""), filepath)
+
+        history.append(
+            {
+                "role": "tool",
+                "tool_call_id": str(call.get("id") or "confirmed-call"),
+                "name": tool_id,
+                "content": self._agent_result_content(tool_id, confirmed_result),
+            }
+        )
+        for skipped in resume_context.get("skipped_calls") or []:
+            skipped_id = str(skipped.get("name") or "")
+            skipped_result = {
+                "success": False,
+                "data": {},
+                "error": "Skipped while waiting for exact confirmation; re-plan if still needed.",
+            }
+            history.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(skipped.get("id") or "skipped-call"),
+                    "name": skipped_id,
+                    "content": self._agent_result_content(skipped_id, skipped_result),
+                }
+            )
+            results.append(self._agent_result_item(skipped_id, skipped.get("arguments") or {}, skipped_result))
+
+        if not confirmed_result.get("success"):
+            return {
+                "content": f"Confirmed {tool_id} step failed: {confirmed_result.get('error')}",
+                "called_tool_ids": list(resume_context.get("called_tool_ids") or []),
+                "tool_results": results,
+                "pending_confirmation": None,
+                "success": False,
+            }
+
+        try:
+            response = await self.router.get_completions_with_tools(
+                str(resume_context.get("system_prompt") or ""),
+                str(resume_context.get("user_prompt") or ""),
+                list(resume_context.get("tools") or []),
+                conversation=history,
+                temperature=0.3,
+                provider_preference=str(resume_context.get("provider_for_turn") or "nvidia"),
+                provider_lock=str(resume_context.get("provider") or "") or None,
+            )
+            resumed = await self._run_native_agent_loop(
+                response,
+                system_prompt=str(resume_context.get("system_prompt") or ""),
+                user_prompt=str(resume_context.get("user_prompt") or ""),
+                tools=list(resume_context.get("tools") or []),
+                session_id=str(resume_context.get("session_id") or ""),
+                project_id=str(resume_context.get("project_id") or "personal"),
+                project_root=resume_context.get("project_root"),
+                coding_turn=bool(resume_context.get("coding_turn")),
+                provider_for_turn=str(resume_context.get("provider_for_turn") or "nvidia"),
+                conversation=history,
+                steps_used=int(resume_context.get("steps_used") or 0),
+                called_tool_ids=list(resume_context.get("called_tool_ids") or []),
+                tool_results=results,
+            )
+            resumed["success"] = True
+            return resumed
+        except Exception as exc:
+            return {
+                "content": f"Confirmed {tool_id}, but the agent could not resume: {exc}",
+                "called_tool_ids": list(resume_context.get("called_tool_ids") or []),
+                "tool_results": results,
+                "pending_confirmation": None,
+                "success": False,
+            }
+
     def _resolve_structured_action(self, user_prompt: str) -> Dict[str, Any]:
         """
         CONSTITUTIONAL DESIGN (Rule 8):
@@ -628,6 +1050,13 @@ class CognitiveOrchestrator:
         # or Auto detects CODING; every other turn uses configured primary routing.
         coding_turn = self._should_use_coding_provider(intent, user_prompt)
         provider_for_turn = "nvidia" if coding_turn else self.router.primary_provider
+        from backend.app.security.path_guard import resolve_project_root
+        project_root_decision = resolve_project_root(project_id)
+        project_root = (
+            project_root_decision.get("path")
+            if project_root_decision.get("safe")
+            else None
+        )
 
         # Step 4: COMPUTE CONFIDENCE
         confidence = self.confidence_engine.calculate_confidence(user_prompt, intent)
@@ -734,7 +1163,10 @@ class CognitiveOrchestrator:
         # Codex-style: inject project context ONLY on coding turns, so Ultron knows
         # the project it's editing. Skipped on normal chat to save tokens/latency.
         if coding_turn:
-            project_ctx = await self._get_project_context_block(project_id)
+            project_ctx = await self._get_project_context_block(
+                project_id,
+                project_root=project_root,
+            )
             if project_ctx:
                 system_prompt += project_ctx
 
@@ -749,8 +1181,10 @@ class CognitiveOrchestrator:
                 print(f"[COGNITIVE_ORCHESTRATOR] Warning: skill loading skipped: {e}")
 
         # Fast conversational turns need no tools. Other turns select at most
-        # eight prompt-relevant IDs using a lightweight manifest, then JIT-import
-        # only those selected classes/schemas in a worker thread.
+        # eight prompt-relevant schemas, then pass them through provider-native
+        # function calling. The old sentinel parser remains only as a compatibility
+        # fallback for mocked/offline adapters and is not the primary protocol.
+        tool_definitions: list[dict] = []
         if speed_track == "fast" and not coding_turn:
             system_prompt += (
                 "\n\nNote: this is a simple conversational turn. No tool execution is needed."
@@ -761,38 +1195,70 @@ class CognitiveOrchestrator:
                 user_prompt,
                 coding_turn=coding_turn,
             )
+            tool_definitions = json.loads(tools_metadata_str)
             system_prompt += (
-                f"\n\n[AVAILABLE_TOOLS_METADATA]\n{tools_metadata_str}\n\n"
-            "First, answer the user briefly and warmly like a human personal assistant "
-            "(keep it to 25-40 words, 2 lines max, per your personality). "
-            "Then, if you need to execute any tools, output a JSON block "
-            "at the very end of your response, wrapped inside `[TOOL_CALLS_START]` and `[TOOL_CALLS_END]`.\n"
-            "Example:\n"
-            "[TOOL_CALLS_START]\n"
-            "[\n"
-            "  {\"tool_id\": \"create_folder\", \"args\": {\"folderpath\": \"backend/temp\"}},\n"
-            "  {\"tool_id\": \"manage_task\", \"args\": {\"action\": \"create\", \"title\": \"Commit code\"}}\n"
-            "]\n"
-            "[TOOL_CALLS_END]\n"
-            "Tool calls run strictly in the listed order. For coding, inspect before modifying and propose only one modifying step at a time. Do not output tool calls unless relevant."
-        )
-
-        # Step 10: ROUTE TO LLM CLIENT
-        try:
-            ai_response = await self.router.get_completions(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.7,
-                provider_preference=provider_for_turn
+                "\n\nLocal tools are supplied through provider-native function calling. "
+                "Use only declared tools, keep calls sequential, inspect existing files "
+                "before changes, and stop when confirmation or a failure is returned."
             )
+            if not project_root:
+                system_prompt += (
+                    " The requested project ID has no allowlisted canonical root, so local "
+                    "project tools must fail closed."
+                )
+
+        # Step 10: ROUTE TO LLM CLIENT / NATIVE AGENT LOOP
+        called_tool_ids: list[str] = []
+        tool_results: list[dict] = []
+        native_pending_confirmation = None
+        native_protocol_active = False
+        try:
+            if tool_definitions:
+                native_response = await self.router.get_completions_with_tools(
+                    system_prompt,
+                    user_prompt,
+                    tool_definitions,
+                    temperature=0.3,
+                    provider_preference=provider_for_turn,
+                )
+                ai_response = str(native_response.get("content") or "")
+                native_protocol_active = bool(native_response.get("native_tools"))
+                if native_protocol_active and native_response.get("tool_calls"):
+                    agent_result = await self._run_native_agent_loop(
+                        native_response,
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        tools=tool_definitions,
+                        session_id=session_id,
+                        project_id=project_id,
+                        project_root=project_root,
+                        coding_turn=coding_turn,
+                        provider_for_turn=provider_for_turn,
+                    )
+                    ai_response = agent_result["content"]
+                    called_tool_ids = agent_result["called_tool_ids"]
+                    tool_results = agent_result["tool_results"]
+                    native_pending_confirmation = agent_result["pending_confirmation"]
+            else:
+                ai_response = await self.router.get_completions(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.7,
+                    provider_preference=provider_for_turn,
+                )
         except Exception as err:
             print(f"[COGNITIVE_ORCHESTRATOR] Critical: LLM completion failed: {err}")
-            ai_response = "I encountered a network timeout while connecting to my core brain, Sir. Let me try resetting the keys."
+            ai_response = (
+                "I could not complete this turn because the configured AI provider "
+                "or native tool channel failed. No unverified action was reported as done."
+            )
 
-        # Step 11: PARSE AND EXECUTE LLM TOOL CALLS DYNAMICALLY
-        called_tool_ids = []
-        tool_results = []
-        if "[TOOL_CALLS_START]" in ai_response and "[TOOL_CALLS_END]" in ai_response:
+        # Step 11: LEGACY SENTINEL COMPATIBILITY FALLBACK
+        if (
+            not native_protocol_active
+            and "[TOOL_CALLS_START]" in ai_response
+            and "[TOOL_CALLS_END]" in ai_response
+        ):
             tool_calls = self._extract_tool_calls(ai_response)
             if tool_calls:
                 try:
@@ -1075,7 +1541,7 @@ class CognitiveOrchestrator:
 
         # Surface any pending confirmation so clients can capture its one-time
         # token and send it back with has_confirmed=true (bound to file+content).
-        pending_confirmation = None
+        pending_confirmation = native_pending_confirmation
         for tr in tool_results:
             if isinstance(tr, dict) and tr.get("status") == "PENDING_CONFIRMATION":
                 pending_confirmation = {
@@ -1116,6 +1582,12 @@ class CognitiveOrchestrator:
             "metadata": memory_meta,
             "structured_action": structured_action,
             "coding": coding_turn,
+            "tools_used": list(dict.fromkeys(called_tool_ids)),
+            "widget_shown": (
+                structured_action.get("widget_id")
+                if structured_action.get("action") == "open_widget"
+                else None
+            ),
             "pending_confirmation": pending_confirmation,
             "provider_route": self.router.get_route_metadata(),
             "memory_provenance": memory_recall["provenance"],

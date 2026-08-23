@@ -153,7 +153,126 @@ _TOOL_PATH_FIELDS = {
     "play_music": ("filepath",),
     "terminal_run": ("cwd",),
     "open_vscode": ("path",),
+    "git_status": ("directory",),
+    "semantic_code_graph": ("target_path",),
 }
+
+_AGENT_PROJECT_DEFAULTS = {
+    "find_files": ("search_root",),
+    "terminal_run": ("cwd",),
+    "git_status": ("directory",),
+}
+
+
+def resolve_project_root(project_id: str = "personal") -> dict:
+    """Resolve a configured project ID to one allowed canonical directory."""
+    project_key = str(project_id or "personal").strip() or "personal"
+    config = _load_security_config()
+    configured = config.get("project_roots", {}) or {}
+    value = configured.get(project_key)
+
+    # Test agents are always rooted below their isolated runtime, even when the
+    # bundled production config maps personal to the source checkout.
+    if TEST_MODE and TEST_ROOT is not None and project_key == "personal":
+        root = TEST_ROOT.resolve(strict=False)
+    elif value in (None, ""):
+        if project_key != "personal":
+            return {
+                "safe": False,
+                "reason": "unknown_project_id",
+                "project_id": project_key,
+                "path": None,
+            }
+        if TEST_MODE and TEST_ROOT is not None:
+            root = TEST_ROOT.resolve(strict=False)
+        else:
+            root = BASE_DIR.resolve(strict=False)
+    else:
+        try:
+            root = _resolve_config_path(str(value))
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {
+                "safe": False,
+                "reason": f"project_root_resolution_failed: {exc}",
+                "project_id": project_key,
+                "path": None,
+            }
+
+    decision = check_path(str(root))
+    if not decision["safe"]:
+        return {
+            "safe": False,
+            "reason": decision["reason"],
+            "project_id": project_key,
+            "path": decision["path"],
+        }
+    if not root.is_dir():
+        return {
+            "safe": False,
+            "reason": "project_root_not_directory",
+            "project_id": project_key,
+            "path": str(root),
+        }
+    return {
+        "safe": True,
+        "reason": None,
+        "project_id": project_key,
+        "path": str(root),
+    }
+
+
+def resolve_agent_tool_arguments(tool_id: str, arguments: dict, project_root: str) -> dict:
+    """Bind every relative agent path to its active project and reject escapes."""
+    try:
+        root = Path(project_root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {
+            "safe": False,
+            "reason": f"invalid_project_root: {exc}",
+            "field": None,
+            "path": None,
+            "arguments": dict(arguments or {}),
+        }
+
+    resolved_arguments = dict(arguments or {})
+    for field in _AGENT_PROJECT_DEFAULTS.get(tool_id, ()):
+        if resolved_arguments.get(field) in (None, "", "."):
+            resolved_arguments[field] = str(root)
+
+    for field in _TOOL_PATH_FIELDS.get(tool_id, ()):
+        value = resolved_arguments.get(field)
+        if value in (None, ""):
+            continue
+        candidate = Path(str(value)).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve(strict=False)
+        if not _inside(candidate, root) and candidate != root:
+            return {
+                "safe": False,
+                "reason": "outside_active_project",
+                "field": field,
+                "path": str(candidate),
+                "arguments": resolved_arguments,
+            }
+        decision = check_path(str(candidate))
+        if not decision["safe"]:
+            return {
+                "safe": False,
+                "reason": decision["reason"],
+                "field": field,
+                "path": decision["path"],
+                "arguments": resolved_arguments,
+            }
+        resolved_arguments[field] = str(candidate)
+
+    return {
+        "safe": True,
+        "reason": None,
+        "field": None,
+        "path": None,
+        "arguments": resolved_arguments,
+    }
 
 
 def validate_tool_paths(tool_id: str, arguments: dict) -> dict:

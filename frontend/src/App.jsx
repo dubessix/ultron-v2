@@ -335,9 +335,17 @@ export default function App() {
           personality: activePersonality,
           response_ms: result.metadata?.execution_time_ms || 0,
         }]);
-        setPendingAction(null);
-        setActivityText(`Confirmed action completed: ${pendingAction.tool_id}.`);
-        addNotification('Action completed', message, 'medium');
+        const nextPending = result.pending_confirmation?.confirmation_token
+          ? result.pending_confirmation
+          : null;
+        setPendingAction(nextPending);
+        if (nextPending) {
+          setActivityText(`Waiting for confirmation: ${nextPending.tool_id}.`);
+          addNotification('Next confirmation required', nextPending.message, 'high');
+        } else {
+          setActivityText(`Confirmed action completed: ${pendingAction.tool_id}.`);
+          addNotification('Action completed', message, 'medium');
+        }
       } else {
         setActivityText(`Confirmed action failed: ${result.error || 'not executed'}`);
         addNotification('Confirmation failed', result.error || 'The pending action was not executed.', 'high');

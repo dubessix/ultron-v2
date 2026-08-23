@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import re
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -80,8 +79,17 @@ class TestPromptScopedLazyToolMetadata(unittest.IsolatedAsyncioTestCase):
 
     async def test_medium_request_pipeline_injects_only_selected_metadata(self):
         orchestrator = CognitiveOrchestrator()
-        capture = AsyncMock(return_value="The working tree check is ready.")
-        orchestrator.router.get_completions = capture
+        capture = AsyncMock(
+            return_value={
+                "content": "The working tree check is ready.",
+                "tool_calls": [],
+                "provider": "groq",
+                "model": "test-native",
+                "native_tools": True,
+                "provider_state": None,
+            }
+        )
+        orchestrator.router.get_completions_with_tools = capture
         try:
             with patch.object(
                 ToolRegistry,
@@ -96,15 +104,9 @@ class TestPromptScopedLazyToolMetadata(unittest.IsolatedAsyncioTestCase):
             await orchestrator.close()
 
         self.assertEqual(response["speed_track"], "medium")
-        system_prompt = capture.await_args.kwargs["system_prompt"]
-        match = re.search(
-            r"\[AVAILABLE_TOOLS_METADATA\]\n(\[.*?\])\n\nFirst,",
-            system_prompt,
-            flags=re.DOTALL,
-        )
-        self.assertIsNotNone(match)
-        metadata = json.loads(match.group(1))
+        metadata = capture.await_args.args[2]
         self.assertEqual([item["tool_id"] for item in metadata], ["git_status"])
+        self.assertNotIn("AVAILABLE_TOOLS_METADATA", capture.await_args.args[0])
 
 
 class TestLazyRegistryPreservation(unittest.TestCase):

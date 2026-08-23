@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
-from typing import ClassVar, Optional
+import json
+from typing import Any, ClassVar, Optional
 
 import httpx
 
@@ -161,6 +162,437 @@ class LLMRouter:
 
         self._set_route("unavailable", None, cached=False)
         raise RuntimeError(f"All configured LLM providers failed: {last_error}")
+
+    @classmethod
+    def _clean_native_schema(cls, schema: dict) -> dict:
+        """Dereference Pydantic definitions and keep the provider JSON-schema subset."""
+        definitions = schema.get("$defs") or schema.get("definitions") or {}
+        allowed = {
+            "type",
+            "description",
+            "properties",
+            "required",
+            "items",
+            "enum",
+            "anyOf",
+            "oneOf",
+            "minimum",
+            "maximum",
+            "minLength",
+            "maxLength",
+            "pattern",
+            "format",
+        }
+
+        def clean(value: Any) -> Any:
+            if isinstance(value, list):
+                return [clean(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            reference = value.get("$ref")
+            if isinstance(reference, str) and reference.startswith("#/$defs/"):
+                target = definitions.get(reference.rsplit("/", 1)[-1], {})
+                return clean(target)
+            result = {}
+            for key, item in value.items():
+                if key not in allowed:
+                    continue
+                if key == "properties" and isinstance(item, dict):
+                    result[key] = {str(name): clean(prop) for name, prop in item.items()}
+                else:
+                    result[key] = clean(item)
+            return result
+
+        cleaned = clean(schema)
+        return cleaned if isinstance(cleaned, dict) else {"type": "object", "properties": {}}
+
+    @classmethod
+    def _native_tool_schema(cls, tool: dict, *, openai_style: bool) -> dict:
+        name = str(tool.get("tool_id") or tool.get("name") or "").strip()
+        declaration = {
+            "name": name,
+            "description": str(tool.get("description") or "Local Ultron tool."),
+            "parameters": cls._clean_native_schema(
+                tool.get("input_schema") or {
+                    "type": "object",
+                    "properties": {},
+                }
+            ),
+        }
+        if openai_style:
+            return {"type": "function", "function": declaration}
+        return declaration
+
+    @staticmethod
+    def _openai_messages(
+        system_prompt: str,
+        user_prompt: str,
+        conversation: list[dict],
+    ) -> list[dict]:
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        for item in conversation:
+            role = item.get("role")
+            if role == "assistant":
+                message: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": item.get("content") or None,
+                }
+                calls = item.get("tool_calls") or []
+                if calls:
+                    message["tool_calls"] = [
+                        {
+                            "id": str(call.get("id") or "call"),
+                            "type": "function",
+                            "function": {
+                                "name": str(call.get("name") or ""),
+                                "arguments": json.dumps(
+                                    call.get("arguments") or {},
+                                    separators=(",", ":"),
+                                ),
+                            },
+                        }
+                        for call in calls
+                    ]
+                messages.append(message)
+            elif role == "tool":
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": str(item.get("tool_call_id") or "call"),
+                        "name": str(item.get("name") or ""),
+                        "content": str(item.get("content") or "{}"),
+                    }
+                )
+        return messages
+
+    @staticmethod
+    def _gemini_contents(user_prompt: str, conversation: list[dict]) -> list[dict]:
+        contents: list[dict] = [{"role": "user", "parts": [{"text": user_prompt}]}]
+        pending_responses: list[dict] = []
+
+        def flush_tool_responses() -> None:
+            if pending_responses:
+                contents.append({"role": "user", "parts": list(pending_responses)})
+                pending_responses.clear()
+
+        for item in conversation:
+            role = item.get("role")
+            if role == "tool":
+                raw_content = str(item.get("content") or "{}")
+                try:
+                    parsed = json.loads(raw_content)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    parsed = {"result": raw_content}
+                if not isinstance(parsed, dict):
+                    parsed = {"result": parsed}
+                pending_responses.append(
+                    {
+                        "functionResponse": {
+                            "name": str(item.get("name") or ""),
+                            "response": parsed,
+                        }
+                    }
+                )
+                continue
+
+            flush_tool_responses()
+            if role != "assistant":
+                continue
+            provider_state = item.get("provider_state") or {}
+            raw_parts = provider_state.get("parts") if isinstance(provider_state, dict) else None
+            if isinstance(raw_parts, list) and raw_parts:
+                parts = raw_parts
+            else:
+                parts = []
+                if item.get("content"):
+                    parts.append({"text": str(item["content"])})
+                for call in item.get("tool_calls") or []:
+                    parts.append(
+                        {
+                            "functionCall": {
+                                "name": str(call.get("name") or ""),
+                                "args": call.get("arguments") or {},
+                            }
+                        }
+                    )
+            contents.append({"role": "model", "parts": parts or [{"text": ""}]})
+        flush_tool_responses()
+        return contents
+
+    @staticmethod
+    def _parse_openai_native_message(payload: dict) -> dict:
+        try:
+            message = payload["choices"][0]["message"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("Provider returned an invalid native-tool response") from exc
+        calls = []
+        for index, raw_call in enumerate(message.get("tool_calls") or []):
+            function = raw_call.get("function") or {}
+            raw_arguments = function.get("arguments") or "{}"
+            arguments_error = None
+            try:
+                arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
+                if not isinstance(arguments, dict):
+                    raise ValueError("arguments must be an object")
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                arguments = {}
+                arguments_error = str(exc)
+            calls.append(
+                {
+                    "id": str(raw_call.get("id") or f"call-{index}"),
+                    "name": str(function.get("name") or ""),
+                    "arguments": arguments,
+                    "arguments_error": arguments_error,
+                }
+            )
+        return {
+            "content": str(message.get("content") or ""),
+            "tool_calls": calls,
+            "provider_state": None,
+        }
+
+    @staticmethod
+    def _parse_gemini_native_message(payload: dict) -> dict:
+        try:
+            parts = payload["candidates"][0]["content"]["parts"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("Gemini returned an invalid native-tool response") from exc
+        text_parts = []
+        calls = []
+        for index, part in enumerate(parts):
+            if part.get("text") and not part.get("thought"):
+                text_parts.append(str(part["text"]))
+            function = part.get("functionCall")
+            if isinstance(function, dict):
+                arguments = function.get("args") or {}
+                arguments_error = None
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                    arguments_error = "arguments must be an object"
+                calls.append(
+                    {
+                        "id": str(function.get("id") or f"gemini-call-{index}"),
+                        "name": str(function.get("name") or ""),
+                        "arguments": arguments,
+                        "arguments_error": arguments_error,
+                    }
+                )
+        return {
+            "content": "\n".join(text_parts).strip(),
+            "tool_calls": calls,
+            "provider_state": {"parts": parts},
+        }
+
+    async def get_completions_with_tools(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        tools: list[dict],
+        *,
+        conversation: Optional[list[dict]] = None,
+        temperature: float = 0.3,
+        provider_preference: str = "groq",
+        provider_lock: Optional[str] = None,
+    ) -> dict:
+        """Use provider-native local function calling without caching side effects."""
+        if not tools:
+            content = await self.get_completions(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                provider_preference=provider_preference,
+            )
+            return {
+                "content": content,
+                "tool_calls": [],
+                "provider": self.get_route_metadata().get("provider"),
+                "model": self.get_route_metadata().get("model"),
+                "native_tools": False,
+                "provider_state": None,
+            }
+
+        history = list(conversation or [])
+        provider_order = (
+            [provider_lock]
+            if provider_lock in self._PROVIDERS
+            else self.get_provider_order(provider_preference)
+        )
+        configured_provider_seen = False
+        last_error = None
+        for provider in provider_order:
+            if not self.key_manager.has_real_key(provider):
+                continue
+            configured_provider_seen = True
+            model = get_model(provider)
+            try:
+                if provider == "gemini":
+                    result = await self._execute_gemini_native_tools(
+                        system_prompt,
+                        user_prompt,
+                        tools,
+                        history,
+                        temperature,
+                    )
+                else:
+                    result = await self._execute_openai_native_tools(
+                        provider,
+                        system_prompt,
+                        user_prompt,
+                        tools,
+                        history,
+                        temperature,
+                    )
+                result.update(
+                    {
+                        "provider": provider,
+                        "model": model,
+                        "native_tools": True,
+                    }
+                )
+                self._set_route(provider, model, cached=False)
+                return result
+            except Exception as exc:
+                last_error = exc
+                print(f"[LLM_ROUTER] Native tools unavailable on '{provider}': {exc}")
+                if provider_lock:
+                    break
+
+        if not configured_provider_seen and not provider_lock:
+            content = await self.get_completions(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                provider_preference=provider_preference,
+            )
+            return {
+                "content": content,
+                "tool_calls": [],
+                "provider": self.get_route_metadata().get("provider"),
+                "model": self.get_route_metadata().get("model"),
+                "native_tools": False,
+                "provider_state": None,
+            }
+        self._set_route("unavailable", None, cached=False)
+        raise RuntimeError(f"Native tool provider failed: {last_error}")
+
+    async def _execute_openai_native_tools(
+        self,
+        provider: str,
+        system_prompt: str,
+        user_prompt: str,
+        tools: list[dict],
+        conversation: list[dict],
+        temperature: float,
+    ) -> dict:
+        url = (
+            "https://api.groq.com/openai/v1/chat/completions"
+            if provider == "groq"
+            else "https://integrate.api.nvidia.com/v1/chat/completions"
+        )
+        for attempt in range(self.provider_attempts):
+            key = self.key_manager.get_active_key(provider)
+            payload: dict[str, Any] = {
+                "model": get_model(provider),
+                "messages": self._openai_messages(system_prompt, user_prompt, conversation),
+                "tools": [
+                    self._native_tool_schema(tool, openai_style=True)
+                    for tool in tools
+                ],
+                "tool_choice": "auto",
+                "temperature": temperature,
+                "max_tokens": 1024 if provider == "groq" else 2048,
+            }
+            if provider == "nvidia":
+                payload["chat_template_kwargs"] = {
+                    "enable_thinking": True,
+                    "force_nonempty_content": True,
+                }
+            try:
+                response = await self.client.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=self.request_timeout,
+                )
+            except httpx.RequestError as exc:
+                self.key_manager.mark_key_cooling(
+                    provider,
+                    key,
+                    duration_sec=self._cooldown_seconds(15),
+                )
+                if attempt == self.provider_attempts - 1:
+                    raise RuntimeError(
+                        f"{provider} native-tool network attempts exhausted: {exc}"
+                    ) from exc
+                continue
+            if response.status_code != 200:
+                self._classify_http_failure(provider, key, response)
+                continue
+            return self._parse_openai_native_message(response.json())
+        raise RuntimeError(f"{provider} native-tool key pool is unavailable")
+
+    async def _execute_gemini_native_tools(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        tools: list[dict],
+        conversation: list[dict],
+        temperature: float,
+    ) -> dict:
+        provider = "gemini"
+        model = get_model(provider)
+        for attempt in range(self.provider_attempts):
+            key = self.key_manager.get_active_key(provider)
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model}:generateContent?key={key}"
+            )
+            payload = {
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": self._gemini_contents(user_prompt, conversation),
+                "tools": [
+                    {
+                        "functionDeclarations": [
+                            self._native_tool_schema(tool, openai_style=False)
+                            for tool in tools
+                        ]
+                    }
+                ],
+                "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+                "generationConfig": {
+                    "temperature": temperature,
+                    "maxOutputTokens": 1024,
+                },
+            }
+            try:
+                response = await self.client.post(
+                    url,
+                    headers={"Content-Type": "application/json"},
+                    json=payload,
+                    timeout=self.request_timeout,
+                )
+            except httpx.RequestError as exc:
+                self.key_manager.mark_key_cooling(
+                    provider,
+                    key,
+                    duration_sec=self._cooldown_seconds(15),
+                )
+                if attempt == self.provider_attempts - 1:
+                    raise RuntimeError(
+                        f"Gemini native-tool network attempts exhausted: {exc}"
+                    ) from exc
+                continue
+            if response.status_code != 200:
+                self._classify_http_failure(provider, key, response)
+                continue
+            return self._parse_gemini_native_message(response.json())
+        raise RuntimeError("Gemini native-tool key pool is unavailable")
 
     def _classify_http_failure(self, provider: str, key: str, response: httpx.Response) -> str:
         """Update key state safely and return 'retry' or raise a config/request error."""

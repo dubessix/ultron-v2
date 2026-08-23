@@ -26,7 +26,7 @@ SQLite stores sessions/history and float32 embedding BLOBs. Recall/list/dedup/co
 
 Filesystem, terminal, Git/GitHub, browser/search, weather/research, music/Spotify, reminders, tasks, calendar, memory, security, conversion, coding analysis, world monitor, and system telemetry remain available through 69 lazily registered IDs. Prompt assembly ranks IDs from a lightweight manifest, caps context at eight relevant tools, and imports only those selected classes and real input schemas; direct execution stays JIT by ID.
 
-Filesystem roots are configurable and fail closed. Level 2/3 actions require exact one-time confirmation. Coding modifications are sequential, inspected, pre-verified, backed up, and atomically replaced.
+Filesystem roots are configurable and fail closed. Native provider function calls run in a bounded sequential inspect/act/observe loop and remain locked to the starting provider. Agent-relative paths resolve through the configured project ID/root and cannot escape that root. Local file-content egress requires exact confirmation; tool results are bounded/redacted before cloud continuation, and the original agent history resumes after approval. Level 2/3 actions still require exact one-time confirmation. Coding modifications are inspected, fingerprint-bound, syntax-verified, backed up, and atomically replaced; the existing file-write tool also supports exact single-block patch mode without adding another tool ID.
 
 ## Durability
 

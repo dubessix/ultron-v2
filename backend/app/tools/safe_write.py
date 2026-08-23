@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 import shutil
 import subprocess
@@ -25,6 +26,48 @@ def _verify_candidate(path: Path, temp_path: Path, content: str) -> Dict[str, An
                 "language": "python",
                 "detail": f"{exc.msg} at line {exc.lineno}",
             }
+
+    if suffix in {".jsx", ".ts", ".tsx"}:
+        executable = shutil.which("esbuild")
+        if executable is None:
+            local_bin = Path(__file__).resolve().parents[3] / "frontend" / "node_modules" / ".bin"
+            candidates = [local_bin / "esbuild", local_bin / "esbuild.cmd"]
+            executable = next((str(candidate) for candidate in candidates if candidate.is_file()), None)
+        if executable is None:
+            return {
+                "checked": False,
+                "verified": False,
+                "language": suffix.lstrip("."),
+                "detail": "esbuild syntax verifier unavailable",
+            }
+        try:
+            completed = subprocess.run(
+                [
+                    executable,
+                    str(temp_path),
+                    f"--loader={suffix.lstrip('.')}",
+                    "--log-level=error",
+                    f"--outfile={os.devnull}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=12,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "checked": True,
+                "verified": False,
+                "language": suffix.lstrip("."),
+                "detail": f"syntax check failed: {exc}",
+            }
+        detail = (completed.stderr or completed.stdout or "syntax OK").strip()
+        return {
+            "checked": True,
+            "verified": completed.returncode == 0,
+            "language": suffix.lstrip("."),
+            "detail": detail[:1000],
+        }
 
     if suffix in {".js", ".mjs", ".cjs"}:
         try:
@@ -55,8 +98,12 @@ def _verify_candidate(path: Path, temp_path: Path, content: str) -> Dict[str, An
     }
 
 
-def safe_write_file(filepath: str, content: str) -> Dict[str, Any]:
-    """Verify a temporary candidate, back up the original, then replace atomically."""
+def safe_write_file(
+    filepath: str,
+    content: str,
+    expected_sha256: str | None = None,
+) -> Dict[str, Any]:
+    """Verify a candidate and optional inspection fingerprint before atomic replace."""
     if not filepath or not str(filepath).strip():
         return {"success": False, "error": "filepath required", "data": {}}
 
@@ -83,6 +130,18 @@ def safe_write_file(filepath: str, content: str) -> Dict[str, Any]:
                 "data": {},
             }
 
+    if expected_sha256 is not None:
+        current_sha256 = hashlib.sha256((old_content or "").encode("utf-8")).hexdigest()
+        if not exists or current_sha256.lower() != str(expected_sha256).lower():
+            return {
+                "success": False,
+                "error": "File changed since inspection; read it again before writing.",
+                "data": {
+                    "original_preserved": True,
+                    "current_sha256": current_sha256 if exists else None,
+                },
+            }
+
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(
         dir=str(path.parent),
@@ -99,7 +158,9 @@ def safe_write_file(filepath: str, content: str) -> Dict[str, Any]:
             os.fsync(handle.fileno())
 
         verification = _verify_candidate(path, temp_path, content)
-        if verification["checked"] and not verification["verified"]:
+        code_suffixes = {".py", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx"}
+        verifier_failed = path.suffix.lower() in code_suffixes and not verification["verified"]
+        if verifier_failed or (verification["checked"] and not verification["verified"]):
             return {
                 "success": False,
                 "error": f"Candidate verification failed: {verification['detail']}",

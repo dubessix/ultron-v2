@@ -8,7 +8,7 @@ Summary:
 - loopback React/FastAPI services;
 - cloud LLM routing with explicit offline behavior;
 - SQLite WAL history, project memory, reminders, tasks, and calendar;
-- confirmation/path-controlled local tools;
+- confirmation/path-controlled local tools with native bounded agent loops and canonical project roots;
 - verified backups and safe restore;
 - production launcher with health and child monitoring;
 - truthful unavailable states instead of sample telemetry/results;

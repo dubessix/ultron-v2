@@ -95,6 +95,10 @@ security:
   # "~/Documents", "~/Downloads", or "D:/Projects" when you explicitly want them.
   allowed_directories: ["."]
   empty_allowed_policy: "project_only"
+  # Canonical project ID -> root used by the coding agent. Relative roots resolve
+  # below ULTRON_HOME; add another ID only when its root is also allowlisted above.
+  project_roots:
+    personal: "."
   blocked_directories: ["/etc", "/var", "C:\\Windows", "C:\\System32"]
   # Terminal commands are still exact-confirmation gated. This list is a second
   # boundary: commands not listed here are rejected even if an LLM proposes them.

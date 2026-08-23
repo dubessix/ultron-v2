@@ -44,7 +44,9 @@ Cache identity includes provider and model. Missing keys produce an explicit off
 
 ## Tool loading
 
-The 69-tool registry keeps only ID-to-module/class mappings at boot. For non-conversational prompt assembly, a lightweight text manifest ranks relevant IDs without importing tool modules, caps context at eight tools, and JIT-loads only those selected classes and Pydantic schemas. Direct execution still resolves any registered tool by ID through the same registry; validation, path guards, exact confirmation, sequential execution, and audit behavior are unchanged.
+The 69-tool registry keeps only ID-to-module/class mappings at boot. For non-conversational prompt assembly, a lightweight text manifest ranks relevant IDs without importing tool modules, caps context at eight tools, and JIT-loads only those selected classes and Pydantic schemas. Groq/NVIDIA receive OpenAI-compatible native function declarations; Gemini receives native function declarations through `generateContent`. The local orchestrator executes calls sequentially in an inspect/act/observe loop capped at eight steps and keeps continuation on the provider that started the loop.
+
+Agent paths resolve below `security.project_roots[project_id]` and cannot escape that active root. Returning local file content to a cloud model requires an exact owner confirmation; resumed state stays bounded and private in process memory. Tool results are size-bounded and common credential patterns are redacted before egress. Existing `file_write` supports full replacement plus exact-fingerprint search/replace patch mode, rejects stale inspected files, and verifies supported code candidates before atomic replacement. Direct execution still resolves any registered tool by ID through the same registry; validation, path guards, exact confirmation, sequential execution, and audit behavior remain active.
 
 ## Security controls
 

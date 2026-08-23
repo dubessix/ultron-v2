@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 
 DEFAULT_TTL_SECONDS = 300.0
 MAX_PENDING = 200
+MAX_RESUME_CONTEXT_BYTES = 128 * 1024
 
 
 def _canonical_arguments(arguments: Dict[str, Any]) -> str:
@@ -31,10 +32,13 @@ def _safe_summary(arguments: Dict[str, Any]) -> dict:
         if key in arguments:
             value = str(arguments[key])
             summary[key] = value[:240]
-    if "content" in arguments:
-        content = str(arguments.get("content") or "")
-        summary["content_sha256"] = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        summary["content_bytes"] = len(content.encode("utf-8"))
+    for field in ("content", "search_text", "replace_text"):
+        if field in arguments and arguments.get(field) is not None:
+            content = str(arguments.get(field) or "")
+            summary[f"{field}_sha256"] = hashlib.sha256(
+                content.encode("utf-8")
+            ).hexdigest()
+            summary[f"{field}_bytes"] = len(content.encode("utf-8"))
     return summary
 
 
@@ -57,9 +61,16 @@ class PendingActionRegistry:
         tool_id: str,
         session_id: Optional[str],
         arguments: Dict[str, Any],
+        *,
+        resume_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Store an exact pending action and return its client-safe description."""
+        """Store an exact pending action and private bounded agent-resume state."""
         canonical = _canonical_arguments(arguments)
+        safe_resume_context = None
+        if resume_context is not None:
+            encoded = json.dumps(resume_context, separators=(",", ":"), default=str)
+            if len(encoded.encode("utf-8")) <= MAX_RESUME_CONTEXT_BYTES:
+                safe_resume_context = json.loads(encoded)
         token = uuid.uuid4().hex
         with self._lock:
             self._prune_locked()
@@ -72,6 +83,7 @@ class PendingActionRegistry:
                 "arguments": json.loads(canonical),
                 "arguments_hash": _argument_hash(arguments),
                 "created": time.time(),
+                "resume_context": safe_resume_context,
             }
         return {
             "confirmation_token": token,
