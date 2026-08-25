@@ -1,96 +1,160 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 
 /**
- * Browser Web Speech lifecycle for the owner-controlled microphone session.
- *
- * C2 correctness boundaries:
- *  - only the approved Ultron wake phrases enter command capture;
- *  - punctuation around a wake phrase is accepted without substring matches;
- *  - interim hypotheses replace one another instead of being appended;
- *  - the live recognizer always dispatches through the latest callback;
- *  - one approved wake phrase opens a multi-turn conversation until Stop Mic.
- *
- * Processing/TTS pause and delayed restart are later dedicated phases; do not
- * hide those lifecycle states inside transcript parsing.
+ * Browser Web Speech lifecycle for an owner-controlled Option A microphone
+ * session. A wake phrase opens one command only; after dispatch Ultron returns
+ * to wake-only listening. No local/remote STT model is used here.
  */
-const WAKE_WORDS = ["hey ultron", "ultron"];
+const WAKE_WORDS = [
+  'ultron wake up',
+  'wake up ultron',
+  'hey ultron',
+  'wake up',
+  'ultron',
+];
 
-// Recognition language remains lightweight/browser-side for the owner's 8 GB,
-// dual-core class laptop. Override only through the existing frontend setting.
-const RECOG_LANG = (import.meta.env.VITE_VOICE_LANG || "en-IN");
-const SILENCE_FLUSH_MS = 1400;
+const RECOG_LANG = import.meta.env.VITE_VOICE_LANG || 'en-IN';
+const SILENCE_BASE_MS = 1400;
+const SILENCE_SHORT_COMMAND_MS = 1800;
+const INTERIM_SETTLE_GRACE_MS = 450;
+const WAKE_WAIT_MS = 6000;
 const RESTART_BASE_MS = 500;
 const RESTART_MAX_MS = 4000;
 const RESTART_MAX_ATTEMPTS = 5;
+const RESTART_RECOVERY_GRACE_MS = 2200;
 
 function isWordCharacter(value) {
-  return Boolean(value) && /[a-z0-9_]/i.test(value);
+  return Boolean(value) && /[\p{L}\p{N}_]/u.test(value);
+}
+
+function cleanText(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
 function matchesWakeWord(transcript) {
-  const lowTranscript = String(transcript || "").toLowerCase();
+  const original = String(transcript || '');
+  const lower = original.toLowerCase();
   for (const phrase of WAKE_WORDS) {
     let fromIndex = 0;
-    while (fromIndex < lowTranscript.length) {
-      const idx = lowTranscript.indexOf(phrase, fromIndex);
-      if (idx < 0) break;
-      const before = idx > 0 ? lowTranscript[idx - 1] : "";
-      const afterIndex = idx + phrase.length;
-      const after = afterIndex < lowTranscript.length ? lowTranscript[afterIndex] : "";
-      if (!isWordCharacter(before) && !isWordCharacter(after)) {
-        return { matched: phrase, idx };
+    while (fromIndex < lower.length) {
+      const index = lower.indexOf(phrase, fromIndex);
+      if (index < 0) break;
+      const end = index + phrase.length;
+      if (!isWordCharacter(lower[index - 1]) && !isWordCharacter(lower[end])) {
+        return { matched: phrase, index, end };
       }
-      fromIndex = idx + 1;
+      fromIndex = index + 1;
     }
   }
-  return { matched: null, idx: -1 };
+  return { matched: null, index: -1, end: -1 };
 }
 
-function normalizedResultText(result) {
-  return String(result?.[0]?.transcript || "").trim();
+function resultText(result) {
+  return cleanText(result?.[0]?.transcript);
+}
+
+/**
+ * Chromium commonly repeats the final prefix in the next interim hypothesis:
+ * "open" then "open the calendar". Join by word overlap, not concatenation.
+ */
+function mergeTranscript(leftValue, rightValue) {
+  const left = cleanText(leftValue);
+  const right = cleanText(rightValue);
+  if (!left) return right;
+  if (!right) return left;
+  if (left === right || left.toLowerCase().endsWith(right.toLowerCase())) return left;
+  if (right.toLowerCase().startsWith(left.toLowerCase())) return right;
+
+  const leftWords = left.split(' ');
+  const rightWords = right.split(' ');
+  for (let size = Math.min(leftWords.length, rightWords.length); size > 0; size -= 1) {
+    if (leftWords.slice(-size).join(' ').toLowerCase() === rightWords.slice(0, size).join(' ').toLowerCase()) {
+      return [...leftWords, ...rightWords.slice(size)].join(' ');
+    }
+  }
+  return `${left} ${right}`;
+}
+
+function silenceDelay(command) {
+  return cleanText(command).split(' ').filter(Boolean).length < 3
+    ? SILENCE_SHORT_COMMAND_MS
+    : SILENCE_BASE_MS;
 }
 
 export default function useVoice({ onCommand, enabled, paused = false }) {
   const [isListening, setIsListening] = useState(false);
   const [wakeDetected, setWakeDetected] = useState(false);
+  // In Option A this means a wake/command turn is currently open. It is reset
+  // immediately after that one command dispatches; it is not multi-turn mode.
   const [conversationActive, setConversationActive] = useState(false);
-  const [heardText, setHeardText] = useState("");
-  const [voiceError, setVoiceError] = useState("");
+  const [heardText, setHeardText] = useState('');
+  const [voiceError, setVoiceError] = useState('');
   const supported = typeof window !== 'undefined' && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
 
   const recRef = useRef(null);
+  const recognizerRunningRef = useRef(false);
+  const enabledRef = useRef(enabled);
+  const pausedRef = useRef(paused);
+  const onCommandRef = useRef(onCommand);
+  const fatalRef = useRef(false);
+  const sessionIdRef = useRef(0);
+
   const capturingRef = useRef(false);
+  const captureSessionIdRef = useRef(0);
   const captureStartIndexRef = useRef(0);
   const captureWakePhraseRef = useRef(null);
-  const finalTextRef = useRef("");
+  const turnSegmentsRef = useRef(new Map());
+  const carriedTextRef = useRef('');
+  const commandTextRef = useRef('');
+  const lastHeardTextRef = useRef('');
+  const latestResultFinalRef = useRef(false);
+  const interimGraceUsedRef = useRef(false);
+  const dispatchingRef = useRef(false);
+
   const silenceTimerRef = useRef(null);
+  const wakeTimerRef = useRef(null);
+  const recoveryTimerRef = useRef(null);
   const restartTimerRef = useRef(null);
   const restartAttemptRef = useRef(0);
   const restartSchedulerRef = useRef(null);
-  const fatalRef = useRef(false);
-  const enabledRef = useRef(enabled);
-  const pausedRef = useRef(paused);
-  const recognizerRunningRef = useRef(false);
-  const conversationActiveRef = useRef(false);
-  const onCommandRef = useRef(onCommand);
+  const dispatchRef = useRef(() => {});
 
   enabledRef.current = enabled;
   pausedRef.current = paused;
   onCommandRef.current = onCommand;
 
-  const clearSilenceTimer = useCallback(() => {
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
+  const clearTimer = useCallback((ref) => {
+    if (ref.current) {
+      clearTimeout(ref.current);
+      ref.current = null;
     }
   }, []);
 
-  const clearRestartTimer = useCallback(() => {
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
-    }
-  }, []);
+  const clearTurnTimers = useCallback(() => {
+    clearTimer(silenceTimerRef);
+    clearTimer(wakeTimerRef);
+    clearTimer(recoveryTimerRef);
+  }, [clearTimer]);
+
+  const clearRestartTimer = useCallback(() => clearTimer(restartTimerRef), [clearTimer]);
+
+  const resetTurn = useCallback((clearHeard = false, preserveDispatchLock = false) => {
+    capturingRef.current = false;
+    captureSessionIdRef.current = sessionIdRef.current;
+    captureStartIndexRef.current = 0;
+    captureWakePhraseRef.current = null;
+    turnSegmentsRef.current.clear();
+    carriedTextRef.current = '';
+    commandTextRef.current = '';
+    lastHeardTextRef.current = '';
+    latestResultFinalRef.current = false;
+    interimGraceUsedRef.current = false;
+    if (!preserveDispatchLock) dispatchingRef.current = false;
+    clearTurnTimers();
+    setWakeDetected(false);
+    setConversationActive(false);
+    if (clearHeard) setHeardText('');
+  }, [clearTurnTimers]);
 
   const scheduleRestart = useCallback((recognizer) => {
     if (
@@ -106,16 +170,12 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
 
     if (restartAttemptRef.current >= RESTART_MAX_ATTEMPTS) {
       fatalRef.current = true;
-      conversationActiveRef.current = false;
-      setConversationActive(false);
-      setVoiceError("Voice recognition could not restart. Use Stop and Start Voice to retry.");
+      setVoiceError('Voice recognition could not restart. Use Stop and Start Voice to retry.');
+      setIsListening(false);
       return;
     }
 
-    const delay = Math.min(
-      RESTART_BASE_MS * (2 ** restartAttemptRef.current),
-      RESTART_MAX_MS,
-    );
+    const delay = Math.min(RESTART_BASE_MS * (2 ** restartAttemptRef.current), RESTART_MAX_MS);
     restartTimerRef.current = setTimeout(() => {
       restartTimerRef.current = null;
       if (
@@ -127,7 +187,6 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
       ) {
         return;
       }
-
       restartAttemptRef.current += 1;
       try {
         recognizer.start();
@@ -139,239 +198,279 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
   }, []);
   restartSchedulerRef.current = scheduleRestart;
 
-  const dispatch = useCallback((rawCmd) => {
-    const cmd = String(rawCmd || "").trim();
-    if (cmd) {
-      setHeardText(cmd);
-      onCommandRef.current?.(cmd);
-    }
-    capturingRef.current = false;
-    captureStartIndexRef.current = 0;
-    captureWakePhraseRef.current = null;
-    finalTextRef.current = "";
-    setWakeDetected(false);
-    clearSilenceTimer();
-  }, [clearSilenceTimer]);
-
-  const armSilenceFlush = useCallback(() => {
-    clearSilenceTimer();
-    silenceTimerRef.current = setTimeout(() => {
-      if (capturingRef.current && finalTextRef.current.trim()) {
-        dispatch(finalTextRef.current);
-      }
-    }, SILENCE_FLUSH_MS);
-  }, [clearSilenceTimer, dispatch]);
-
-  const buildCapturedCommand = useCallback((event) => {
-    const segments = [];
-    const startIndex = captureStartIndexRef.current;
-    const wakePhrase = captureWakePhraseRef.current;
-
-    for (let index = startIndex; index < event.results.length; index++) {
-      let text = normalizedResultText(event.results[index]);
-      if (index === startIndex && wakePhrase) {
-        const match = matchesWakeWord(text);
-        if (match.matched) {
-          text = text
-            .slice(match.idx + match.matched.length)
-            .replace(/^[,\s.?!:;-]+/, "")
-            .trim();
+  const buildTurnText = useCallback(() => {
+    let text = '';
+    const entries = [...turnSegmentsRef.current.entries()].sort(([left], [right]) => left - right);
+    for (const [index, segment] of entries) {
+      let segmentText = segment.text;
+      if (index === captureStartIndexRef.current && captureWakePhraseRef.current) {
+        const wake = matchesWakeWord(segmentText);
+        if (wake.matched) {
+          segmentText = segmentText.slice(wake.end).replace(/^[,\s.?!:;-]+/, '').trim();
         }
       }
-      if (text) segments.push(text);
+      text = mergeTranscript(text, segmentText);
     }
-    return segments.join(" ").replace(/\s+/g, " ").trim();
+    return mergeTranscript(carriedTextRef.current, text);
   }, []);
 
+  const updateTurnFromResult = useCallback((event) => {
+    if (captureSessionIdRef.current !== sessionIdRef.current) {
+      // Browser ended in the middle of speech. Keep the captured prefix, but
+      // start a fresh result-index map for the replacement recognizer session.
+      turnSegmentsRef.current.clear();
+      captureSessionIdRef.current = sessionIdRef.current;
+      captureStartIndexRef.current = 0;
+      captureWakePhraseRef.current = null;
+    }
+
+    const startIndex = Math.max(Number(event.resultIndex) || 0, captureStartIndexRef.current);
+    for (let index = startIndex; index < event.results.length; index += 1) {
+      turnSegmentsRef.current.set(index, {
+        text: resultText(event.results[index]),
+        isFinal: Boolean(event.results[index]?.isFinal),
+      });
+    }
+    for (const index of turnSegmentsRef.current.keys()) {
+      if (index >= event.results.length) turnSegmentsRef.current.delete(index);
+    }
+
+    const latest = event.results[event.results.length - 1];
+    latestResultFinalRef.current = Boolean(latest?.isFinal);
+    return buildTurnText();
+  }, [buildTurnText]);
+
+  const dispatch = useCallback((rawCommand) => {
+    if (dispatchingRef.current) return false;
+    const command = cleanText(rawCommand);
+    if (!command) {
+      resetTurn(false);
+      return false;
+    }
+
+    dispatchingRef.current = true;
+    resetTurn(false, true);
+    setHeardText(command);
+    onCommandRef.current?.(command);
+    return true;
+  }, [resetTurn]);
+  dispatchRef.current = dispatch;
+
+  const armSilenceFlush = useCallback((command) => {
+    clearTimer(silenceTimerRef);
+    silenceTimerRef.current = setTimeout(() => {
+      if (!capturingRef.current || !commandTextRef.current.trim()) return;
+      if (!latestResultFinalRef.current && !interimGraceUsedRef.current) {
+        interimGraceUsedRef.current = true;
+        silenceTimerRef.current = setTimeout(() => {
+          if (capturingRef.current && commandTextRef.current.trim()) {
+            dispatchRef.current(commandTextRef.current);
+          }
+        }, INTERIM_SETTLE_GRACE_MS);
+        return;
+      }
+      dispatchRef.current(commandTextRef.current);
+    }, silenceDelay(command));
+  }, [clearTimer]);
+
+  const armWakeWait = useCallback(() => {
+    clearTimer(wakeTimerRef);
+    wakeTimerRef.current = setTimeout(() => {
+      if (capturingRef.current && !commandTextRef.current.trim()) resetTurn(false);
+    }, WAKE_WAIT_MS);
+  }, [clearTimer, resetTurn]);
+
+  const armRecoveryGrace = useCallback(() => {
+    clearTimer(recoveryTimerRef);
+    recoveryTimerRef.current = setTimeout(() => {
+      if (
+        recognizerRunningRef.current
+        && capturingRef.current
+        && commandTextRef.current.trim()
+      ) {
+        dispatchRef.current(commandTextRef.current);
+      }
+    }, RESTART_RECOVERY_GRACE_MS);
+  }, [clearTimer]);
+
+  const beginWakeTurn = useCallback((event, resultIndex, wakePhrase) => {
+    capturingRef.current = true;
+    captureSessionIdRef.current = sessionIdRef.current;
+    captureStartIndexRef.current = resultIndex;
+    captureWakePhraseRef.current = wakePhrase;
+    turnSegmentsRef.current.clear();
+    carriedTextRef.current = '';
+    commandTextRef.current = '';
+    lastHeardTextRef.current = '';
+    latestResultFinalRef.current = false;
+    interimGraceUsedRef.current = false;
+    dispatchingRef.current = false;
+    setWakeDetected(true);
+    setConversationActive(true);
+
+    const command = updateTurnFromResult(event);
+    commandTextRef.current = command;
+    lastHeardTextRef.current = command;
+    setHeardText(command);
+    if (command) armSilenceFlush(command);
+    else armWakeWait();
+  }, [armSilenceFlush, armWakeWait, updateTurnFromResult]);
+
   const start = useCallback(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    setVoiceError("");
-    if (!SR) {
-      const message = "Voice recognition is unavailable in this browser.";
-      setVoiceError(message);
-      console.warn(`[VOICE] ${message}`);
+    if (typeof window === 'undefined') return;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      fatalRef.current = true;
+      setVoiceError('Voice recognition is unavailable in this browser.');
       return;
     }
 
-    const rec = new SR();
-    rec.continuous = true;
-    rec.interimResults = true;
-    rec.lang = RECOG_LANG;
+    if (recRef.current) {
+      if (!recognizerRunningRef.current && !pausedRef.current && !fatalRef.current) {
+        try { recRef.current.start(); } catch (_error) { scheduleRestart(recRef.current); }
+      }
+      return;
+    }
 
-    rec.onresult = (event) => {
-      // A late browser result can arrive after abort(). Never let buffered TTS or
-      // processing-time audio become an owner command.
-      if (pausedRef.current || !enabledRef.current) return;
+    const recognizer = new SpeechRecognition();
+    recognizer.continuous = true;
+    recognizer.interimResults = true;
+    recognizer.maxAlternatives = 3;
+    recognizer.lang = RECOG_LANG;
+
+    recognizer.onresult = (event) => {
+      if (recRef.current !== recognizer || pausedRef.current || !enabledRef.current) return;
 
       if (capturingRef.current) {
-        const command = buildCapturedCommand(event);
-        finalTextRef.current = command;
-        setHeardText(command);
-
-        let changedFinal = false;
-        const firstChanged = Math.max(event.resultIndex, captureStartIndexRef.current);
-        for (let index = firstChanged; index < event.results.length; index++) {
-          if (event.results[index].isFinal) {
-            changedFinal = true;
-            break;
-          }
+        const command = updateTurnFromResult(event);
+        commandTextRef.current = command;
+        if (command !== lastHeardTextRef.current) {
+          lastHeardTextRef.current = command;
+          interimGraceUsedRef.current = false;
+          setHeardText(command);
         }
-
-        if (changedFinal && command) {
-          dispatch(command);
-        } else if (command) {
-          armSilenceFlush();
-        }
+        clearTimer(wakeTimerRef);
+        clearTimer(recoveryTimerRef);
+        if (command) armSilenceFlush(command);
+        else armWakeWait();
         return;
       }
 
-      // Once the owner has said the wake phrase, each later browser result is a
-      // direct conversational turn until Stop Mic resets the session. Per-turn
-      // capture state is still cleared after dispatch; conversation state is not.
-      if (conversationActiveRef.current) {
-        for (let index = event.resultIndex; index < event.results.length; index++) {
-          const result = event.results[index];
-          const transcript = normalizedResultText(result);
-          if (!transcript) continue;
-
-          capturingRef.current = true;
-          captureStartIndexRef.current = index;
-          captureWakePhraseRef.current = null;
-          finalTextRef.current = transcript;
-          setHeardText(transcript);
-
-          if (result.isFinal) {
-            dispatch(transcript);
-          } else {
-            armSilenceFlush();
-          }
-          return;
-        }
-      }
-
-      // Scan only changed hypotheses. An approved wake phrase can either carry
-      // its command in the same final result or arm capture for the next result.
-      for (let index = event.resultIndex; index < event.results.length; index++) {
-        const result = event.results[index];
-        const transcript = normalizedResultText(result);
-        const { matched, idx } = matchesWakeWord(transcript);
-        if (!matched) continue;
-
-        conversationActiveRef.current = true;
-        setConversationActive(true);
-        setWakeDetected(true);
-        capturingRef.current = true;
-        captureStartIndexRef.current = index;
-        captureWakePhraseRef.current = matched;
-
-        const rest = transcript
-          .slice(idx + matched.length)
-          .replace(/^[,\s.?!:;-]+/, "")
-          .trim();
-        finalTextRef.current = rest;
-        setHeardText(rest);
-
-        if (result.isFinal && rest) {
-          dispatch(rest);
-        } else if (rest) {
-          armSilenceFlush();
-        }
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const wake = matchesWakeWord(resultText(event.results[index]));
+        if (!wake.matched) continue;
+        beginWakeTurn(event, index, wake.matched);
         return;
       }
     };
 
-    rec.onerror = (event) => {
-      // abort is expected when C4 pauses processing/TTS or the owner stops.
-      if (event.error === "aborted") return;
-
-      let message = "";
-      if (event.error === "not-allowed") {
-        message = "Microphone permission was denied.";
-      } else if (event.error === "audio-capture") {
-        message = "No microphone input is available in this browser or remote desktop.";
-      } else if (event.error === "network" || event.error === "service-not-allowed") {
-        message = "Browser speech recognition service is unavailable.";
-      } else if (event.error === "language-not-supported") {
-        message = "The selected voice recognition language is unsupported.";
-      } else if (event.error === "bad-grammar") {
-        message = "The browser rejected the voice recognition configuration.";
-      } else if (event.error !== "no-speech") {
-        message = `Voice recognition failed (${event.error || "unknown"}).`;
+    recognizer.onerror = (event) => {
+      if (recRef.current !== recognizer || event.error === 'aborted') return;
+      if (event.error === 'no-speech') {
+        setVoiceError('');
+        return;
       }
 
+      const fatalMessages = {
+        'not-allowed': 'Microphone permission was denied.',
+        'audio-capture': 'No microphone input is available in this browser or remote desktop.',
+        'language-not-supported': 'The selected voice recognition language is unsupported.',
+        'bad-grammar': 'The browser rejected the voice recognition configuration.',
+      };
+      const message = fatalMessages[event.error];
       if (message) {
         fatalRef.current = true;
-        conversationActiveRef.current = false;
-        capturingRef.current = false;
-        finalTextRef.current = "";
-        clearSilenceTimer();
         clearRestartTimer();
-        setConversationActive(false);
-        setWakeDetected(false);
+        resetTurn(false);
+        setIsListening(false);
         setVoiceError(message);
-        console.warn(`[VOICE] ${message}`);
-      } else {
-        // no-speech is an ordinary recoverable end; do not alarm the owner.
-        setVoiceError("");
+        try { recognizer.abort(); } catch (_error) {}
+        return;
       }
-      try { rec.stop(); } catch (_e) {}
+
+      if (event.error === 'network' || event.error === 'service-not-allowed') {
+        // Browser network/service errors remain recoverable and use the bounded
+        // onend restart path. They are shown honestly without pretending active.
+        setVoiceError('Browser speech recognition is reconnecting…');
+        try { recognizer.abort(); } catch (_error) {}
+        return;
+      }
+
+      setVoiceError(`Voice recognition failed (${event.error || 'unknown'}).`);
+      try { recognizer.abort(); } catch (_error) {}
     };
 
-    rec.onstart = () => {
+    recognizer.onstart = () => {
+      if (recRef.current !== recognizer) return;
       clearRestartTimer();
       restartAttemptRef.current = 0;
       recognizerRunningRef.current = true;
+      sessionIdRef.current += 1;
       if (pausedRef.current || !enabledRef.current) {
-        try { rec.abort(); } catch (_e) {}
+        try { recognizer.abort(); } catch (_error) {}
         return;
       }
       setIsListening(true);
-      setVoiceError("");
+      setVoiceError('');
     };
 
-    rec.onend = () => {
+    recognizer.onend = () => {
+      if (recRef.current !== recognizer) return;
       recognizerRunningRef.current = false;
       setIsListening(false);
-      scheduleRestart(rec);
+      if (fatalRef.current) return;
+
+      if (capturingRef.current) {
+        if (commandTextRef.current.trim()) {
+          carriedTextRef.current = commandTextRef.current;
+          turnSegmentsRef.current.clear();
+          captureSessionIdRef.current = -1;
+          captureStartIndexRef.current = 0;
+          captureWakePhraseRef.current = null;
+          clearTimer(silenceTimerRef);
+          armRecoveryGrace();
+        }
+        // A wake-only turn remains open across an unexpected browser restart.
+        scheduleRestart(recognizer);
+        return;
+      }
+      scheduleRestart(recognizer);
     };
 
-    recRef.current = rec;
+    recRef.current = recognizer;
     try {
-      rec.start();
+      recognizer.start();
     } catch (_error) {
-      fatalRef.current = true;
-      setIsListening(false);
-      setVoiceError("Voice recognition could not start in this browser.");
+      recognizerRunningRef.current = false;
+      scheduleRestart(recognizer);
     }
   }, [
+    armRecoveryGrace,
     armSilenceFlush,
-    buildCapturedCommand,
+    armWakeWait,
+    beginWakeTurn,
     clearRestartTimer,
-    clearSilenceTimer,
-    dispatch,
+    clearTimer,
+    resetTurn,
     scheduleRestart,
+    updateTurnFromResult,
   ]);
 
   const stop = useCallback(() => {
-    clearSilenceTimer();
+    clearTurnTimers();
     clearRestartTimer();
     restartAttemptRef.current = 0;
-    if (recRef.current) {
-      try { recRef.current.abort(); } catch (_e) {}
-      try { recRef.current.stop(); } catch (_e) {}
-      recRef.current = null;
-    }
+    const recognizer = recRef.current;
+    recRef.current = null;
     recognizerRunningRef.current = false;
-    capturingRef.current = false;
-    captureStartIndexRef.current = 0;
-    captureWakePhraseRef.current = null;
-    conversationActiveRef.current = false;
-    finalTextRef.current = "";
+    if (recognizer) {
+      try { recognizer.abort(); } catch (_error) {}
+      try { recognizer.stop(); } catch (_error) {}
+    }
+    resetTurn(true);
     setIsListening(false);
-    setWakeDetected(false);
-    setConversationActive(false);
-    setHeardText("");
-  }, [clearRestartTimer, clearSilenceTimer]);
+    setVoiceError('');
+  }, [clearRestartTimer, clearTurnTimers, resetTurn]);
 
   useEffect(() => {
     if (enabled) {
@@ -383,41 +482,32 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
     return () => { stop(); };
   }, [enabled, start, stop]);
 
-  // Web Speech has no pause primitive. abort() is deliberate here: unlike
-  // stop(), it does not ask the browser to return buffered recognition text.
-  // Conversation state survives; only the in-flight turn is discarded.
+  // Processing/TTS remains an explicit App-level pause in this private project.
+  // Option A does not preserve a follow-up conversation during the pause; after
+  // a response the owner says a wake phrase again for the next command.
   useEffect(() => {
     const recognizer = recRef.current;
     if (!enabled || !recognizer) return;
 
     if (paused) {
-      clearSilenceTimer();
       clearRestartTimer();
       restartAttemptRef.current = 0;
-      capturingRef.current = false;
-      captureStartIndexRef.current = 0;
-      captureWakePhraseRef.current = null;
-      finalTextRef.current = "";
-      setWakeDetected(false);
+      resetTurn(false);
       recognizerRunningRef.current = false;
       setIsListening(false);
-      try { recognizer.abort(); } catch (_e) {}
+      try { recognizer.abort(); } catch (_error) {}
       return;
     }
 
     if (!fatalRef.current && !recognizerRunningRef.current) {
-      try {
-        recognizer.start();
-      } catch (_error) {
-        scheduleRestart(recognizer);
-      }
+      try { recognizer.start(); } catch (_error) { scheduleRestart(recognizer); }
     }
-  }, [clearRestartTimer, clearSilenceTimer, enabled, paused, scheduleRestart]);
+  }, [clearRestartTimer, enabled, paused, resetTurn, scheduleRestart]);
 
   useEffect(() => () => {
-    clearSilenceTimer();
+    clearTurnTimers();
     clearRestartTimer();
-  }, [clearRestartTimer, clearSilenceTimer]);
+  }, [clearRestartTimer, clearTurnTimers]);
 
   return {
     isListening,

@@ -77,16 +77,16 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-describe('Voice C7 — truthful owner-facing states', () => {
-  it('shows the one-time wake instruction while armed', () => {
+describe('Voice Option A — truthful owner-facing states', () => {
+  it('shows the wake-every-command instruction while armed', () => {
     voiceHarness.state = { isListening: true, conversationActive: false };
     openVoiceSession();
 
     expect(screen.getByRole('button', { name: 'Stop voice session' })).toBeTruthy();
-    expect(screen.getByTestId('voice-status').textContent).toContain('Say “Ultron” once to start');
+    expect(screen.getByTestId('voice-status').textContent).toContain('Say “Ultron” to start a voice command');
   });
 
-  it('shows active follow-up listening and the real heard transcript', () => {
+  it('shows active single-command capture and the real heard transcript', () => {
     voiceHarness.state = {
       isListening: true,
       conversationActive: true,
@@ -94,7 +94,7 @@ describe('Voice C7 — truthful owner-facing states', () => {
     };
     openVoiceSession();
 
-    expect(screen.getByTestId('voice-status').textContent).toContain('Voice conversation active');
+    expect(screen.getByTestId('voice-status').textContent).toContain('Wake phrase heard — speak your command');
     expect(screen.getByTestId('voice-heard-text').textContent).toContain('show my important memories');
   });
 

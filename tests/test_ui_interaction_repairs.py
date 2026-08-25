@@ -74,7 +74,7 @@ class TestVoiceFailureFeedback(unittest.TestCase):
     def test_remote_desktop_microphone_failure_is_visible_and_honest(self):
         voice = VOICE.read_text(encoding="utf-8")
         shell = SHELL.read_text(encoding="utf-8")
-        self.assertIn('event.error === "audio-capture"', voice)
+        self.assertIn("'audio-capture'", voice)
         self.assertIn("No microphone input is available", voice)
         self.assertIn("voiceError", voice)
         self.assertIn("supported", voice)

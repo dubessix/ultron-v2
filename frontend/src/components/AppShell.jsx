@@ -106,8 +106,8 @@ export default function AppShell({
           : voice.wakeDetected
             ? "Wake phrase heard — speak your command."
             : voice.conversationActive
-              ? "Voice conversation active — listening for your next turn."
-              : "Say “Ultron” once to start the voice conversation.";
+              ? "Wake phrase heard — speak your command."
+              : "Say “Ultron” to start a voice command.";
 
   return (
     <div
@@ -207,7 +207,7 @@ export default function AppShell({
               {voice.wakeDetected
                 ? "WAKE DETECTED"
                 : voice.conversationActive && voice.isListening
-                  ? "VOICE ACTIVE"
+                  ? "COMMAND CAPTURE"
                   : aiState}
             </span>
           </div>
