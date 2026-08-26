@@ -56,6 +56,8 @@ function voiceResponse(content, overrides = {}) {
       message: 'Exact confirmation required.',
     },
     provider_route: { provider: null, model: null, offline: true },
+    input_source: 'voice',
+    voice_alias_suggestions: [{ heard: 'calender', suggested: 'Calendar', category: 'widget' }],
     memory_provenance: [{ source_type: 'memory', source_id: 'memory-c6' }],
     ...overrides,
   };
@@ -134,6 +136,8 @@ describe('Voice C6 — canonical transport and response preservation', () => {
       project_id: 'personal',
       intent: 'MEMORY',
       provider_route: { offline: true },
+      input_source: 'voice',
+      voice_alias_suggestions: [{ heard: 'calender', suggested: 'Calendar', category: 'widget' }],
       memory_provenance: [{ source_type: 'memory', source_id: 'memory-c6' }],
     });
     expect(shellCapture.props.logs).toContainEqual({ level: 'info', message: 'Voice event preserved' });

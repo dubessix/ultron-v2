@@ -29,6 +29,7 @@ from backend.app.session.session_manager import SessionManager
 from backend.app.memory.recall_index import index_conversation_turn
 from backend.app.memory.session_summary import refresh_session_summary
 from backend.app.utils.text_cleaner import clean_text
+from backend.app.core.voice_intent import inspect_voice_aliases
 
 
 async def process_chat_message(
@@ -55,6 +56,9 @@ async def process_chat_message(
     input_source = str(input_source or "text").strip().lower()
     if input_source not in {"text", "voice"}:
         raise ValueError("Chat input_source must be text or voice.")
+    # Phase 2 detects safe known-word mismatches but never rewrites content.
+    # The future clarification gate, not this service, decides what to do.
+    voice_alias_suggestions = inspect_voice_aliases(content) if input_source == "voice" else []
 
     # 1. Resolve active session (create it if it doesn't exist yet).
     session_data = SessionManager.get_or_create_session(session_id)
@@ -145,5 +149,6 @@ async def process_chat_message(
             "provider": None, "model": None, "cached": False, "offline": False
         },
         "input_source": result.get("input_source", input_source),
+        "voice_alias_suggestions": voice_alias_suggestions,
         "memory_provenance": result.get("memory_provenance") or [],
     }

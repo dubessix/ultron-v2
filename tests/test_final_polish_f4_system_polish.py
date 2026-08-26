@@ -9,6 +9,7 @@ import yaml
 from pydantic import ValidationError
 
 from backend.app.core.orchestrator import CognitiveOrchestrator
+from backend.app.core.voice_intent import inspect_voice_aliases
 from backend.app.memory.memory_gate import MemoryGate
 from backend.app.personalities.base_personality import UltronPersonality
 from backend.app.router import ChatRequest, SpeakRequest
@@ -60,6 +61,20 @@ class TestPromptAndSkillBudgets(unittest.TestCase):
         self.assertEqual(text.input_source, "text")
         with self.assertRaises(ValidationError):
             ChatRequest(content="open calendar", input_source="microphone_audio")
+
+    def test_voice_aliases_suggest_known_words_without_rewriting_risky_text(self):
+        suggestions = inspect_voice_aliases("Jora open calender and git hub")
+        self.assertEqual(
+            suggestions,
+            [
+                {"heard": "jora", "suggested": "Zora", "category": "personality"},
+                {"heard": "calender", "suggested": "Calendar", "category": "widget"},
+                {"heard": "git hub", "suggested": "GitHub", "category": "service"},
+            ],
+        )
+        self.assertEqual(inspect_voice_aliases("delete /work/jora.txt at 9:30"), [
+            {"heard": "jora", "suggested": "Zora", "category": "personality"},
+        ])
 
     def test_history_formatter_redacts_and_bounds_individual_turns(self):
         formatted = CognitiveOrchestrator._format_prompt_history(

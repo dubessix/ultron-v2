@@ -608,6 +608,8 @@ export default function App() {
           project_id: data.project_id || "personal",
           intent: data.intent || "",
           provider_route: data.provider_route || {},
+          input_source: data.input_source || "voice",
+          voice_alias_suggestions: data.voice_alias_suggestions || [],
           memory_provenance: data.memory_provenance || [],
           events: data.events || [],
           pending_confirmation: data.pending_confirmation || null,
