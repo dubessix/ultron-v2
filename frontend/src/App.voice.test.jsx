@@ -143,6 +143,11 @@ describe('Voice C6 — canonical transport and response preservation', () => {
       memory_provenance: [{ source_type: 'memory', source_id: 'memory-c6' }],
     });
     expect(shellCapture.props.logs).toContainEqual({ level: 'info', message: 'Voice event preserved' });
+    expect(shellCapture.props.voiceClarification).toEqual({
+      question: 'Did you mean Calendar?',
+      options: ['Open Calendar'],
+      reason: 'test',
+    });
     expect(shellCapture.props.pendingAction).toMatchObject({
       confirmation_token: 'c6-exact-token-1234567890',
       tool_id: 'manage_memory',

@@ -39,6 +39,8 @@ export default function AppShell({
   handleVoiceCommand,
   voicePaused,
   onVoiceStop,
+  voiceClarification,
+  onVoiceClarificationChoice,
   codingMode,
   toggleCodingMode,
   codingModeSaving,
@@ -325,6 +327,29 @@ export default function AppShell({
                   title={voice.heardText}
                 >
                   Heard: {voice.heardText}
+                </div>
+              )}
+            </div>
+          )}
+          {voiceClarification?.question && (
+            <div
+              data-testid="voice-clarification"
+              className="absolute bottom-20 left-1/2 z-20 w-[min(92%,420px)] -translate-x-1/2 rounded-xl border border-sky-400/20 bg-[#071015]/95 p-3 font-mono shadow-[0_14px_35px_rgba(0,0,0,0.42)] backdrop-blur-xl"
+            >
+              <p className="text-[10px] leading-relaxed text-sky-100">{voiceClarification.question}</p>
+              {voiceClarification.options?.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {voiceClarification.options.slice(0, 3).map((choice) => (
+                    <button
+                      key={choice}
+                      type="button"
+                      onClick={() => onVoiceClarificationChoice?.(choice)}
+                      disabled={isProcessing}
+                      className="rounded-md border border-emerald-400/25 bg-emerald-400/[0.07] px-2 py-1 text-[8px] text-emerald-200 transition hover:bg-emerald-400/15 disabled:opacity-40"
+                    >
+                      {choice}
+                    </button>
+                  ))}
                 </div>
               )}
             </div>

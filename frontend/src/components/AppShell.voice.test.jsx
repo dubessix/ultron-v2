@@ -54,6 +54,8 @@ const baseProps = {
   handleVoiceCommand: vi.fn(),
   voicePaused: false,
   onVoiceStop: vi.fn(),
+  voiceClarification: null,
+  onVoiceClarificationChoice: vi.fn(),
   codingMode: false,
   toggleCodingMode: vi.fn(),
   codingModeSaving: false,
@@ -116,6 +118,25 @@ describe('Voice Option A — truthful owner-facing states', () => {
 
     expect(screen.getByTestId('voice-status').textContent).toContain('Voice reconnecting');
     expect(screen.queryByText('Listening for wake word...')).toBeNull();
+  });
+
+  it('shows only backend-approved clarification choices and returns the exact selection', () => {
+    const choose = vi.fn();
+    render(
+      <AppShell
+        {...baseProps}
+        voiceClarification={{
+          question: 'I heard open code. Did you mean VS Code, Code Optimizer, or Code Graph?',
+          options: ['Open VS Code', 'Open Code Optimizer', 'Open Code Graph'],
+          reason: 'open_code_ambiguous',
+        }}
+        onVoiceClarificationChoice={choose}
+      />
+    );
+
+    expect(screen.getByTestId('voice-clarification').textContent).toContain('I heard open code');
+    fireEvent.click(screen.getByRole('button', { name: 'Open Code Optimizer' }));
+    expect(choose).toHaveBeenCalledWith('Open Code Optimizer');
   });
 
   it('stops the complete voice session and current speech from one control', () => {

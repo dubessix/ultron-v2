@@ -31,6 +31,9 @@ export default function App() {
   // Exact one-time action returned by the backend; never regenerate on confirm.
   const [pendingAction, setPendingAction] = useState(null);
   const [confirmingAction, setConfirmingAction] = useState(false);
+  // Present only when the backend explicitly says a voice transcript has more
+  // than one safe meaning. Normal clear requests never show this card.
+  const [voiceClarification, setVoiceClarification] = useState(null);
   // Real-time operational log (Log tab)
   const [logs, setLogs] = useState([]);
   // One first-open briefing attempt per browser page; localStorage prevents repeats that day.
@@ -571,6 +574,7 @@ export default function App() {
     voiceRequestInFlightRef.current = true;
     // Barge-in: the user is speaking — stop any in-progress TTS immediately.
     stopSpeaking();
+    setVoiceClarification(null);
     setInputValue("");
     setIsProcessing(true);
     setAiState("thinking");
@@ -645,6 +649,7 @@ export default function App() {
           setActivityText(`Waiting for confirmation: ${data.pending_confirmation.tool_id}.`);
           addNotification('Confirmation required', data.pending_confirmation.message, 'high');
         }
+        setVoiceClarification(data.voice_clarification || null);
       } else {
         setMessages(prev => [...prev, {
           id: "error_" + Date.now(), sender: "system_error",
@@ -664,6 +669,16 @@ export default function App() {
       voiceRequestInFlightRef.current = false;
       setIsProcessing(false);
     }
+  };
+
+  // A clarification option is explicit owner input. Send the exact selected
+  // wording back through the same canonical voice transport; no tool is picked
+  // by the browser/UI itself.
+  const handleVoiceClarificationChoice = (choice) => {
+    const selected = String(choice || '').trim();
+    if (!selected || isProcessing) return;
+    setVoiceClarification(null);
+    void handleVoiceCommand(selected);
   };
 
   // Dispatch REST messages through canonical WebSocket/REST transport.
@@ -877,6 +892,8 @@ export default function App() {
         handleVoiceCommand={handleVoiceCommand}
         voicePaused={isProcessing || isSpeaking}
         onVoiceStop={stopSpeaking}
+        voiceClarification={voiceClarification}
+        onVoiceClarificationChoice={handleVoiceClarificationChoice}
         codingMode={codingMode}
         toggleCodingMode={toggleCodingMode}
         codingModeSaving={codingModeSaving}
