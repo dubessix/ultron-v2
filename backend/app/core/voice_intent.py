@@ -18,10 +18,17 @@ class VoiceAliasSuggestion(TypedDict):
     category: str
 
 
-class VoiceClarification(TypedDict):
+class VoicePreferenceOffer(TypedDict):
+    alias: str
+    canonical: str
+    label: str
+
+
+class VoiceClarification(TypedDict, total=False):
     question: str
     options: list[str]
     reason: str
+    preference_offer: VoicePreferenceOffer
 
 
 # Keep this list intentionally short. Paths, dates, times, terminal commands,
@@ -55,6 +62,7 @@ def inspect_voice_aliases(transcript: str) -> list[VoiceAliasSuggestion]:
 def plan_voice_clarification(
     transcript: str,
     alias_suggestions: list[VoiceAliasSuggestion] | None = None,
+    approved_aliases: dict[str, str] | None = None,
 ) -> VoiceClarification | None:
     """Return a short clarification only for known ambiguity or unsafe vagueness.
 
@@ -65,11 +73,19 @@ def plan_voice_clarification(
     lowered = text.lower()
     aliases = list(alias_suggestions or [])
 
+    approved = dict(approved_aliases or {})
     if any(item["heard"] == "jora" for item in aliases):
+        if approved.get("jora") == "Zora":
+            return None
         return {
             "question": "Did you mean Zora, sir?",
             "options": ["Yes, switch to Zora", "No, I meant something else"],
             "reason": "personality_alias",
+            "preference_offer": {
+                "alias": "jora",
+                "canonical": "Zora",
+                "label": "Remember Jora means Zora",
+            },
         }
 
     exact_ambiguities: tuple[tuple[re.Pattern[str], VoiceClarification], ...] = (

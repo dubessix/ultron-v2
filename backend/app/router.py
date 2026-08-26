@@ -81,6 +81,11 @@ class ChatResponse(BaseModel):
         description="Content-free provenance for saved memory sources injected into this turn.",
     )
 
+class VoicePreferenceRequest(BaseModel):
+    alias: str = Field(..., min_length=1, max_length=48)
+    canonical: str = Field(..., min_length=1, max_length=48)
+
+
 class ToolExecuteRequest(BaseModel):
     tool_id: str = Field(..., description="ID of the target registered tool.")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Input arguments to validate and feed to tool execution.")
@@ -175,6 +180,32 @@ async def post_chat_message(request: ChatRequest) -> ChatResponse:
         ) from e
     # Shared orchestrator is intentionally NOT closed here — it persists across
     # messages for memory. (Its persistent httpx client lives for the process.)
+
+
+@api_router.get("/voice/preferences", status_code=status.HTTP_200_OK)
+async def get_voice_preferences() -> dict:
+    """Return only explicitly owner-approved voice aliases."""
+    from backend.app.core.voice_preferences import get_approved_voice_aliases
+
+    return {"aliases": get_approved_voice_aliases()}
+
+
+@api_router.post("/voice/preferences", status_code=status.HTTP_200_OK)
+async def save_voice_preference(request: VoicePreferenceRequest) -> dict:
+    """Persist one exact alias chosen through the clarification UI."""
+    from backend.app.core.voice_preferences import remember_voice_alias
+
+    try:
+        aliases = remember_voice_alias(request.alias, request.canonical)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "success": True,
+        "alias": request.alias.strip().lower(),
+        "canonical": request.canonical,
+        "aliases": aliases,
+    }
+
 
 @api_router.post("/tools/execute", status_code=status.HTTP_200_OK)
 async def execute_backend_tool(request: ToolExecuteRequest) -> Dict[str, Any]:

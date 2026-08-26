@@ -56,6 +56,8 @@ const baseProps = {
   onVoiceStop: vi.fn(),
   voiceClarification: null,
   onVoiceClarificationChoice: vi.fn(),
+  onVoicePreferenceSave: vi.fn(),
+  voicePreferenceSaving: false,
   codingMode: false,
   toggleCodingMode: vi.fn(),
   codingModeSaving: false,
@@ -137,6 +139,26 @@ describe('Voice Option A — truthful owner-facing states', () => {
     expect(screen.getByTestId('voice-clarification').textContent).toContain('I heard open code');
     fireEvent.click(screen.getByRole('button', { name: 'Open Code Optimizer' }));
     expect(choose).toHaveBeenCalledWith('Open Code Optimizer');
+  });
+
+  it('offers alias memory only after the owner explicitly presses remember', () => {
+    const save = vi.fn();
+    const offer = { alias: 'jora', canonical: 'Zora', label: 'Remember Jora means Zora' };
+    render(
+      <AppShell
+        {...baseProps}
+        voiceClarification={{
+          question: 'Did you mean Zora, sir?',
+          options: ['Yes, switch to Zora', 'No, I meant something else'],
+          reason: 'personality_alias',
+          preference_offer: offer,
+        }}
+        onVoicePreferenceSave={save}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remember Jora means Zora' }));
+    expect(save).toHaveBeenCalledWith(offer);
   });
 
   it('stops the complete voice session and current speech from one control', () => {

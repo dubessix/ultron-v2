@@ -34,6 +34,7 @@ export default function App() {
   // Present only when the backend explicitly says a voice transcript has more
   // than one safe meaning. Normal clear requests never show this card.
   const [voiceClarification, setVoiceClarification] = useState(null);
+  const [voicePreferenceSaving, setVoicePreferenceSaving] = useState(false);
   // Real-time operational log (Log tab)
   const [logs, setLogs] = useState([]);
   // One first-open briefing attempt per browser page; localStorage prevents repeats that day.
@@ -681,6 +682,26 @@ export default function App() {
     void handleVoiceCommand(selected);
   };
 
+  const handleVoicePreferenceSave = async (offer) => {
+    if (!offer?.alias || !offer?.canonical || voicePreferenceSaving) return;
+    setVoicePreferenceSaving(true);
+    try {
+      const result = await api('/api/voice/preferences', {
+        method: 'POST',
+        body: JSON.stringify({ alias: offer.alias, canonical: offer.canonical }),
+      });
+      if (!result.success) throw new Error('Voice preference was not saved.');
+      setVoiceClarification((current) => current
+        ? { ...current, preference_offer: null }
+        : current);
+      addNotification('Voice preference saved', `I will understand ${offer.alias} as ${offer.canonical}.`, 'low');
+    } catch (error) {
+      addNotification('Voice preference not saved', error.message || 'Please try again.', 'medium');
+    } finally {
+      setVoicePreferenceSaving(false);
+    }
+  };
+
   // Dispatch REST messages through canonical WebSocket/REST transport.
   // The provider finishes first; the backend then sends one exact completed-content
   // frame plus real progress/events instead of simulated token timing.
@@ -894,6 +915,8 @@ export default function App() {
         onVoiceStop={stopSpeaking}
         voiceClarification={voiceClarification}
         onVoiceClarificationChoice={handleVoiceClarificationChoice}
+        onVoicePreferenceSave={handleVoicePreferenceSave}
+        voicePreferenceSaving={voicePreferenceSaving}
         codingMode={codingMode}
         toggleCodingMode={toggleCodingMode}
         codingModeSaving={codingModeSaving}

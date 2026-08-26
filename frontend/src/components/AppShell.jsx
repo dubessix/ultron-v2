@@ -41,6 +41,8 @@ export default function AppShell({
   onVoiceStop,
   voiceClarification,
   onVoiceClarificationChoice,
+  onVoicePreferenceSave,
+  voicePreferenceSaving,
   codingMode,
   toggleCodingMode,
   codingModeSaving,
@@ -351,6 +353,16 @@ export default function AppShell({
                     </button>
                   ))}
                 </div>
+              )}
+              {voiceClarification.preference_offer?.label && (
+                <button
+                  type="button"
+                  onClick={() => onVoicePreferenceSave?.(voiceClarification.preference_offer)}
+                  disabled={voicePreferenceSaving}
+                  className="mt-2 rounded-md border border-sky-400/25 bg-sky-400/[0.07] px-2 py-1 text-[8px] text-sky-100 transition hover:bg-sky-400/15 disabled:opacity-40"
+                >
+                  {voicePreferenceSaving ? 'Saving preference…' : voiceClarification.preference_offer.label}
+                </button>
               )}
             </div>
           )}

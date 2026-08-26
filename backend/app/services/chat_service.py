@@ -31,6 +31,7 @@ from backend.app.memory.recall_index import index_conversation_turn
 from backend.app.memory.session_summary import refresh_session_summary
 from backend.app.utils.text_cleaner import clean_text
 from backend.app.core.voice_intent import inspect_voice_aliases, plan_voice_clarification
+from backend.app.core.voice_preferences import apply_approved_voice_aliases, get_approved_voice_aliases
 
 
 async def process_chat_message(
@@ -59,11 +60,19 @@ async def process_chat_message(
         raise ValueError("Chat input_source must be text or voice.")
     # Phase 2 detects safe known-word mismatches but never rewrites content.
     # The future clarification gate, not this service, decides what to do.
+    approved_voice_aliases = get_approved_voice_aliases() if input_source == "voice" else {}
     voice_alias_suggestions = inspect_voice_aliases(content) if input_source == "voice" else []
     voice_clarification = (
-        plan_voice_clarification(content, voice_alias_suggestions)
+        plan_voice_clarification(content, voice_alias_suggestions, approved_voice_aliases)
         if input_source == "voice"
         else None
+    )
+    # Preserve raw text in history. Only owner-approved aliases are applied to
+    # the transient agent prompt, never to paths/dates/commands or stored text.
+    agent_content = (
+        apply_approved_voice_aliases(content, approved_voice_aliases)
+        if input_source == "voice"
+        else content
     )
 
     # 1. Resolve active session (create it if it doesn't exist yet).
@@ -96,7 +105,7 @@ async def process_chat_message(
         }
     else:
         result = await orchestrator.process_request(
-            user_prompt=content,
+            user_prompt=agent_content,
             session_id=resolved_session_id,
             project_id=effective_project_id,
             consecutive_errors=0,

@@ -12,7 +12,13 @@ from pydantic import ValidationError
 
 from backend.app.core.orchestrator import CognitiveOrchestrator
 from backend.app.core.voice_intent import inspect_voice_aliases, plan_voice_clarification
+from backend.app.core.voice_preferences import (
+    apply_approved_voice_aliases,
+    get_approved_voice_aliases,
+    remember_voice_alias,
+)
 from backend.app.memory.memory_gate import MemoryGate
+from backend.app.memory.persistent_memory import PersistentMemory
 from backend.app.personalities.base_personality import UltronPersonality
 from backend.app.router import ChatRequest, SpeakRequest
 from backend.app.services.chat_service import process_chat_message
@@ -97,6 +103,21 @@ class TestPromptAndSkillBudgets(unittest.TestCase):
             plan_voice_clarification("delete the report")["reason"],
             "unsafe_target_missing",
         )
+
+    def test_voice_alias_is_used_only_after_explicit_owner_approval(self):
+        memory = PersistentMemory()
+        memory.delete("voice_alias_preferences.v1")
+        try:
+            self.assertEqual(get_approved_voice_aliases(), {})
+            self.assertEqual(remember_voice_alias("jora", "Zora"), {"jora": "Zora"})
+            approved = get_approved_voice_aliases()
+            self.assertEqual(approved, {"jora": "Zora"})
+            self.assertEqual(apply_approved_voice_aliases("Jora open calendar", approved), "Zora open calendar")
+            self.assertIsNone(
+                plan_voice_clarification("Jora open calendar", inspect_voice_aliases("Jora open calendar"), approved)
+            )
+        finally:
+            memory.delete("voice_alias_preferences.v1")
 
     def test_voice_policy_tells_agent_to_clarify_ambiguity_without_tool_calls(self):
         policy = CognitiveOrchestrator._voice_input_policy(
