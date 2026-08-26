@@ -83,9 +83,13 @@ class TestFloatingWidgetBounds(unittest.TestCase):
 
 
 class TestCodespacesWindow(unittest.TestCase):
-    def test_codespaces_chrome_requests_a_maximized_window(self):
-        script = (ROOT / ".devcontainer" / "codespaces_launch_setup.sh").read_text(encoding="utf-8")
-        self.assertIn("--start-maximized", script)
+    def test_codespaces_uses_the_owner_browser_not_remote_chrome(self):
+        script = (ROOT / "start_codespaces_web.sh").read_text(encoding="utf-8")
+        devcontainer = (ROOT / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8")
+        self.assertIn("Open forwarded port 5173 in your normal Chrome or Edge browser", script)
+        self.assertIn("ULTRON_CODESPACES_WEB", script)
+        self.assertIn('"forwardPorts": [5173]', devcontainer)
+        self.assertFalse((ROOT / ".devcontainer" / "codespaces_launch_setup.sh").exists())
 
 
 if __name__ == "__main__":

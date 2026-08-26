@@ -1,4 +1,4 @@
-"""Regression checks for the no-key GitHub Codespaces Ubuntu desktop demo."""
+"""Regression checks for direct GitHub Codespaces browser mode."""
 
 from __future__ import annotations
 
@@ -9,27 +9,48 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_codespaces_uses_private_lightweight_desktop_and_real_setup_wrapper():
+def test_codespaces_uses_direct_forwarded_browser_not_novnc():
     config = json.loads((ROOT / ".devcontainer" / "devcontainer.json").read_text(encoding="utf-8"))
     assert config["build"]["dockerfile"] == "Dockerfile"
-    assert "ghcr.io/devcontainers/features/desktop-lite:1" in config["features"]
-    assert config["forwardPorts"] == [6080]
-    assert config["portsAttributes"]["6080"]["onAutoForward"] == "openBrowserOnce"
-    assert config["portsAttributes"]["5173"]["onAutoForward"] == "ignore"
+    assert "features" not in config or "ghcr.io/devcontainers/features/desktop-lite:1" not in config.get("features", {})
+    assert config["forwardPorts"] == [5173]
+    assert config["portsAttributes"]["5173"]["onAutoForward"] == "openBrowserOnce"
+    assert config["portsAttributes"]["5173"]["visibility"] == "private"
     assert config["portsAttributes"]["8000"]["onAutoForward"] == "ignore"
+    assert config["containerEnv"]["ULTRON_CODESPACES_WEB"] == "1"
     assert "codespaces_prepare.sh" in config["postCreateCommand"]
-    assert "codespaces_desktop.sh" in config["postStartCommand"]
+    assert "postStartCommand" not in config
 
-    desktop = (ROOT / ".devcontainer" / "codespaces_desktop.sh").read_text(encoding="utf-8")
-    launch = (ROOT / ".devcontainer" / "codespaces_launch_setup.sh").read_text(encoding="utf-8")
-    assert "xdpyinfo" in desktop
-    assert "pcmanfm --desktop" in desktop
-    assert "codespaces_launch_setup.sh" in desktop
-    assert 'SETUP_ULTRON_UBUNTU.sh' in launch
-    assert "backend.app.installer" not in launch  # The real platform wrapper owns startup.
+    prepare = (ROOT / ".devcontainer" / "codespaces_prepare.sh").read_text(encoding="utf-8")
+    assert "start_codespaces_web.sh" in prepare
+    assert "No desktop, VNC, or noVNC service" in prepare
+    assert not (ROOT / ".devcontainer" / "codespaces_desktop.sh").exists()
+    assert not (ROOT / ".devcontainer" / "codespaces_launch_setup.sh").exists()
 
 
-def test_codespaces_image_has_signed_browser_and_gui_prerequisites_without_keys():
+def test_codespaces_web_launcher_owns_both_services_and_uses_relative_proxy_mode():
+    launcher = (ROOT / "start_codespaces_web.sh").read_text(encoding="utf-8")
+    vite = (ROOT / "frontend" / "vite.config.js").read_text(encoding="utf-8")
+    api = (ROOT / "frontend" / "src" / "api.js").read_text(encoding="utf-8")
+
+    for required in (
+        "ULTRON_CODESPACES_WEB=1",
+        "VITE_API_URL=.",
+        "uvicorn backend.app.main:app --host 127.0.0.1 --port 8000",
+        "npm run dev -- --host 0.0.0.0 --port 5173",
+        "wait -n",
+        "cleanup()",
+    ):
+        assert required in launcher
+    assert "codespacesWebMode" in vite
+    assert "'/api'" in vite
+    assert "'/ws'" in vite
+    assert "0.0.0.0" in vite
+    assert "websocketBase" in api
+    assert "configuredApiBase === undefined" in api
+
+
+def test_codespaces_image_has_only_terminal_web_prerequisites_without_keys():
     dockerfile = (ROOT / ".devcontainer" / "Dockerfile").read_text(encoding="utf-8")
     combined = "\n".join(
         path.read_text(encoding="utf-8")
@@ -37,11 +58,9 @@ def test_codespaces_image_has_signed_browser_and_gui_prerequisites_without_keys(
         if path.is_file()
     )
     assert "mcr.microsoft.com/devcontainers/universal:5.1-linux" in dockerfile
-    assert "python3-tk" in dockerfile
     assert "python3-venv" in dockerfile
-    assert "pcmanfm" in dockerfile
-    assert "google-chrome-stable" in dockerfile
-    assert "signed-by=/usr/share/keyrings/google-chrome.gpg" in dockerfile
+    assert "google-chrome-stable" not in dockerfile
+    assert "desktop-lite" not in combined
     for secret_name in (
         "GROQ_API_KEY_1=",
         "GEMINI_API_KEY_1=",

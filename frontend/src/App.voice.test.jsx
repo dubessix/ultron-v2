@@ -13,6 +13,8 @@ const apiMocks = vi.hoisted(() => ({
     return { success: true };
   }),
   executeTool: vi.fn(async () => ({ success: false, error: 'not used in voice tests' })),
+  apiBase: 'http://127.0.0.1:8000',
+  websocketBase: vi.fn(() => 'ws://127.0.0.1:8000'),
 }));
 
 vi.mock('./components/AppShell', () => ({
@@ -24,7 +26,9 @@ vi.mock('./components/AppShell', () => ({
 vi.mock('./components/NotificationToast', () => ({ default: () => null }));
 vi.mock('./api', () => ({
   api: apiMocks.api,
+  apiBase: apiMocks.apiBase,
   executeTool: apiMocks.executeTool,
+  websocketBase: apiMocks.websocketBase,
 }));
 
 import App from './App';

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
-import { api, executeTool } from './api';
+import { api, apiBase, executeTool, websocketBase } from './api';
 
 /**
  * Ultron Web Client Root App
@@ -132,7 +132,7 @@ export default function App() {
       if (inFlight || cancelled) return;
       inFlight = true;
       try {
-        const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+        const apiUrl = apiBase;
         const requestStarted = performance.now();
         const response = await fetch(`${apiUrl}/api/health`);
         if (response.ok) {
@@ -397,7 +397,7 @@ export default function App() {
     speechFetchControllerRef.current = fetchController;
     setIsSpeaking(true);
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+      const apiUrl = apiBase;
       const response = await fetch(`${apiUrl}/api/speak`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -585,7 +585,7 @@ export default function App() {
     setMessages(prev => [...prev, { id: localUserMsgId, sender: "user", text: userText }]);
 
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+      const apiUrl = apiBase;
       const response = await fetch(`${apiUrl}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -708,8 +708,8 @@ export default function App() {
   const wsRef = useRef(null);
   const sendViaWS = (text) => {
     return new Promise((resolve) => {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-      const wsBase = apiUrl.replace(/^http/, "ws");
+      const apiUrl = apiBase;
+      const wsBase = websocketBase();
       let ws;
       let openedAndSent = false;
       let settled = false;

@@ -1,14 +1,23 @@
-// Ultron shared frontend API client (Phase 6)
-//
-// Single source of truth for reaching the backend, so no widget uses a broken
-// relative `/api` URL (which 404s in dev, where the backend runs on a different
-// port/host than the Vite dev server). Backend base URL is resolved from
-// VITE_API_URL with a localhost fallback, exactly like the widgets that already
-// worked.
+// Ultron shared frontend API client.
+// Normal local installs use a loopback backend. Explicit Codespaces Web Mode
+// sets VITE_API_URL=. so browser traffic remains relative and Vite proxies it
+// to the internal FastAPI server.
 
-const API_BASE = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000").replace(/\/+$/, "");
+const configuredApiBase = import.meta.env.VITE_API_URL;
+const API_BASE = (configuredApiBase === undefined
+  ? 'http://127.0.0.1:8000'
+  : configuredApiBase
+).replace(/\/+$/, '');
 
 export const apiBase = API_BASE;
+
+export function websocketBase() {
+  if (/^https?:\/\//.test(API_BASE)) return API_BASE.replace(/^http/, 'ws');
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
+  }
+  return 'ws://127.0.0.1:8000';
+}
 
 /**
  * JSON request helper against the backend.
@@ -17,26 +26,24 @@ export const apiBase = API_BASE;
 export async function api(path, options = {}) {
   const url = `${API_BASE}${path}`;
   const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   });
   if (!res.ok) {
-    let detail = "";
+    let detail = '';
     try {
-      detail = (await res.json()).detail || "";
-    } catch (_e) { /* ignore */ }
+      detail = (await res.json()).detail || '';
+    } catch (_error) { /* response was not JSON */ }
     throw new Error(`API ${path} failed (${res.status}): ${detail}`);
   }
   return res.json();
 }
 
-/**
- * Execute a backend tool through the validated REST executor.
- */
+/** Execute a backend tool through the validated REST executor. */
 export function executeTool(toolId, args = {}, options = {}) {
-  const { sessionId = "frontend_tools", confirmationToken = null } = options;
-  return api("/api/tools/execute", {
-    method: "POST",
+  const { sessionId = 'frontend_tools', confirmationToken = null } = options;
+  return api('/api/tools/execute', {
+    method: 'POST',
     body: JSON.stringify({
       tool_id: toolId,
       arguments: args,
@@ -48,10 +55,10 @@ export function executeTool(toolId, args = {}, options = {}) {
 }
 
 /** Ask once, then return the exact token for the exact same tool arguments. */
-export async function executeToolWithConfirmation(toolId, args = {}, sessionId = "frontend_tools") {
+export async function executeToolWithConfirmation(toolId, args = {}, sessionId = 'frontend_tools') {
   const first = await executeTool(toolId, args, { sessionId });
-  if (first.status !== "PENDING_CONFIRMATION") return first;
-  const approved = typeof window !== "undefined" && window.confirm(first.message);
+  if (first.status !== 'PENDING_CONFIRMATION') return first;
+  const approved = typeof window !== 'undefined' && window.confirm(first.message);
   if (!approved) return first;
   return executeTool(toolId, args, {
     sessionId,

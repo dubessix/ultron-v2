@@ -1,15 +1,8 @@
 {
-  "name": "Ultron Personal V1 — Ubuntu Desktop Demo",
+  "name": "Ultron Personal V1 — Codespaces Web Mode",
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".."
-  },
-  "features": {
-    "ghcr.io/devcontainers/features/desktop-lite:1": {
-      "password": "vscode",
-      "webPort": "6080",
-      "vncPort": "5901"
-    }
   },
   "runArgs": [
     "--init",
@@ -18,36 +11,26 @@
   "overrideCommand": false,
   "remoteUser": "codespace",
   "containerEnv": {
-    "DISPLAY": ":1",
-    "ULTRON_CODESPACES_DEMO": "1"
+    "ULTRON_CODESPACES_WEB": "1"
   },
-  "forwardPorts": [
-    6080
-  ],
+  "forwardPorts": [5173],
   "portsAttributes": {
-    "6080": {
-      "label": "Ultron Ubuntu Desktop",
-      "onAutoForward": "openBrowserOnce",
-      "protocol": "http"
-    },
-    "5901": {
-      "label": "Private VNC transport",
-      "onAutoForward": "ignore"
-    },
     "5173": {
-      "label": "Ultron internal frontend",
-      "onAutoForward": "ignore"
+      "label": "Ultron Web Interface",
+      "onAutoForward": "openBrowserOnce",
+      "protocol": "http",
+      "visibility": "private"
     },
     "8000": {
       "label": "Ultron internal backend",
-      "onAutoForward": "ignore"
+      "onAutoForward": "ignore",
+      "visibility": "private"
     }
   },
   "otherPortsAttributes": {
     "onAutoForward": "ignore"
   },
   "postCreateCommand": "bash .devcontainer/codespaces_prepare.sh",
-  "postStartCommand": "nohup bash .devcontainer/codespaces_desktop.sh >/tmp/ultron-codespaces-desktop.log 2>&1 &",
   "hostRequirements": {
     "cpus": 2,
     "memory": "8gb",
