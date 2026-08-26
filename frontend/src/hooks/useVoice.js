@@ -14,9 +14,13 @@ const WAKE_WORDS = [
 ];
 
 const RECOG_LANG = import.meta.env.VITE_VOICE_LANG || 'en-IN';
-const SILENCE_BASE_MS = 1400;
-const SILENCE_SHORT_COMMAND_MS = 1800;
-const INTERIM_SETTLE_GRACE_MS = 450;
+// Tuned for natural speech: long commands need enough room for a human pause
+// without being sent mid-sentence. New words always reset these windows.
+const SILENCE_BASE_MS = 1800;
+const SILENCE_SHORT_COMMAND_MS = 2000;
+const SILENCE_LONG_COMMAND_MS = 2400;
+const LONG_COMMAND_WORDS = 7;
+const INTERIM_SETTLE_GRACE_MS = 600;
 const WAKE_WAIT_MS = 6000;
 const RESTART_BASE_MS = 500;
 const RESTART_MAX_MS = 4000;
@@ -76,9 +80,10 @@ function mergeTranscript(leftValue, rightValue) {
 }
 
 function silenceDelay(command) {
-  return cleanText(command).split(' ').filter(Boolean).length < 3
-    ? SILENCE_SHORT_COMMAND_MS
-    : SILENCE_BASE_MS;
+  const words = cleanText(command).split(' ').filter(Boolean).length;
+  if (words >= LONG_COMMAND_WORDS) return SILENCE_LONG_COMMAND_MS;
+  if (words < 3) return SILENCE_SHORT_COMMAND_MS;
+  return SILENCE_BASE_MS;
 }
 
 export default function useVoice({ onCommand, enabled, paused = false }) {

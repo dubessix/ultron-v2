@@ -129,7 +129,7 @@ describe('Voice Option A — wake phrase and one complete command', () => {
     expect(hook.result.current.wakeDetected).toBe(true);
 
     emit(recognition, 1, 'open calendar');
-    advance(1800);
+    advance(2000);
     expect(onCommand).toHaveBeenCalledWith('open calendar');
 
     emit(recognition, 2, 'wake up Ultron');
@@ -156,7 +156,7 @@ describe('Voice Option A — wake phrase and one complete command', () => {
 
     emit(recognition, 0, 'Hey Ultron, open the calendar', true);
     expect(onCommand).not.toHaveBeenCalled();
-    advance(1399);
+    advance(1799);
     expect(onCommand).not.toHaveBeenCalled();
     advance(1);
 
@@ -174,12 +174,28 @@ describe('Voice Option A — wake phrase and one complete command', () => {
     expect(onCommand).not.toHaveBeenCalled();
 
     emit(recognition, 1, 'for tomorrow morning', true);
-    advance(1399);
+    advance(1799);
     expect(onCommand).not.toHaveBeenCalled();
     advance(1);
 
     expect(onCommand).toHaveBeenCalledOnce();
     expect(onCommand).toHaveBeenCalledWith('create a task for tomorrow morning');
+  });
+
+  it('gives a long command the extended completion window before dispatching', () => {
+    const onCommand = vi.fn();
+    renderVoice(onCommand);
+    const recognition = latestRecognizer();
+
+    emit(recognition, 0, 'Ultron, create a task named finish my project documentation tomorrow morning', true);
+    advance(2399);
+    expect(onCommand).not.toHaveBeenCalled();
+    advance(1);
+
+    expect(onCommand).toHaveBeenCalledOnce();
+    expect(onCommand).toHaveBeenCalledWith(
+      'create a task named finish my project documentation tomorrow morning',
+    );
   });
 
   it('replaces overlapping interim hypotheses instead of growing open open open', () => {
@@ -193,7 +209,7 @@ describe('Voice Option A — wake phrase and one complete command', () => {
     emit(recognition, 1, 'open VS Code', true);
 
     expect(hook.result.current.heardText).toBe('open VS Code');
-    advance(1400);
+    advance(1800);
     expect(onCommand).toHaveBeenCalledOnce();
     expect(onCommand).toHaveBeenCalledWith('open VS Code');
   });
@@ -204,7 +220,7 @@ describe('Voice Option A — wake phrase and one complete command', () => {
     const recognition = latestRecognizer();
 
     emit(recognition, 0, 'Ultron open calendar');
-    advance(1800);
+    advance(2000);
     expect(onCommand).toHaveBeenCalledWith('open calendar');
     expect(hook.result.current.conversationActive).toBe(false);
 
@@ -227,7 +243,7 @@ describe('Voice Option A — resilience and honest lifecycle', () => {
     expect(recognition.startCount).toBe(2);
 
     emit(recognition, 0, 'for tomorrow', true);
-    advance(1400);
+    advance(1800);
     expect(onCommand).toHaveBeenCalledOnce();
     expect(onCommand).toHaveBeenCalledWith('create a task for tomorrow');
   });
@@ -257,7 +273,7 @@ describe('Voice Option A — resilience and honest lifecycle', () => {
 
     hook.rerender({ callback: onCommand, enabled: true, paused: false });
     emit(recognition, 0, 'Ultron open settings');
-    advance(1800);
+    advance(2000);
     expect(onCommand).toHaveBeenCalledWith('open settings');
   });
 
