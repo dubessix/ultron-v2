@@ -72,6 +72,10 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Non-executing safe known-word voice hints; raw text remains unchanged.",
     )
+    voice_clarification: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Short voice-only clarification returned before agent/tool planning.",
+    )
     memory_provenance: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Content-free provenance for saved memory sources injected into this turn.",
@@ -156,6 +160,7 @@ async def post_chat_message(request: ChatRequest) -> ChatResponse:
             provider_route=result.get("provider_route") or {},
             input_source=result.get("input_source", request.input_source),
             voice_alias_suggestions=result.get("voice_alias_suggestions") or [],
+            voice_clarification=result.get("voice_clarification"),
             memory_provenance=result.get("memory_provenance") or [],
         )
     except DatabaseMaintenanceError as e:

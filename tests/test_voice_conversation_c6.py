@@ -39,6 +39,7 @@ class TestCanonicalVoiceTransport(unittest.TestCase):
             "intent: data.intent",
             "provider_route: data.provider_route",
             "voice_alias_suggestions: data.voice_alias_suggestions",
+            "voice_clarification: data.voice_clarification",
             "memory_provenance: data.memory_provenance",
             "events: data.events",
             "pending_confirmation: data.pending_confirmation",

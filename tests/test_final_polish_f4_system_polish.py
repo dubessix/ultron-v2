@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import unittest
 from pathlib import Path
 
@@ -9,10 +10,11 @@ import yaml
 from pydantic import ValidationError
 
 from backend.app.core.orchestrator import CognitiveOrchestrator
-from backend.app.core.voice_intent import inspect_voice_aliases
+from backend.app.core.voice_intent import inspect_voice_aliases, plan_voice_clarification
 from backend.app.memory.memory_gate import MemoryGate
 from backend.app.personalities.base_personality import UltronPersonality
 from backend.app.router import ChatRequest, SpeakRequest
+from backend.app.services.chat_service import process_chat_message
 from backend.app.skills.loader import load_coding_skills
 
 
@@ -76,6 +78,25 @@ class TestPromptAndSkillBudgets(unittest.TestCase):
             {"heard": "jora", "suggested": "Zora", "category": "personality"},
         ])
 
+    def test_voice_clarification_is_selective_not_a_question_for_every_turn(self):
+        self.assertIsNone(plan_voice_clarification("open calender"))
+        self.assertEqual(
+            plan_voice_clarification("open code"),
+            {
+                "question": "I heard open code. Did you mean VS Code, Code Optimizer, or Code Graph?",
+                "options": ["Open VS Code", "Open Code Optimizer", "Open Code Graph"],
+                "reason": "open_code_ambiguous",
+            },
+        )
+        self.assertEqual(
+            plan_voice_clarification("Jora help me", inspect_voice_aliases("Jora help me"))["reason"],
+            "personality_alias",
+        )
+        self.assertEqual(
+            plan_voice_clarification("delete the report")["reason"],
+            "unsafe_target_missing",
+        )
+
     def test_history_formatter_redacts_and_bounds_individual_turns(self):
         formatted = CognitiveOrchestrator._format_prompt_history(
             [
@@ -97,6 +118,24 @@ class TestPromptAndSkillBudgets(unittest.TestCase):
         self.assertIn("Multi-File Task", multi)
         self.assertLessEqual(len(single), 4000)
         self.assertLessEqual(len(multi), 4000)
+
+
+class TestVoiceClarificationExecutionGate(unittest.TestCase):
+    def test_known_ambiguous_voice_turn_never_reaches_agent_or_tools(self):
+        class AgentMustNotRun:
+            async def process_request(self, **_kwargs):
+                raise AssertionError("Ambiguous voice request reached the agent")
+
+        result = asyncio.run(
+            process_chat_message(
+                AgentMustNotRun(),
+                "open code",
+                input_source="voice",
+            )
+        )
+        self.assertEqual(result["intent"], "VOICE_CLARIFICATION")
+        self.assertEqual(result["content"], "I heard open code. Did you mean VS Code, Code Optimizer, or Code Graph?")
+        self.assertEqual(result["voice_clarification"]["reason"], "open_code_ambiguous")
 
 
 class TestDailyLearningAndConfigTruth(unittest.TestCase):

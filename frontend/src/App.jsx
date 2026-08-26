@@ -610,6 +610,7 @@ export default function App() {
           provider_route: data.provider_route || {},
           input_source: data.input_source || "voice",
           voice_alias_suggestions: data.voice_alias_suggestions || [],
+          voice_clarification: data.voice_clarification || null,
           memory_provenance: data.memory_provenance || [],
           events: data.events || [],
           pending_confirmation: data.pending_confirmation || null,
