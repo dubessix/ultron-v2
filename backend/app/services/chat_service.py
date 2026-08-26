@@ -106,6 +106,7 @@ async def process_chat_message(
             user_confirmed=bool(has_confirmed),
             confirmation_token=confirmation_token,
             input_source=input_source,
+            voice_alias_suggestions=voice_alias_suggestions,
         )
 
     latency_ms = int((time.perf_counter() - start_time) * 1000)

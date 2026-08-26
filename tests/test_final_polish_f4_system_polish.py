@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 import unittest
 from pathlib import Path
 
@@ -97,6 +98,16 @@ class TestPromptAndSkillBudgets(unittest.TestCase):
             "unsafe_target_missing",
         )
 
+    def test_voice_policy_tells_agent_to_clarify_ambiguity_without_tool_calls(self):
+        policy = CognitiveOrchestrator._voice_input_policy(
+            [{"heard": "calender", "suggested": "Calendar", "category": "widget"}]
+        )
+        self.assertIn("browser speech-to-text", policy)
+        self.assertIn("ask one short Jarvis-style clarification", policy)
+        self.assertIn("do not emit a tool call", policy)
+        self.assertIn('"calender"', policy)
+        self.assertNotIn("raw audio", policy.lower())
+
     def test_history_formatter_redacts_and_bounds_individual_turns(self):
         formatted = CognitiveOrchestrator._format_prompt_history(
             [
@@ -136,6 +147,39 @@ class TestVoiceClarificationExecutionGate(unittest.TestCase):
         self.assertEqual(result["intent"], "VOICE_CLARIFICATION")
         self.assertEqual(result["content"], "I heard open code. Did you mean VS Code, Code Optimizer, or Code Graph?")
         self.assertEqual(result["voice_clarification"]["reason"], "open_code_ambiguous")
+
+    def test_clear_voice_turn_reaches_agent_with_raw_text_and_safe_hints(self):
+        class RecordingAgent:
+            captured = None
+
+            async def process_request(self, **kwargs):
+                self.captured = kwargs
+                return {
+                    "id": str(uuid.uuid4()),
+                    "content": "Opening calendar.",
+                    "active_personality": "ultron",
+                    "persisted_personality": "ultron",
+                    "structured_action": {"action": "none"},
+                    "coding": False,
+                    "intent": "PLANNING",
+                    "events": [],
+                    "pending_confirmation": None,
+                    "provider_route": {},
+                    "memory_provenance": [],
+                    "input_source": kwargs["input_source"],
+                }
+
+        agent = RecordingAgent()
+        result = asyncio.run(
+            process_chat_message(agent, "open calender", input_source="voice")
+        )
+        self.assertEqual(agent.captured["input_source"], "voice")
+        self.assertEqual(agent.captured["user_prompt"], "open calender")
+        self.assertEqual(
+            agent.captured["voice_alias_suggestions"],
+            [{"heard": "calender", "suggested": "Calendar", "category": "widget"}],
+        )
+        self.assertIsNone(result["voice_clarification"])
 
 
 class TestDailyLearningAndConfigTruth(unittest.TestCase):

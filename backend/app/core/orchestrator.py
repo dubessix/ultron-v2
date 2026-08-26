@@ -910,6 +910,21 @@ class CognitiveOrchestrator:
                 "success": False,
             }
 
+    @staticmethod
+    def _voice_input_policy(alias_suggestions: Optional[List[Dict[str, str]]] = None) -> str:
+        """Bounded instruction block for browser STT text; no raw audio is used."""
+        hints = list(alias_suggestions or [])[:3]
+        hint_text = json.dumps(hints, ensure_ascii=True, separators=(",", ":")) if hints else "[]"
+        return (
+            "\n\n[VOICE_INPUT_POLICY]\n"
+            "This request came from browser speech-to-text and may contain transcription mistakes. "
+            "Use conversation context only for clear, safe meaning. Do not invent file paths, dates, "
+            "times, names, commands, URLs, or destructive targets. If two meanings are plausible, ask "
+            "one short Jarvis-style clarification question and do not emit a tool call. For a clear safe "
+            "request, respond normally. Approved non-executing transcript hints: "
+            f"{hint_text}\n"
+        )
+
     def _resolve_structured_action(self, user_prompt: str) -> Dict[str, Any]:
         """
         CONSTITUTIONAL DESIGN (Rule 8):
@@ -966,6 +981,7 @@ class CognitiveOrchestrator:
         user_confirmed: bool = False,
         confirmation_token: Optional[str] = None,
         input_source: str = "text",
+        voice_alias_suggestions: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         async with self._request_lock:
             return await self._process_request_unlocked(
@@ -979,6 +995,7 @@ class CognitiveOrchestrator:
                 user_confirmed=user_confirmed,
                 confirmation_token=confirmation_token,
                 input_source=input_source,
+                voice_alias_suggestions=voice_alias_suggestions,
             )
 
     async def _process_request_unlocked(
@@ -993,6 +1010,7 @@ class CognitiveOrchestrator:
         user_confirmed: bool = False,
         confirmation_token: Optional[str] = None,
         input_source: str = "text",
+        voice_alias_suggestions: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
         """
         Asynchronous coordinator running the complete pipeline.
@@ -1169,6 +1187,8 @@ class CognitiveOrchestrator:
 
         active_profile = self.personalities.get_personality(current_personality)
         system_prompt = active_profile.get_system_prompt(formatted_history)
+        if input_source == "voice":
+            system_prompt += self._voice_input_policy(voice_alias_suggestions)
 
         # Jarvis-style long-term memory injection (episodic + semantic recall).
         # Force a light recall on coding turns so Ultron remembers the project
