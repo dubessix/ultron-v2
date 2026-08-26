@@ -45,6 +45,11 @@ class ChatRequest(BaseModel):
     )
     has_confirmed: bool = Field(False, description="User confirmation for a pending dangerous tool (delete/terminal).")
     confirmation_token: Optional[str] = Field(None, description="One-time token binding a confirmation to the exact file+content proposed.")
+    # Provenance only: no raw microphone audio is accepted or persisted.
+    input_source: Literal["text", "voice"] = Field(
+        "text",
+        description="Whether this bounded text arrived from typed input or browser STT.",
+    )
 
 class ChatResponse(BaseModel):
     id: str = Field(..., description="Unique generated message ID.")
@@ -59,6 +64,10 @@ class ChatResponse(BaseModel):
     intent: str = Field("", description="Detected intent for the turn.")
     pending_confirmation: Optional[Dict[str, Any]] = Field(None, description="One-time pending-action token awaiting user confirmation (bound to file+content).")
     provider_route: Dict[str, Any] = Field(default_factory=dict, description="Actual provider/model route used for this response.")
+    input_source: Literal["text", "voice"] = Field(
+        "text",
+        description="Echoes the non-sensitive request provenance used for this turn.",
+    )
     memory_provenance: List[Dict[str, Any]] = Field(
         default_factory=list,
         description="Content-free provenance for saved memory sources injected into this turn.",
@@ -126,6 +135,7 @@ async def post_chat_message(request: ChatRequest) -> ChatResponse:
             project_id=request.project_id,
             has_confirmed=request.has_confirmed,
             confirmation_token=request.confirmation_token,
+            input_source=request.input_source,
         )
         return ChatResponse(
             id=result["id"],
@@ -140,6 +150,7 @@ async def post_chat_message(request: ChatRequest) -> ChatResponse:
             events=result["events"],
             pending_confirmation=result.get("pending_confirmation"),
             provider_route=result.get("provider_route") or {},
+            input_source=result.get("input_source", request.input_source),
             memory_provenance=result.get("memory_provenance") or [],
         )
     except DatabaseMaintenanceError as e:

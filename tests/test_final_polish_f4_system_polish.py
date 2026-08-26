@@ -53,6 +53,14 @@ class TestPromptAndSkillBudgets(unittest.TestCase):
         with self.assertRaises(ValidationError):
             SpeakRequest(text="x" * 4001)
 
+    def test_chat_request_marks_voice_source_without_storing_audio(self):
+        voice = ChatRequest(content="open calender", input_source="voice")
+        text = ChatRequest(content="open calendar")
+        self.assertEqual(voice.input_source, "voice")
+        self.assertEqual(text.input_source, "text")
+        with self.assertRaises(ValidationError):
+            ChatRequest(content="open calendar", input_source="microphone_audio")
+
     def test_history_formatter_redacts_and_bounds_individual_turns(self):
         formatted = CognitiveOrchestrator._format_prompt_history(
             [

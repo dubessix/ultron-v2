@@ -26,6 +26,7 @@ class TestCanonicalVoiceTransport(unittest.TestCase):
         self.assertIn("voiceRequestInFlightRef.current", voice)
         self.assertIn("session_id: sessionIdRef.current", voice)
         self.assertIn('project_id: "personal"', voice)
+        self.assertIn('input_source: "voice"', voice)
         self.assertEqual(voice.count("fetch(`${apiUrl}/api/chat`"), 1)
         self.assertNotIn("sendViaWS", voice)
         self.assertIn("voiceRequestInFlightRef.current = false", voice)

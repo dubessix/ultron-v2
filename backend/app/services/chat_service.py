@@ -38,6 +38,7 @@ async def process_chat_message(
     project_id: Optional[str] = None,
     has_confirmed: bool = False,
     confirmation_token: Optional[str] = None,
+    input_source: str = "text",
 ) -> Dict[str, Any]:
     """
     Run the full canonical chat pipeline and return a normalized result dict.
@@ -51,6 +52,9 @@ async def process_chat_message(
         raise ValueError("Chat content cannot be empty.")
     if len(content) > 12000:
         raise ValueError("Chat content exceeds the 12,000-character safety limit.")
+    input_source = str(input_source or "text").strip().lower()
+    if input_source not in {"text", "voice"}:
+        raise ValueError("Chat input_source must be text or voice.")
 
     # 1. Resolve active session (create it if it doesn't exist yet).
     session_data = SessionManager.get_or_create_session(session_id)
@@ -73,6 +77,7 @@ async def process_chat_message(
         initial_personality=session_personality,
         user_confirmed=bool(has_confirmed),
         confirmation_token=confirmation_token,
+        input_source=input_source,
     )
 
     latency_ms = int((time.perf_counter() - start_time) * 1000)
@@ -139,5 +144,6 @@ async def process_chat_message(
         "provider_route": result.get("provider_route") or {
             "provider": None, "model": None, "cached": False, "offline": False
         },
+        "input_source": result.get("input_source", input_source),
         "memory_provenance": result.get("memory_provenance") or [],
     }

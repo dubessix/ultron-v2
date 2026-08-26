@@ -965,6 +965,7 @@ class CognitiveOrchestrator:
         initial_personality: Optional[str] = None,
         user_confirmed: bool = False,
         confirmation_token: Optional[str] = None,
+        input_source: str = "text",
     ) -> Dict[str, Any]:
         async with self._request_lock:
             return await self._process_request_unlocked(
@@ -977,6 +978,7 @@ class CognitiveOrchestrator:
                 initial_personality=initial_personality,
                 user_confirmed=user_confirmed,
                 confirmation_token=confirmation_token,
+                input_source=input_source,
             )
 
     async def _process_request_unlocked(
@@ -989,7 +991,8 @@ class CognitiveOrchestrator:
         delete_ratio: float = 0.0,
         initial_personality: Optional[str] = None,
         user_confirmed: bool = False,
-        confirmation_token: Optional[str] = None
+        confirmation_token: Optional[str] = None,
+        input_source: str = "text",
     ) -> Dict[str, Any]:
         """
         Asynchronous coordinator running the complete pipeline.
@@ -997,6 +1000,9 @@ class CognitiveOrchestrator:
         and dynamically triggers matching widgets.
         """
         start_time = time.perf_counter()
+        # Provenance is metadata only in Phase 1. Later clarification phases use
+        # it to apply voice-safe ambiguity rules; it never includes raw audio.
+        input_source = "voice" if input_source == "voice" else "text"
         
         # Clear past events for this turn
         self.dispatched_events.clear()
@@ -1131,6 +1137,7 @@ class CognitiveOrchestrator:
                 "metadata": memory_meta,
                 "structured_action": {"action": "none"},
                 "provider_route": self.router.get_route_metadata(),
+                "input_source": input_source,
             }
 
         # Step 9: CONTEXT ASSEMBLY & SYSTEM INSTRUCTIONS (With Dynamic 65 Tools schemas!)
@@ -1606,6 +1613,7 @@ class CognitiveOrchestrator:
             ),
             "pending_confirmation": pending_confirmation,
             "provider_route": self.router.get_route_metadata(),
+            "input_source": input_source,
             "memory_provenance": memory_recall["provenance"],
         }
 

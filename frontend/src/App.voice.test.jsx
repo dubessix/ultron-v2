@@ -120,11 +120,13 @@ describe('Voice C6 — canonical transport and response preservation', () => {
       session_id: null,
       project_id: 'personal',
       content: 'remember the first voice turn',
+      input_source: 'voice',
     });
     expect(secondBody).toEqual({
       session_id: 'voice-session-c6',
       project_id: 'personal',
       content: 'show the next remembered turn',
+      input_source: 'voice',
     });
 
     const latestAi = shellCapture.props.messages.filter((message) => message.sender === 'ai').at(-1);

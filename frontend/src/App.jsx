@@ -588,6 +588,8 @@ export default function App() {
           session_id: sessionIdRef.current,
           project_id: "personal",
           content: userText,
+          // Provenance only. Browser STT text is sent; raw microphone audio is not.
+          input_source: "voice",
         })
       });
 
