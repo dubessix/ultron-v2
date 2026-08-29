@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
-import { api, executeTool } from './api';
+import { api, apiBase, executeTool, websocketBase } from './api';
 
 /**
  * Ultron Web Client Root App
@@ -31,6 +31,10 @@ export default function App() {
   // Exact one-time action returned by the backend; never regenerate on confirm.
   const [pendingAction, setPendingAction] = useState(null);
   const [confirmingAction, setConfirmingAction] = useState(false);
+  // Present only when the backend explicitly says a voice transcript has more
+  // than one safe meaning. Normal clear requests never show this card.
+  const [voiceClarification, setVoiceClarification] = useState(null);
+  const [voicePreferenceSaving, setVoicePreferenceSaving] = useState(false);
   // Real-time operational log (Log tab)
   const [logs, setLogs] = useState([]);
   // One first-open briefing attempt per browser page; localStorage prevents repeats that day.
@@ -128,7 +132,7 @@ export default function App() {
       if (inFlight || cancelled) return;
       inFlight = true;
       try {
-        const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+        const apiUrl = apiBase;
         const requestStarted = performance.now();
         const response = await fetch(`${apiUrl}/api/health`);
         if (response.ok) {
@@ -393,7 +397,7 @@ export default function App() {
     speechFetchControllerRef.current = fetchController;
     setIsSpeaking(true);
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+      const apiUrl = apiBase;
       const response = await fetch(`${apiUrl}/api/speak`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -571,6 +575,7 @@ export default function App() {
     voiceRequestInFlightRef.current = true;
     // Barge-in: the user is speaking — stop any in-progress TTS immediately.
     stopSpeaking();
+    setVoiceClarification(null);
     setInputValue("");
     setIsProcessing(true);
     setAiState("thinking");
@@ -580,7 +585,7 @@ export default function App() {
     setMessages(prev => [...prev, { id: localUserMsgId, sender: "user", text: userText }]);
 
     try {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+      const apiUrl = apiBase;
       const response = await fetch(`${apiUrl}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -588,6 +593,8 @@ export default function App() {
           session_id: sessionIdRef.current,
           project_id: "personal",
           content: userText,
+          // Provenance only. Browser STT text is sent; raw microphone audio is not.
+          input_source: "voice",
         })
       });
 
@@ -606,6 +613,9 @@ export default function App() {
           project_id: data.project_id || "personal",
           intent: data.intent || "",
           provider_route: data.provider_route || {},
+          input_source: data.input_source || "voice",
+          voice_alias_suggestions: data.voice_alias_suggestions || [],
+          voice_clarification: data.voice_clarification || null,
           memory_provenance: data.memory_provenance || [],
           events: data.events || [],
           pending_confirmation: data.pending_confirmation || null,
@@ -640,6 +650,7 @@ export default function App() {
           setActivityText(`Waiting for confirmation: ${data.pending_confirmation.tool_id}.`);
           addNotification('Confirmation required', data.pending_confirmation.message, 'high');
         }
+        setVoiceClarification(data.voice_clarification || null);
       } else {
         setMessages(prev => [...prev, {
           id: "error_" + Date.now(), sender: "system_error",
@@ -661,14 +672,44 @@ export default function App() {
     }
   };
 
+  // A clarification option is explicit owner input. Send the exact selected
+  // wording back through the same canonical voice transport; no tool is picked
+  // by the browser/UI itself.
+  const handleVoiceClarificationChoice = (choice) => {
+    const selected = String(choice || '').trim();
+    if (!selected || isProcessing) return;
+    setVoiceClarification(null);
+    void handleVoiceCommand(selected);
+  };
+
+  const handleVoicePreferenceSave = async (offer) => {
+    if (!offer?.alias || !offer?.canonical || voicePreferenceSaving) return;
+    setVoicePreferenceSaving(true);
+    try {
+      const result = await api('/api/voice/preferences', {
+        method: 'POST',
+        body: JSON.stringify({ alias: offer.alias, canonical: offer.canonical }),
+      });
+      if (!result.success) throw new Error('Voice preference was not saved.');
+      setVoiceClarification((current) => current
+        ? { ...current, preference_offer: null }
+        : current);
+      addNotification('Voice preference saved', `I will understand ${offer.alias} as ${offer.canonical}.`, 'low');
+    } catch (error) {
+      addNotification('Voice preference not saved', error.message || 'Please try again.', 'medium');
+    } finally {
+      setVoicePreferenceSaving(false);
+    }
+  };
+
   // Dispatch REST messages through canonical WebSocket/REST transport.
   // The provider finishes first; the backend then sends one exact completed-content
   // frame plus real progress/events instead of simulated token timing.
   const wsRef = useRef(null);
   const sendViaWS = (text) => {
     return new Promise((resolve) => {
-      const apiUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-      const wsBase = apiUrl.replace(/^http/, "ws");
+      const apiUrl = apiBase;
+      const wsBase = websocketBase();
       let ws;
       let openedAndSent = false;
       let settled = false;
@@ -872,6 +913,10 @@ export default function App() {
         handleVoiceCommand={handleVoiceCommand}
         voicePaused={isProcessing || isSpeaking}
         onVoiceStop={stopSpeaking}
+        voiceClarification={voiceClarification}
+        onVoiceClarificationChoice={handleVoiceClarificationChoice}
+        onVoicePreferenceSave={handleVoicePreferenceSave}
+        voicePreferenceSaving={voicePreferenceSaving}
         codingMode={codingMode}
         toggleCodingMode={toggleCodingMode}
         codingModeSaving={codingModeSaving}

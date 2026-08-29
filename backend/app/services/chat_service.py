@@ -16,6 +16,7 @@ storage entirely (so WS history never survived a restart).
 """
 
 import time
+import uuid
 import datetime
 from typing import Dict, Any, Optional
 
@@ -29,6 +30,8 @@ from backend.app.session.session_manager import SessionManager
 from backend.app.memory.recall_index import index_conversation_turn
 from backend.app.memory.session_summary import refresh_session_summary
 from backend.app.utils.text_cleaner import clean_text
+from backend.app.core.voice_intent import inspect_voice_aliases, plan_voice_clarification
+from backend.app.core.voice_preferences import apply_approved_voice_aliases, get_approved_voice_aliases
 
 
 async def process_chat_message(
@@ -38,6 +41,7 @@ async def process_chat_message(
     project_id: Optional[str] = None,
     has_confirmed: bool = False,
     confirmation_token: Optional[str] = None,
+    input_source: str = "text",
 ) -> Dict[str, Any]:
     """
     Run the full canonical chat pipeline and return a normalized result dict.
@@ -51,6 +55,25 @@ async def process_chat_message(
         raise ValueError("Chat content cannot be empty.")
     if len(content) > 12000:
         raise ValueError("Chat content exceeds the 12,000-character safety limit.")
+    input_source = str(input_source or "text").strip().lower()
+    if input_source not in {"text", "voice"}:
+        raise ValueError("Chat input_source must be text or voice.")
+    # Phase 2 detects safe known-word mismatches but never rewrites content.
+    # The future clarification gate, not this service, decides what to do.
+    approved_voice_aliases = get_approved_voice_aliases() if input_source == "voice" else {}
+    voice_alias_suggestions = inspect_voice_aliases(content) if input_source == "voice" else []
+    voice_clarification = (
+        plan_voice_clarification(content, voice_alias_suggestions, approved_voice_aliases)
+        if input_source == "voice"
+        else None
+    )
+    # Preserve raw text in history. Only owner-approved aliases are applied to
+    # the transient agent prompt, never to paths/dates/commands or stored text.
+    agent_content = (
+        apply_approved_voice_aliases(content, approved_voice_aliases)
+        if input_source == "voice"
+        else content
+    )
 
     # 1. Resolve active session (create it if it doesn't exist yet).
     session_data = SessionManager.get_or_create_session(session_id)
@@ -62,18 +85,38 @@ async def process_chat_message(
         or "personal"
     )
 
-    # 2. Process query via the cognitive orchestrator.
-    result = await orchestrator.process_request(
-        user_prompt=content,
-        session_id=resolved_session_id,
-        project_id=effective_project_id,
-        consecutive_errors=0,
-        current_hour=datetime.datetime.now().hour,
-        delete_ratio=0.0,
-        initial_personality=session_personality,
-        user_confirmed=bool(has_confirmed),
-        confirmation_token=confirmation_token,
-    )
+    # 2. Known voice ambiguity stops before the LLM agent and before any tool
+    # planning. This is deliberately a short Jarvis question, not a guessed
+    # action. Clear requests continue into the normal agent unchanged.
+    if voice_clarification:
+        result = {
+            "id": str(uuid.uuid4()),
+            "content": voice_clarification["question"],
+            "active_personality": session_personality,
+            "persisted_personality": session_personality,
+            "structured_action": {"action": "none"},
+            "coding": False,
+            "intent": "VOICE_CLARIFICATION",
+            "events": [],
+            "pending_confirmation": None,
+            "provider_route": {"provider": None, "model": None, "cached": False, "offline": False},
+            "memory_provenance": [],
+            "input_source": input_source,
+        }
+    else:
+        result = await orchestrator.process_request(
+            user_prompt=agent_content,
+            session_id=resolved_session_id,
+            project_id=effective_project_id,
+            consecutive_errors=0,
+            current_hour=datetime.datetime.now().hour,
+            delete_ratio=0.0,
+            initial_personality=session_personality,
+            user_confirmed=bool(has_confirmed),
+            confirmation_token=confirmation_token,
+            input_source=input_source,
+            voice_alias_suggestions=voice_alias_suggestions,
+        )
 
     latency_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -139,5 +182,8 @@ async def process_chat_message(
         "provider_route": result.get("provider_route") or {
             "provider": None, "model": None, "cached": False, "offline": False
         },
+        "input_source": result.get("input_source", input_source),
+        "voice_alias_suggestions": voice_alias_suggestions,
+        "voice_clarification": voice_clarification,
         "memory_provenance": result.get("memory_provenance") or [],
     }

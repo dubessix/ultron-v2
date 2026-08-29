@@ -21,13 +21,13 @@ class TestBoundedRecognitionRestart(unittest.TestCase):
         self.assertIn("restartAttemptRef.current", source)
         self.assertIn("if (restartAttemptRef.current >= RESTART_MAX_ATTEMPTS)", source)
         self.assertIn("Math.min(", source)
-        self.assertIn("scheduleRestart(rec)", source)
+        self.assertIn("scheduleRestart(recognizer)", source)
         self.assertNotIn("try { rec.start(); } catch (_e) {}\n      }\n    };", source)
 
     def test_manual_stop_pause_and_cleanup_cancel_restart(self):
         source = VOICE.read_text(encoding="utf-8")
         stop_block = source[source.index("const stop = useCallback") : source.index("useEffect(() => {", source.index("const stop = useCallback"))]
-        pause_block = source[source.index("// Web Speech has no pause primitive") :]
+        pause_block = source[source.index("// Processing/TTS remains an explicit App-level pause") :]
 
         self.assertIn("clearRestartTimer()", stop_block)
         self.assertIn("restartAttemptRef.current = 0", stop_block)
@@ -41,17 +41,17 @@ class TestRecognitionErrorPolicy(unittest.TestCase):
         source = VOICE.read_text(encoding="utf-8")
 
         for error_name in (
-            '"not-allowed"',
-            '"audio-capture"',
-            '"network"',
-            '"service-not-allowed"',
-            '"language-not-supported"',
-            '"bad-grammar"',
+            "'not-allowed'",
+            "'audio-capture'",
+            "'network'",
+            "'service-not-allowed'",
+            "'language-not-supported'",
+            "'bad-grammar'",
         ):
             self.assertIn(error_name, source)
-        self.assertIn('event.error === "aborted"', source)
-        self.assertIn('event.error !== "no-speech"', source)
-        self.assertIn("no-speech is an ordinary recoverable end", source)
+        self.assertIn("event.error === 'aborted'", source)
+        self.assertIn("event.error === 'no-speech'", source)
+        self.assertIn("Browser speech recognition is reconnecting…", source)
         self.assertIn("clearRestartTimer()", source)
         self.assertIn("Voice recognition could not restart. Use Stop and Start Voice to retry.", source)
 

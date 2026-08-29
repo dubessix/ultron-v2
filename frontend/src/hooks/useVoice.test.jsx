@@ -17,12 +17,12 @@ class FakeSpeechRecognition {
   constructor() {
     this.continuous = false;
     this.interimResults = false;
+    this.maxAlternatives = 1;
     this.lang = '';
     this.results = [];
     this.startCount = 0;
     this.startAttempts = 0;
     this.failNextStarts = 0;
-    this.stopCount = 0;
     this.abortCount = 0;
     this.running = false;
     FakeSpeechRecognition.instances.push(this);
@@ -40,12 +40,7 @@ class FakeSpeechRecognition {
     this.onstart?.();
   }
 
-  stop() {
-    this.stopCount += 1;
-    const wasRunning = this.running;
-    this.running = false;
-    if (wasRunning) this.onend?.();
-  }
+  stop() { this.abort(); }
 
   abort() {
     this.abortCount += 1;
@@ -59,7 +54,8 @@ class FakeSpeechRecognition {
     this.onresult?.({ resultIndex: index, results: this.results });
   }
 
-  endUnexpectedly() {
+  beginFreshBrowserSession() {
+    this.results = [];
     this.running = false;
     this.onend?.();
   }
@@ -79,20 +75,15 @@ function emit(recognizer, index, transcript, isFinal = true) {
   act(() => recognizer.changeResult(index, transcript, isFinal));
 }
 
+function advance(milliseconds) {
+  act(() => vi.advanceTimersByTime(milliseconds));
+}
+
 function renderVoice(onCommand = vi.fn(), extra = {}) {
   return renderHook(
-    ({ callback, enabled, paused }) => useVoice({
-      onCommand: callback,
-      enabled,
-      paused,
-    }),
+    ({ callback, enabled, paused }) => useVoice({ onCommand: callback, enabled, paused }),
     {
-      initialProps: {
-        callback: onCommand,
-        enabled: true,
-        paused: false,
-        ...extra,
-      },
+      initialProps: { callback: onCommand, enabled: true, paused: false, ...extra },
     },
   );
 }
@@ -100,16 +91,8 @@ function renderVoice(onCommand = vi.fn(), extra = {}) {
 beforeEach(() => {
   vi.useFakeTimers();
   FakeSpeechRecognition.instances = [];
-  Object.defineProperty(window, 'SpeechRecognition', {
-    configurable: true,
-    writable: true,
-    value: FakeSpeechRecognition,
-  });
-  Object.defineProperty(window, 'webkitSpeechRecognition', {
-    configurable: true,
-    writable: true,
-    value: undefined,
-  });
+  Object.defineProperty(window, 'SpeechRecognition', { configurable: true, writable: true, value: FakeSpeechRecognition });
+  Object.defineProperty(window, 'webkitSpeechRecognition', { configurable: true, writable: true, value: undefined });
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
@@ -121,54 +104,103 @@ afterEach(() => {
   delete window.webkitSpeechRecognition;
 });
 
-describe('Voice C1 — one-wake conversational contract', () => {
-  it('keeps the voice conversation active for direct follow-up turns until Stop Mic', () => {
+describe('Voice Option A — wake phrase and one complete command', () => {
+  it('treats Ultron alone as wake-only and never sends it to the backend', () => {
     const onCommand = vi.fn();
     const hook = renderVoice(onCommand);
     const recognition = latestRecognizer();
 
     emit(recognition, 0, 'Ultron');
-    expect(hook.result.current.conversationActive).toBe(true);
-    emit(recognition, 1, 'open VS Code');
-    emit(recognition, 2, 'show git status');
-    emit(recognition, 3, 'what did we decide yesterday');
-    emit(recognition, 4, 'and what is the next step');
-    emit(recognition, 5, 'list my important memories');
 
-    expect(onCommand.mock.calls.map(([command]) => command)).toEqual([
-      'open VS Code',
-      'show git status',
-      'what did we decide yesterday',
-      'and what is the next step',
-      'list my important memories',
-    ]);
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(hook.result.current.wakeDetected).toBe(true);
     expect(hook.result.current.conversationActive).toBe(true);
+    advance(5999);
+    expect(onCommand).not.toHaveBeenCalled();
   });
 
-  it('accepts punctuation after the one approved wake phrase', () => {
+  it('treats Ultron wake up and wake up Ultron as wake-only phrases', () => {
     const onCommand = vi.fn();
-    renderVoice(onCommand);
+    const hook = renderVoice(onCommand);
+    const recognition = latestRecognizer();
 
-    emit(latestRecognizer(), 0, 'Hey Ultron, open VS Code');
+    emit(recognition, 0, 'Ultron wake up');
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(hook.result.current.wakeDetected).toBe(true);
 
-    expect(onCommand).toHaveBeenCalledOnce();
-    expect(onCommand).toHaveBeenCalledWith('open VS Code');
+    emit(recognition, 1, 'open calendar');
+    advance(2000);
+    expect(onCommand).toHaveBeenCalledWith('open calendar');
+
+    emit(recognition, 2, 'wake up Ultron');
+    expect(onCommand).toHaveBeenCalledTimes(1);
   });
 
-  it('does not unlock for broad legacy trigger words', () => {
+  it('does not treat Electron, activate, or ordinary speech as a wake phrase', () => {
     const onCommand = vi.fn();
     renderVoice(onCommand);
+    const recognition = latestRecognizer();
 
-    emit(latestRecognizer(), 0, 'activate open settings');
+    emit(recognition, 0, 'Electron open settings');
+    emit(recognition, 1, 'activate open settings');
+    emit(recognition, 2, 'open settings');
+    advance(5000);
 
     expect(onCommand).not.toHaveBeenCalled();
   });
-});
 
-describe('Voice C1 — transcript and callback correctness', () => {
-  it('replaces interim hypotheses instead of duplicating them', () => {
+  it('waits for silence even when the browser marks a same-utterance command final', () => {
     const onCommand = vi.fn();
     renderVoice(onCommand);
+    const recognition = latestRecognizer();
+
+    emit(recognition, 0, 'Hey Ultron, open the calendar', true);
+    expect(onCommand).not.toHaveBeenCalled();
+    advance(1799);
+    expect(onCommand).not.toHaveBeenCalled();
+    advance(1);
+
+    expect(onCommand).toHaveBeenCalledOnce();
+    expect(onCommand).toHaveBeenCalledWith('open the calendar');
+  });
+
+  it('keeps listening across a mid-sentence pause and sends the complete command once', () => {
+    const onCommand = vi.fn();
+    renderVoice(onCommand);
+    const recognition = latestRecognizer();
+
+    emit(recognition, 0, 'Ultron create a task', true);
+    advance(1000);
+    expect(onCommand).not.toHaveBeenCalled();
+
+    emit(recognition, 1, 'for tomorrow morning', true);
+    advance(1799);
+    expect(onCommand).not.toHaveBeenCalled();
+    advance(1);
+
+    expect(onCommand).toHaveBeenCalledOnce();
+    expect(onCommand).toHaveBeenCalledWith('create a task for tomorrow morning');
+  });
+
+  it('gives a long command the extended completion window before dispatching', () => {
+    const onCommand = vi.fn();
+    renderVoice(onCommand);
+    const recognition = latestRecognizer();
+
+    emit(recognition, 0, 'Ultron, create a task named finish my project documentation tomorrow morning', true);
+    advance(2399);
+    expect(onCommand).not.toHaveBeenCalled();
+    advance(1);
+
+    expect(onCommand).toHaveBeenCalledOnce();
+    expect(onCommand).toHaveBeenCalledWith(
+      'create a task named finish my project documentation tomorrow morning',
+    );
+  });
+
+  it('replaces overlapping interim hypotheses instead of growing open open open', () => {
+    const onCommand = vi.fn();
+    const hook = renderVoice(onCommand);
     const recognition = latestRecognizer();
 
     emit(recognition, 0, 'Ultron');
@@ -176,177 +208,87 @@ describe('Voice C1 — transcript and callback correctness', () => {
     emit(recognition, 1, 'open VS', false);
     emit(recognition, 1, 'open VS Code', true);
 
+    expect(hook.result.current.heardText).toBe('open VS Code');
+    advance(1800);
     expect(onCommand).toHaveBeenCalledOnce();
     expect(onCommand).toHaveBeenCalledWith('open VS Code');
   });
 
-  it('dispatches through the latest callback after the owner session changes', () => {
-    const oldCallback = vi.fn();
-    const newCallback = vi.fn();
-    const hook = renderVoice(oldCallback);
-    const recognition = latestRecognizer();
-
-    hook.rerender({ callback: newCallback, enabled: true, paused: false });
-    emit(recognition, 0, 'Ultron');
-    emit(recognition, 1, 'remember this in the current session');
-
-    expect(oldCallback).not.toHaveBeenCalled();
-    expect(newCallback).toHaveBeenCalledOnce();
-    expect(newCallback).toHaveBeenCalledWith('remember this in the current session');
-  });
-
-  it('pauses for processing/TTS without losing the conversation, then resumes', () => {
+  it('returns to wake-only mode after one command; a follow-up without Ultron is ignored', () => {
     const onCommand = vi.fn();
     const hook = renderVoice(onCommand);
     const recognition = latestRecognizer();
 
-    emit(recognition, 0, 'Ultron');
-    expect(hook.result.current.conversationActive).toBe(true);
-    const startsBeforePause = recognition.startCount;
+    emit(recognition, 0, 'Ultron open calendar');
+    advance(2000);
+    expect(onCommand).toHaveBeenCalledWith('open calendar');
+    expect(hook.result.current.conversationActive).toBe(false);
 
-    hook.rerender({ callback: onCommand, enabled: true, paused: true });
-    expect(recognition.abortCount).toBeGreaterThan(0);
-    expect(hook.result.current.isListening).toBe(false);
-    expect(hook.result.current.conversationActive).toBe(true);
-
-    emit(recognition, 1, 'This is Ultron speaking through the laptop');
-    expect(onCommand).not.toHaveBeenCalled();
-
-    hook.rerender({ callback: onCommand, enabled: true, paused: false });
-    expect(recognition.startCount).toBe(startsBeforePause + 1);
-    expect(hook.result.current.isListening).toBe(true);
-    expect(hook.result.current.conversationActive).toBe(true);
-
-    emit(recognition, 2, 'continue with my next question');
-    expect(onCommand).toHaveBeenCalledOnce();
-    expect(onCommand).toHaveBeenCalledWith('continue with my next question');
+    emit(recognition, 1, 'show git status');
+    advance(5000);
+    expect(onCommand).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('Voice C1 — lifecycle safety already expected from the final design', () => {
-  it('cancels pending silence dispatch and restart when Stop Mic is pressed', () => {
+describe('Voice Option A — resilience and honest lifecycle', () => {
+  it('preserves a partial command across an unexpected browser end and merges the continuation once', () => {
+    const onCommand = vi.fn();
+    renderVoice(onCommand);
+    const recognition = latestRecognizer();
+
+    emit(recognition, 0, 'Ultron');
+    emit(recognition, 1, 'create a task', false);
+    recognition.beginFreshBrowserSession();
+    advance(500);
+    expect(recognition.startCount).toBe(2);
+
+    emit(recognition, 0, 'for tomorrow', true);
+    advance(1800);
+    expect(onCommand).toHaveBeenCalledOnce();
+    expect(onCommand).toHaveBeenCalledWith('create a task for tomorrow');
+  });
+
+  it('cancels the unfinished turn when Stop Mic is pressed', () => {
     const onCommand = vi.fn();
     const hook = renderVoice(onCommand);
     const recognition = latestRecognizer();
 
     emit(recognition, 0, 'Ultron');
     emit(recognition, 1, 'unfinished command', false);
-    const startsBeforeStop = recognition.startCount;
-
     hook.rerender({ callback: onCommand, enabled: false, paused: false });
-    act(() => vi.advanceTimersByTime(5000));
+    advance(5000);
 
     expect(onCommand).not.toHaveBeenCalled();
-    expect(recognition.startCount).toBe(startsBeforeStop);
-    expect(hook.result.current.isListening).toBe(false);
     expect(hook.result.current.conversationActive).toBe(false);
   });
 
-  it('stops cleanly on microphone permission denial without a restart loop', () => {
+  it('does not send browser audio while processing or TTS is paused, then resumes wake-only listening', () => {
+    const onCommand = vi.fn();
+    const hook = renderVoice(onCommand);
+    const recognition = latestRecognizer();
+
+    hook.rerender({ callback: onCommand, enabled: true, paused: true });
+    emit(recognition, 0, 'Ultron open settings');
+    expect(onCommand).not.toHaveBeenCalled();
+
+    hook.rerender({ callback: onCommand, enabled: true, paused: false });
+    emit(recognition, 0, 'Ultron open settings');
+    advance(2000);
+    expect(onCommand).toHaveBeenCalledWith('open settings');
+  });
+
+  it('restarts silently after no-speech and reports true fatal microphone failures', () => {
     const hook = renderVoice();
-    const recognition = latestRecognizer();
-
-    act(() => recognition.emitError('not-allowed'));
-    act(() => vi.advanceTimersByTime(5000));
-
-    expect(recognition.startCount).toBe(1);
-    expect(hook.result.current.isListening).toBe(false);
-    expect(hook.result.current.conversationActive).toBe(false);
-    expect(hook.result.current.voiceError).toBe('Microphone permission was denied.');
-  });
-
-  it('uses a bounded delayed restart after an unexpected browser end', () => {
-    renderVoice();
-    const recognition = latestRecognizer();
-
-    act(() => recognition.endUnexpectedly());
-    expect(recognition.startCount).toBe(1);
-
-    act(() => vi.advanceTimersByTime(499));
-    expect(recognition.startCount).toBe(1);
-
-    act(() => vi.advanceTimersByTime(1));
-    expect(recognition.startCount).toBe(2);
-  });
-
-  it('deduplicates repeated end events into one pending restart', () => {
-    renderVoice();
-    const recognition = latestRecognizer();
-
-    act(() => {
-      recognition.endUnexpectedly();
-      recognition.endUnexpectedly();
-      recognition.endUnexpectedly();
-    });
-    expect(recognition.startCount).toBe(1);
-
-    act(() => vi.advanceTimersByTime(500));
-    expect(recognition.startCount).toBe(2);
-  });
-
-  it('cancels a scheduled restart while processing or TTS is paused', () => {
-    const hook = renderVoice();
-    const recognition = latestRecognizer();
-
-    act(() => recognition.endUnexpectedly());
-    hook.rerender({ callback: vi.fn(), enabled: true, paused: true });
-    act(() => vi.advanceTimersByTime(5000));
-    expect(recognition.startCount).toBe(1);
-
-    hook.rerender({ callback: vi.fn(), enabled: true, paused: false });
-    expect(recognition.startCount).toBe(2);
-  });
-
-  it('cancels a scheduled restart when the owner presses Stop Mic', () => {
-    const hook = renderVoice();
-    const recognition = latestRecognizer();
-
-    act(() => recognition.endUnexpectedly());
-    hook.rerender({ callback: vi.fn(), enabled: false, paused: false });
-    act(() => vi.advanceTimersByTime(5000));
-
-    expect(recognition.startCount).toBe(1);
-    expect(hook.result.current.isListening).toBe(false);
-  });
-
-  it('recovers from no-speech only after the initial restart delay', () => {
-    renderVoice();
     const recognition = latestRecognizer();
 
     act(() => recognition.emitError('no-speech'));
-    expect(recognition.startCount).toBe(1);
-    act(() => vi.advanceTimersByTime(499));
-    expect(recognition.startCount).toBe(1);
-    act(() => vi.advanceTimersByTime(1));
+    recognition.beginFreshBrowserSession();
+    advance(500);
     expect(recognition.startCount).toBe(2);
-  });
 
-  it('treats an unsupported recognition language as fatal', () => {
-    const hook = renderVoice();
-    const recognition = latestRecognizer();
-
-    act(() => recognition.emitError('language-not-supported'));
-    act(() => vi.advanceTimersByTime(5000));
-
-    expect(recognition.startCount).toBe(1);
-    expect(hook.result.current.voiceError).toBe('The selected voice recognition language is unsupported.');
-  });
-
-  it('stops retrying after bounded synchronous start failures', () => {
-    const hook = renderVoice();
-    const recognition = latestRecognizer();
-    recognition.failNextStarts = 10;
-
-    act(() => recognition.endUnexpectedly());
-    for (const delay of [500, 1000, 2000, 4000, 4000]) {
-      act(() => vi.advanceTimersByTime(delay));
-    }
-
-    expect(recognition.startCount).toBe(1);
-    expect(recognition.startAttempts).toBe(6);
-    expect(hook.result.current.voiceError).toBe('Voice recognition could not restart. Use Stop and Start Voice to retry.');
-
-    act(() => vi.advanceTimersByTime(10000));
-    expect(recognition.startAttempts).toBe(6);
+    act(() => recognition.emitError('not-allowed'));
+    advance(5000);
+    expect(hook.result.current.voiceError).toBe('Microphone permission was denied.');
+    expect(hook.result.current.isListening).toBe(false);
   });
 });

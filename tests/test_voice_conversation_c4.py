@@ -25,14 +25,14 @@ class TestRecognitionPauseContract(unittest.TestCase):
         self.assertIn("paused = false", voice)
         self.assertIn("pausedRef.current || !enabledRef.current", voice)
 
-    def test_pause_aborts_buffered_audio_but_preserves_conversation_state(self):
+    def test_pause_aborts_buffered_audio_and_returns_option_a_to_wake_only(self):
         voice = VOICE.read_text(encoding="utf-8")
-        pause_block = voice[voice.index("// Web Speech has no pause primitive") :]
+        pause_block = voice[voice.index("// Processing/TTS remains an explicit App-level pause") :]
 
         self.assertIn("recognizer.abort()", pause_block)
-        self.assertIn("capturingRef.current = false", pause_block)
-        self.assertIn("finalTextRef.current = \"\"", pause_block)
-        self.assertNotIn("conversationActiveRef.current = false", pause_block.split("if (!fatalRef", 1)[0])
+        self.assertIn("resetTurn(false)", pause_block)
+        self.assertIn("clearRestartTimer()", pause_block)
+        self.assertIn("restartAttemptRef.current = 0", pause_block)
         self.assertIn("if (!fatalRef.current && !recognizerRunningRef.current)", pause_block)
         self.assertIn("recognizer.start()", pause_block)
 

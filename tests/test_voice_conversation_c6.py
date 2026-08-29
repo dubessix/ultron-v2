@@ -26,6 +26,7 @@ class TestCanonicalVoiceTransport(unittest.TestCase):
         self.assertIn("voiceRequestInFlightRef.current", voice)
         self.assertIn("session_id: sessionIdRef.current", voice)
         self.assertIn('project_id: "personal"', voice)
+        self.assertIn('input_source: "voice"', voice)
         self.assertEqual(voice.count("fetch(`${apiUrl}/api/chat`"), 1)
         self.assertNotIn("sendViaWS", voice)
         self.assertIn("voiceRequestInFlightRef.current = false", voice)
@@ -37,6 +38,11 @@ class TestCanonicalVoiceTransport(unittest.TestCase):
             "project_id: data.project_id",
             "intent: data.intent",
             "provider_route: data.provider_route",
+            "voice_alias_suggestions: data.voice_alias_suggestions",
+            "voice_clarification: data.voice_clarification",
+            "setVoiceClarification(data.voice_clarification || null)",
+            "handleVoicePreferenceSave",
+            "api('/api/voice/preferences'",
             "memory_provenance: data.memory_provenance",
             "events: data.events",
             "pending_confirmation: data.pending_confirmation",

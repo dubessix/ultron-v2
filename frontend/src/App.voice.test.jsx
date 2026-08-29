@@ -13,6 +13,8 @@ const apiMocks = vi.hoisted(() => ({
     return { success: true };
   }),
   executeTool: vi.fn(async () => ({ success: false, error: 'not used in voice tests' })),
+  apiBase: 'http://127.0.0.1:8000',
+  websocketBase: vi.fn(() => 'ws://127.0.0.1:8000'),
 }));
 
 vi.mock('./components/AppShell', () => ({
@@ -24,7 +26,9 @@ vi.mock('./components/AppShell', () => ({
 vi.mock('./components/NotificationToast', () => ({ default: () => null }));
 vi.mock('./api', () => ({
   api: apiMocks.api,
+  apiBase: apiMocks.apiBase,
   executeTool: apiMocks.executeTool,
+  websocketBase: apiMocks.websocketBase,
 }));
 
 import App from './App';
@@ -56,6 +60,9 @@ function voiceResponse(content, overrides = {}) {
       message: 'Exact confirmation required.',
     },
     provider_route: { provider: null, model: null, offline: true },
+    input_source: 'voice',
+    voice_alias_suggestions: [{ heard: 'calender', suggested: 'Calendar', category: 'widget' }],
+    voice_clarification: { question: 'Did you mean Calendar?', options: ['Open Calendar'], reason: 'test' },
     memory_provenance: [{ source_type: 'memory', source_id: 'memory-c6' }],
     ...overrides,
   };
@@ -120,11 +127,13 @@ describe('Voice C6 — canonical transport and response preservation', () => {
       session_id: null,
       project_id: 'personal',
       content: 'remember the first voice turn',
+      input_source: 'voice',
     });
     expect(secondBody).toEqual({
       session_id: 'voice-session-c6',
       project_id: 'personal',
       content: 'show the next remembered turn',
+      input_source: 'voice',
     });
 
     const latestAi = shellCapture.props.messages.filter((message) => message.sender === 'ai').at(-1);
@@ -132,9 +141,17 @@ describe('Voice C6 — canonical transport and response preservation', () => {
       project_id: 'personal',
       intent: 'MEMORY',
       provider_route: { offline: true },
+      input_source: 'voice',
+      voice_alias_suggestions: [{ heard: 'calender', suggested: 'Calendar', category: 'widget' }],
+      voice_clarification: { question: 'Did you mean Calendar?', options: ['Open Calendar'], reason: 'test' },
       memory_provenance: [{ source_type: 'memory', source_id: 'memory-c6' }],
     });
     expect(shellCapture.props.logs).toContainEqual({ level: 'info', message: 'Voice event preserved' });
+    expect(shellCapture.props.voiceClarification).toEqual({
+      question: 'Did you mean Calendar?',
+      options: ['Open Calendar'],
+      reason: 'test',
+    });
     expect(shellCapture.props.pendingAction).toMatchObject({
       confirmation_token: 'c6-exact-token-1234567890',
       tool_id: 'manage_memory',

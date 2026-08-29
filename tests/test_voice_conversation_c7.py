@@ -28,10 +28,9 @@ class TestTruthfulVoiceSessionUi(unittest.TestCase):
             "Voice paused — Ultron is working.",
             "Voice reconnecting…",
             "Wake phrase heard — speak your command.",
-            "Voice conversation active — listening for your next turn.",
-            "Say “Ultron” once to start the voice conversation.",
+            "Say “Ultron” to start a voice command.",
             "WAKE DETECTED",
-            "VOICE ACTIVE",
+            "COMMAND CAPTURE",
         ):
             self.assertIn(text, source)
         self.assertNotIn("WAKED", source)
