@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import httpx
 from pydantic import BaseModel, Field
@@ -12,8 +12,40 @@ from backend.app.tools.tool_base import BaseTool
 
 
 class WeatherArgs(BaseModel):
+    city: Optional[str] = Field(
+        None,
+        max_length=120,
+        description=(
+            "City or place name, e.g. 'Kolkata', 'Bhatpara', 'London'. Preferred over "
+            "coordinates. Omit for the owner's home location."
+        ),
+    )
     latitude: float = Field(22.57, ge=-90, le=90, description="Target latitude coordinate.")
     longitude: float = Field(88.36, ge=-180, le=180, description="Target longitude coordinate.")
+
+
+GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"
+
+
+async def geocode_city(city: str) -> Optional[Dict[str, Any]]:
+    """Resolve a place name to coordinates via Open-Meteo geocoding (keyless)."""
+    name = " ".join(str(city or "").split())[:120]
+    if not name:
+        return None
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        response = await client.get(
+            GEOCODE_URL, params={"name": name, "count": 1, "language": "en", "format": "json"}
+        )
+    if response.status_code != 200:
+        return None
+    results = (response.json() or {}).get("results") or []
+    if not results:
+        return None
+    top = results[0]
+    label = ", ".join(
+        str(part) for part in (top.get("name"), top.get("admin1"), top.get("country")) if part
+    )
+    return {"latitude": float(top["latitude"]), "longitude": float(top["longitude"]), "label": label}
 
 
 def _condition(code: Any) -> str:
@@ -41,17 +73,38 @@ class WeatherTool(BaseTool):
         super().__init__(
             tool_id="weather_tool",
             name="Weather Watcher",
-            description="Queries reported current, hourly, and daily Open-Meteo values for coordinates.",
+            description=(
+                "Live weather: current conditions plus next hours and 7-day forecast from "
+                "Open-Meteo. Pass a city name (preferred) or coordinates; omit both for home."
+            ),
             category="productivity",
             tags=["weather", "forecast", "temperature", "rain", "sunny", "climate"],
             permission_level=0,
             args_model=WeatherArgs,
-            usage_examples=["weather_tool(latitude=22.57, longitude=88.36)"],
+            usage_examples=["weather_tool(city='Kolkata')", "weather_tool(latitude=22.57, longitude=88.36)"],
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        lat = float(kwargs.get("latitude", 22.57))
-        lon = float(kwargs.get("longitude", 88.36))
+        lat = float(kwargs.get("latitude", 22.57) if kwargs.get("latitude") is not None else 22.57)
+        lon = float(kwargs.get("longitude", 88.36) if kwargs.get("longitude") is not None else 88.36)
+        city = str(kwargs.get("city") or "").strip()
+        place_label = ""
+        if city:
+            try:
+                place = await geocode_city(city)
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "data": {"status": "unavailable", "location": city},
+                    "error": f"Could not look up '{city}': {exc}",
+                }
+            if not place:
+                return {
+                    "success": False,
+                    "data": {"status": "unknown_place", "location": city},
+                    "error": f"No place named '{city}' was found. Ask the owner to spell it or name a nearby city.",
+                }
+            lat, lon, place_label = place["latitude"], place["longitude"], place["label"]
         url = "https://api.open-meteo.com/v1/forecast"
         params = {
             "latitude": lat,
@@ -136,7 +189,8 @@ class WeatherTool(BaseTool):
                 "status": "live",
                 "source": "Open-Meteo",
                 "observed_at": current.get("time"),
-                "location": f"Lat: {lat}, Lon: {lon}",
+                "location": place_label or f"Lat: {lat}, Lon: {lon}",
+                "coordinates": {"latitude": lat, "longitude": lon},
                 "temp": f"{float(temperature):.1f}°C",
                 "condition": _condition(weather_code),
                 "windspeed": (
