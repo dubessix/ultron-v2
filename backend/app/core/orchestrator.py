@@ -611,7 +611,11 @@ class CognitiveOrchestrator:
             }
 
         from backend.app.security.path_guard import resolve_agent_tool_arguments
-        resolved = resolve_agent_tool_arguments(tool_id, arguments, project_root)
+        # Coding turns stay confined to the project; personal Jarvis turns may reach
+        # allowlisted personal folders (still fully path-guarded + confirmation-gated).
+        resolved = resolve_agent_tool_arguments(
+            tool_id, arguments, project_root, confine_to_project=coding_turn
+        )
         if not resolved["safe"]:
             return resolved["arguments"], {
                 "success": False,

@@ -78,6 +78,9 @@ security:
   confirm_level_3: true
   # Secure default: tools may touch this project only. Add personal roots such as
   # "~/Documents", "~/Downloads", or "D:/Projects" when you explicitly want them.
+  # JARVIS MODE — to let Ultron organise/find/compress your personal files, use:
+  #   allowed_directories: [".", "~/Desktop", "~/Documents", "~/Downloads"]
+  # Deletes/moves still require your exact one-time confirmation.
   allowed_directories: ["."]
   empty_allowed_policy: "project_only"
   # Canonical project ID -> root used by the coding agent. Relative roots resolve

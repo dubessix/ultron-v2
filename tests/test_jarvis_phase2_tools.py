@@ -86,3 +86,29 @@ class TestSearchReturnsResultsToBrain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPersonalPathsStayGuarded(unittest.TestCase):
+    def setUp(self):
+        from backend.app.security.path_guard import resolve_project_root
+        self.root = resolve_project_root("personal")["path"]
+
+    def test_coding_turns_remain_confined_to_project(self):
+        from backend.app.security.path_guard import resolve_agent_tool_arguments
+        result = resolve_agent_tool_arguments(
+            "delete_folder", {"folderpath": "/etc"}, self.root, confine_to_project=True)
+        self.assertFalse(result["safe"])
+
+    def test_personal_turns_still_block_system_and_unlisted_paths(self):
+        from backend.app.security.path_guard import resolve_agent_tool_arguments
+        for bad in ("/etc", "/var/log", "~/.ssh"):
+            with self.subTest(path=bad):
+                result = resolve_agent_tool_arguments(
+                    "delete_folder", {"folderpath": bad}, self.root, confine_to_project=False)
+                self.assertFalse(result["safe"])
+
+    def test_desktop_word_maps_to_home_folder_before_guarding(self):
+        from pathlib import Path
+        from backend.app.security.path_guard import _personal_candidate
+        self.assertEqual(_personal_candidate("Desktop/old", Path(self.root)), Path.home() / "Desktop" / "old")
+        self.assertEqual(_personal_candidate("notes", Path(self.root)), Path(self.root) / "notes")

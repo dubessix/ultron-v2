@@ -221,8 +221,44 @@ def resolve_project_root(project_id: str = "personal") -> dict:
     }
 
 
-def resolve_agent_tool_arguments(tool_id: str, arguments: dict, project_root: str) -> dict:
-    """Bind every relative agent path to its active project and reject escapes."""
+# Everyday folder words the brain may send as bare relative names.
+_PERSONAL_FOLDER_NAMES = {
+    "desktop": "Desktop",
+    "documents": "Documents",
+    "downloads": "Downloads",
+    "pictures": "Pictures",
+    "music": "Music",
+    "videos": "Videos",
+}
+
+
+def _personal_candidate(value: str, root: Path) -> Path:
+    """Resolve a personal-assistant path: ~, known home folders, else project-relative."""
+    raw = Path(os.path.expandvars(str(value))).expanduser()
+    if raw.is_absolute():
+        return raw
+    parts = raw.parts
+    if parts and parts[0].lower() in _PERSONAL_FOLDER_NAMES:
+        return Path.home() / _PERSONAL_FOLDER_NAMES[parts[0].lower()] / Path(*parts[1:])
+    return root / raw
+
+
+def resolve_agent_tool_arguments(
+    tool_id: str,
+    arguments: dict,
+    project_root: str,
+    *,
+    confine_to_project: bool = True,
+) -> dict:
+    """Bind every relative agent path to its active project and reject escapes.
+
+    confine_to_project=True (coding turns, and the default for callers): every
+    path must stay inside the active project root.
+    confine_to_project=False (Jarvis personal turns): "Desktop"/"~/Downloads"
+    resolve to the owner's home folders and paths may leave the project, but
+    each one must still pass check_path — allowed_directories, blocked system
+    roots, sensitive names and symlink escapes all stay enforced.
+    """
     try:
         root = Path(project_root).expanduser().resolve(strict=True)
     except (OSError, RuntimeError, ValueError) as exc:
@@ -243,11 +279,14 @@ def resolve_agent_tool_arguments(tool_id: str, arguments: dict, project_root: st
         value = resolved_arguments.get(field)
         if value in (None, ""):
             continue
-        candidate = Path(str(value)).expanduser()
-        if not candidate.is_absolute():
-            candidate = root / candidate
+        if confine_to_project:
+            candidate = Path(str(value)).expanduser()
+            if not candidate.is_absolute():
+                candidate = root / candidate
+        else:
+            candidate = _personal_candidate(str(value), root)
         candidate = candidate.resolve(strict=False)
-        if not _inside(candidate, root) and candidate != root:
+        if confine_to_project and not _inside(candidate, root) and candidate != root:
             return {
                 "safe": False,
                 "reason": "outside_active_project",
