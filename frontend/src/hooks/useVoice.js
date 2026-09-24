@@ -13,7 +13,23 @@ const WAKE_WORDS = [
   'ultron',
 ];
 
+// Real browsers (Chrome/Edge cloud STT) rarely spell "Ultron" correctly —
+// they hear "ultra", "altron", "ultran", "alton"... These heard-as forms are
+// accepted as the wake word too. They are deliberately narrow: "Electron",
+// "activate" and ordinary words never wake Ultron.
+const HEARD_AS_WAKE = [
+  'hey altron', 'hey ultran', 'hey ultra', 'hey alton', 'hey all tron', 'hey ul tron', 'hey oltron',
+  'hi ultron', 'hi ultra', 'ok ultron', 'okay ultron', 'ok ultra', 'okay ultra',
+  'altron', 'ultran', 'ultrons', "ultron's", 'all tron', 'ul tron', 'oltron', 'alltron', 'ultraan',
+];
+// Bare "ultra"/"alton" only wake when they are the FIRST word Chrome heard
+// (so "an ultra wide monitor" never triggers).
+const LEADING_ONLY_WAKE = ['ultra', 'alton', 'alton,', 'ultra,'];
+
 const RECOG_LANG = import.meta.env.VITE_VOICE_LANG || 'en-IN';
+// After this many back-to-back network/service errors with no speech heard,
+// the browser has no working speech service (Brave, Opera, Electron, offline).
+const NETWORK_ERROR_FATAL_COUNT = 3;
 // Tuned for natural speech: long commands need enough room for a human pause
 // without being sent mid-sentence. New words always reset these windows.
 const SILENCE_BASE_MS = 1800;
@@ -38,7 +54,7 @@ function cleanText(value) {
 function matchesWakeWord(transcript) {
   const original = String(transcript || '');
   const lower = original.toLowerCase();
-  for (const phrase of WAKE_WORDS) {
+  for (const phrase of [...WAKE_WORDS, ...HEARD_AS_WAKE]) {
     let fromIndex = 0;
     while (fromIndex < lower.length) {
       const index = lower.indexOf(phrase, fromIndex);
@@ -50,11 +66,30 @@ function matchesWakeWord(transcript) {
       fromIndex = index + 1;
     }
   }
+  const leading = lower.trimStart();
+  const offset = lower.length - leading.length;
+  for (const phrase of LEADING_ONLY_WAKE) {
+    const word = phrase.replace(/,$/, '');
+    if (leading.startsWith(word) && !isWordCharacter(leading[word.length])) {
+      return { matched: word, index: offset, end: offset + word.length };
+    }
+  }
   return { matched: null, index: -1, end: -1 };
 }
 
-function resultText(result) {
-  return cleanText(result?.[0]?.transcript);
+/** Check every alternative the browser offers, not only its first guess. */
+function matchWakeInResult(result) {
+  const count = Math.max(1, Number(result?.length) || 0);
+  for (let alt = 0; alt < count; alt += 1) {
+    const text = cleanText(result?.[alt]?.transcript);
+    const wake = matchesWakeWord(text);
+    if (wake.matched) return { ...wake, alt };
+  }
+  return { matched: null, index: -1, end: -1, alt: 0 };
+}
+
+function resultText(result, alt = 0) {
+  return cleanText(result?.[alt]?.transcript || result?.[0]?.transcript);
 }
 
 /**
@@ -108,6 +143,8 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
   const captureSessionIdRef = useRef(0);
   const captureStartIndexRef = useRef(0);
   const captureWakePhraseRef = useRef(null);
+  const captureAltRef = useRef(0);
+  const networkErrorsRef = useRef(0);
   const turnSegmentsRef = useRef(new Map());
   const carriedTextRef = useRef('');
   const commandTextRef = useRef('');
@@ -232,7 +269,10 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
     const startIndex = Math.max(Number(event.resultIndex) || 0, captureStartIndexRef.current);
     for (let index = startIndex; index < event.results.length; index += 1) {
       turnSegmentsRef.current.set(index, {
-        text: resultText(event.results[index]),
+        text: resultText(
+          event.results[index],
+          index === captureStartIndexRef.current ? captureAltRef.current : 0,
+        ),
         isFinal: Boolean(event.results[index]?.isFinal),
       });
     }
@@ -298,8 +338,9 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
     }, RESTART_RECOVERY_GRACE_MS);
   }, [clearTimer]);
 
-  const beginWakeTurn = useCallback((event, resultIndex, wakePhrase) => {
+  const beginWakeTurn = useCallback((event, resultIndex, wakePhrase, alt = 0) => {
     capturingRef.current = true;
+    captureAltRef.current = alt;
     captureSessionIdRef.current = sessionIdRef.current;
     captureStartIndexRef.current = resultIndex;
     captureWakePhraseRef.current = wakePhrase;
@@ -326,7 +367,14 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       fatalRef.current = true;
-      setVoiceError('Voice recognition is unavailable in this browser.');
+      setVoiceError('Voice recognition is unavailable in this browser. Use Google Chrome or Microsoft Edge.');
+      return;
+    }
+    if (window.isSecureContext === false) {
+      fatalRef.current = true;
+      setVoiceError(
+        `The microphone only works on https or localhost. Open Ultron at http://localhost:${window.location?.port || '5173'} on this PC instead of ${window.location?.host || 'a network address'}.`,
+      );
       return;
     }
 
@@ -345,6 +393,7 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
 
     recognizer.onresult = (event) => {
       if (recRef.current !== recognizer || pausedRef.current || !enabledRef.current) return;
+      networkErrorsRef.current = 0;
 
       if (capturingRef.current) {
         const command = updateTurnFromResult(event);
@@ -362,9 +411,9 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
       }
 
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const wake = matchesWakeWord(resultText(event.results[index]));
+        const wake = matchWakeInResult(event.results[index]);
         if (!wake.matched) continue;
-        beginWakeTurn(event, index, wake.matched);
+        beginWakeTurn(event, index, wake.matched, wake.alt);
         return;
       }
     };
@@ -394,8 +443,23 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
       }
 
       if (event.error === 'network' || event.error === 'service-not-allowed') {
-        // Browser network/service errors remain recoverable and use the bounded
-        // onend restart path. They are shown honestly without pretending active.
+        // A single blip is recoverable (bounded onend restart). But onstart
+        // resets the restart counter, so a browser WITHOUT a speech service
+        // used to loop "reconnecting…" forever. Count consecutive failures.
+        networkErrorsRef.current += 1;
+        if (networkErrorsRef.current >= NETWORK_ERROR_FATAL_COUNT) {
+          fatalRef.current = true;
+          clearRestartTimer();
+          resetTurn(false);
+          setIsListening(false);
+          setVoiceError(
+            event.error === 'service-not-allowed'
+              ? 'Speech recognition is blocked here. Open Ultron in Google Chrome or Microsoft Edge at http://localhost (or https) and allow the microphone.'
+              : 'This browser cannot reach its speech service. Use Google Chrome or Microsoft Edge with internet on (Brave, Opera, Firefox and the Electron shell have no working speech recognition).',
+          );
+          try { recognizer.abort(); } catch (_error) {}
+          return;
+        }
         setVoiceError('Browser speech recognition is reconnecting…');
         try { recognizer.abort(); } catch (_error) {}
         return;
@@ -480,6 +544,7 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
   useEffect(() => {
     if (enabled) {
       fatalRef.current = false;
+      networkErrorsRef.current = 0;
       start();
     } else {
       stop();
