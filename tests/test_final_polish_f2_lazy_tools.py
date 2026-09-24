@@ -1,4 +1,4 @@
-"""F2 regressions: prompt context must keep the 69-tool registry genuinely lazy."""
+"""F2 regressions: prompt context must keep the 70-tool registry (69 + Jarvis locate_path) genuinely lazy."""
 
 from __future__ import annotations
 
@@ -110,7 +110,7 @@ class TestPromptScopedLazyToolMetadata(unittest.IsolatedAsyncioTestCase):
 
 
 class TestLazyRegistryPreservation(unittest.TestCase):
-    def test_all_69_tool_ids_remain_registered_without_importing_modules(self):
+    def test_all_70_tool_ids_remain_registered_without_importing_modules(self):
         real_import = importlib.import_module
         with patch(
             "backend.app.tools.tool_registry.importlib.import_module",
@@ -119,7 +119,7 @@ class TestLazyRegistryPreservation(unittest.TestCase):
             registry = ToolRegistry()
             ids = registry.get_registered_ids()
 
-        self.assertEqual(len(ids), 69)
+        self.assertEqual(len(ids), 70)
         self.assertEqual(len(ids), len(set(ids)))
         self.assertIn("database_restore", ids)
         self.assertIn("spotify_current_track", ids)

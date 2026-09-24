@@ -15,6 +15,10 @@ _DEFAULT_BLOCKED_ROOTS = [
     "/sbin", "/lib", "/lib64", "/usr/sbin", "/System", "/Library",
     r"C:\Windows", r"C:\Windows\System32", r"C:\Program Files",
     r"C:\Program Files (x86)",
+    # Jarvis full-access mode: still never touch OS internals.
+    "/usr", "/private/etc", "/private/var",
+    r"C:\ProgramData", r"C:\Recovery", r"C:\System Volume Information",
+    r"C:\$Recycle.Bin", r"C:\Boot",
 ]
 _SENSITIVE_NAMES = {
     ".ssh", ".gnupg", ".aws", ".env", ".git-credentials", ".netrc",
@@ -67,8 +71,39 @@ def get_blocked_paths() -> list[str]:
     return resolved
 
 
+def full_access_enabled() -> bool:
+    """Jarvis mode: every folder on this PC except blocked OS roots + secrets.
+
+    Enabled by `security.access_mode: full` in config.yaml or the
+    ULTRON_ACCESS_MODE=full environment variable. Isolated test runs keep the
+    hermetic allowlist unless a test opts in with ULTRON_TEST_FULL_ACCESS=1.
+    """
+    if TEST_MODE and os.getenv("ULTRON_TEST_FULL_ACCESS", "") != "1":
+        return False
+    mode = os.getenv("ULTRON_ACCESS_MODE", "").strip().lower()
+    if not mode:
+        mode = str(_load_security_config().get("access_mode", "allowlist")).strip().lower()
+    return mode == "full"
+
+
+def _all_drive_roots() -> list[str]:
+    if os.name == "nt":
+        import string
+        return [
+            os.path.normcase(f"{letter}:\\")
+            for letter in string.ascii_uppercase
+            if os.path.exists(f"{letter}:\\")
+        ]
+    return [os.path.normcase("/")]
+
+
 def get_allowed_paths() -> list[str]:
     """Return effective allowed roots; secure default is the project root only."""
+    if full_access_enabled():
+        roots = _all_drive_roots()
+        if TEST_MODE and TEST_ROOT is not None:
+            roots.append(os.path.normcase(str(TEST_ROOT.resolve(strict=False))))
+        return roots
     config = _load_security_config()
     configured = config.get("allowed_directories", []) or []
     env_value = os.getenv("ULTRON_ALLOWED_DIRECTORIES", "").strip()
@@ -232,15 +267,49 @@ _PERSONAL_FOLDER_NAMES = {
 }
 
 
-def _personal_candidate(value: str, root: Path) -> Path:
-    """Resolve a personal-assistant path: ~, known home folders, else project-relative."""
+# Fields that name something that should ALREADY exist (auto-find applies);
+# every other path field names a new target (only its parent is auto-found).
+_CREATE_FIELDS = {
+    ("create_folder", "folderpath"), ("rename_folder", "new_path"),
+    ("copy_folder", "destination_path"), ("move_folder", "destination_path"),
+    ("extract_zip", "extract_to"), ("convert_file_format", "destination_filepath"),
+    ("git_clone", "directory"), ("download_file", "save_path"), ("file_write", "filepath"),
+}
+_FILE_FIELDS = {"filepath", "zippath", "source_filepath"}
+
+
+def _personal_candidate(value: str, root: Path, *, tool_id: str = "", field: str = "") -> Path:
+    """Resolve a personal-assistant path like Jarvis would.
+
+    ~ and env vars expand; "Desktop/..." maps to the real (OneDrive-aware) home
+    folder; anything that does not exist as typed is auto-found on this PC
+    ("Projects" -> D:\\Work\\Projects). New targets keep their name but get an
+    auto-found parent ("Projects/NewApp" -> D:\\Work\\Projects\\NewApp).
+    """
+    from backend.app.security.path_locator import auto_resolve, home_folder
+
     raw = Path(os.path.expandvars(str(value))).expanduser()
     if raw.is_absolute():
-        return raw
-    parts = raw.parts
-    if parts and parts[0].lower() in _PERSONAL_FOLDER_NAMES:
-        return Path.home() / _PERSONAL_FOLDER_NAMES[parts[0].lower()] / Path(*parts[1:])
-    return root / raw
+        candidate = raw
+    else:
+        parts = raw.parts
+        if parts and parts[0].lower() in _PERSONAL_FOLDER_NAMES:
+            base = home_folder(parts[0]) or (Path.home() / _PERSONAL_FOLDER_NAMES[parts[0].lower()])
+            candidate = base / Path(*parts[1:])
+        else:
+            candidate = root / raw
+    if candidate.exists() or not tool_id:
+        return candidate
+
+    kind = "file" if field in _FILE_FIELDS else "folder"
+    if (tool_id, field) in _CREATE_FIELDS:
+        parent_text = str(Path(value).parent)
+        if parent_text in ("", ".") or candidate.parent.exists():
+            return candidate
+        found_parent = auto_resolve(parent_text, root, kind="folder")
+        return (found_parent / candidate.name) if found_parent else candidate
+    found = auto_resolve(str(value), root, kind=kind)
+    return found or candidate
 
 
 def resolve_agent_tool_arguments(
@@ -284,7 +353,7 @@ def resolve_agent_tool_arguments(
             if not candidate.is_absolute():
                 candidate = root / candidate
         else:
-            candidate = _personal_candidate(str(value), root)
+            candidate = _personal_candidate(str(value), root, tool_id=tool_id, field=field)
         candidate = candidate.resolve(strict=False)
         if confine_to_project and not _inside(candidate, root) and candidate != root:
             return {

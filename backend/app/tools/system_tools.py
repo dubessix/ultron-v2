@@ -94,8 +94,37 @@ def _load_approved_commands() -> set[str]:
         return set(_DEFAULT_APPROVED_COMMANDS)
 
 
+def _terminal_policy_any() -> bool:
+    """Jarvis shell: `security.terminal_policy: any` (or ULTRON_TERMINAL_POLICY=any).
+
+    Any executable may run — still behind the level-2 exact confirmation card
+    and the destructive-pattern risk guard. Isolated tests keep the allowlist
+    unless they opt in with ULTRON_TEST_FULL_ACCESS=1.
+    """
+    from backend.app.runtime_paths import TEST_MODE
+    if TEST_MODE and os.getenv("ULTRON_TEST_FULL_ACCESS", "") != "1":
+        return False
+    policy = os.getenv("ULTRON_TERMINAL_POLICY", "").strip().lower()
+    if not policy:
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as handle:
+                policy = str(
+                    ((yaml.safe_load(handle) or {}).get("security", {}) or {}).get(
+                        "terminal_policy", "allowlist"
+                    )
+                ).strip().lower()
+        except (OSError, yaml.YAMLError):
+            policy = "allowlist"
+    return policy == "any"
+
+
 def _approved_command(command: str) -> bool:
     """Every command, with or without shell syntax, needs an approved executable."""
+    if _terminal_policy_any():
+        try:
+            return bool(_split_command(command))
+        except ValueError:
+            return bool(command.strip())
     try:
         parts = _split_command(command)
     except ValueError:
@@ -106,8 +135,8 @@ def _approved_command(command: str) -> bool:
     return first in _load_approved_commands()
 
 class TerminalRunArgs(BaseModel):
-    command: str = Field(..., description="Local system command to execute after exact confirmation.")
-    cwd: Optional[str] = Field(None, description="Approved project working directory; defaults to Ultron project root.")
+    command: str = Field(..., description="Shell command to run on the owner's PC (runs after the owner approves it).")
+    cwd: Optional[str] = Field(None, description="Working directory: a full path, '~/...', 'Desktop', or just a folder name like 'Projects' (auto-found). Defaults to the Ultron project root.")
 
 class AppLaunchArgs(BaseModel):
     pass

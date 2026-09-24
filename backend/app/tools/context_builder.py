@@ -32,7 +32,7 @@ class ToolContextBuilder:
         "manage_reminder",
         "manage_task",
         "manage_calendar",
-        "daily_briefing",
+        "locate_path",
     )
 
     # Lightweight match hints intentionally live outside tool classes. Reading
@@ -50,6 +50,10 @@ class ToolContextBuilder:
             "file contents",
         ),
         "file_write": ("write file", "save file", "edit file", "update file", "fix code"),
+        "locate_path": (
+            "where is", "locate", "find folder", "find my folder", "which folder",
+            "folder", "directory", "path of",
+        ),
         "find_files": (
             "find file", "find files", "locate file", "glob", "file search",
             "find all", "pdf", "documents",
