@@ -1,7 +1,26 @@
 """
 Ultron Core Decision Engine
 Routes requests to the optimal processing path: Fast (Direct), Medium (Single Tool), or Heavy (Orchestration).
+
+Phase 0.B: the track is a latency/provider hint only. It no longer decides
+whether the LLM receives tools — every non-conversational turn is armed and the
+model chooses via native function calling.
 """
+
+# Everyday Jarvis action domains -> single-tool "medium" path.
+ACTION_INTENTS = frozenset({
+    "DEVELOPER_HELP",
+    "PLANNING",
+    "EMOTIONAL",
+    "WEATHER",
+    "MUSIC",
+    "SYSTEM",
+    "FILE_OPS",
+    "BROWSER",
+    "SEARCH",
+    "APP_CONTROL",
+})
+
 
 class DecisionEngine:
     def __init__(self) -> None:
@@ -16,17 +35,13 @@ class DecisionEngine:
         if confidence < 0.60:
             return "heavy"
 
-        # Map intents to logical tracks
-        if intent == "CONVERSATION":
+        if intent in ("CONVERSATION", "EXPLANATION"):
             return "fast"
-            
-        elif intent == "EXPLANATION":
-            return "fast"
-            
-        elif intent in ["DEVELOPER_HELP", "PLANNING", "EMOTIONAL"]:
+
+        if intent in ACTION_INTENTS:
             return "medium"
-            
-        elif intent == "RESEARCH":
+
+        if intent == "RESEARCH":
             return "heavy"
-            
+
         return "fast"
