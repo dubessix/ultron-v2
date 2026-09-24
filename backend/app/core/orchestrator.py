@@ -220,13 +220,20 @@ class CognitiveOrchestrator:
         user_prompt: str,
         *,
         coding_turn: bool = False,
+        allow_defaults: bool = False,
     ) -> str:
-        """Compile schemas for at most eight prompt-relevant JIT tools."""
+        """Compile schemas for at most twelve prompt-relevant JIT tools.
+
+        allow_defaults=True (action-style turns only) guarantees the LLM is
+        never disarmed: if keyword scoring selects nothing, the bounded default
+        utility belt is attached and the model decides what to call.
+        """
         registry = ToolRegistry()
         tools = self.tool_context_builder.load_relevant_tools(
             user_prompt,
             registry,
             coding_turn=coding_turn,
+            allow_defaults=allow_defaults,
         )
         metadata = []
         for tool in tools:
