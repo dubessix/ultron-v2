@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import json
+import time
 from typing import Any, ClassVar, Optional
 
 import httpx
@@ -36,6 +37,9 @@ class LLMRouter:
         self.provider_attempts = settings["max_attempts"]
         self.backoff_base_seconds = settings["backoff_base_seconds"]
         self._rejected_models: dict[tuple[str, str], str] = {}
+        # Rejections expire so one transient 400/404 (bad payload, provider blip,
+        # temporary model outage) does not disable a provider for the process life.
+        self._rejected_at: dict[tuple[str, str], float] = {}
         self.limits = httpx.Limits(max_keepalive_connections=5, max_connections=20)
         self.client = httpx.AsyncClient(limits=self.limits, timeout=self.request_timeout)
         # Context-local metadata stays correct when several sessions route concurrently.
@@ -123,7 +127,7 @@ class LLMRouter:
 
             configured_provider_seen = True
             model = get_model(provider)
-            rejected_reason = self._rejected_models.get((provider, model))
+            rejected_reason = self._active_rejection(provider, model)
             if rejected_reason:
                 last_error = RuntimeError(rejected_reason)
                 print(f"[LLM_ROUTER] Skipping rejected model {provider}/{model}.")
@@ -268,6 +272,28 @@ class LLMRouter:
                 )
         return messages
 
+    REJECTION_TTL_SECONDS: ClassVar[float] = 600.0
+
+    @staticmethod
+    def _apply_groq_reasoning(payload: dict[str, Any]) -> None:
+        """gpt-oss models reason before answering; keep it fast for a voice assistant."""
+        if str(payload.get("model") or "").startswith("openai/gpt-oss"):
+            payload["reasoning_effort"] = "low"
+
+    def _active_rejection(self, provider: str, model: str) -> Optional[str]:
+        """Return the rejection reason while it is fresh; forget it after the TTL."""
+        key = (provider, model)
+        reason = self._rejected_models.get(key)
+        if not reason:
+            return None
+        rejected_at = self._rejected_at.setdefault(key, time.monotonic())
+        if time.monotonic() - rejected_at > self.REJECTION_TTL_SECONDS:
+            self._rejected_models.pop(key, None)
+            self._rejected_at.pop(key, None)
+            print(f"[LLM_ROUTER] Rejection for {provider}/{model} expired; retrying model.")
+            return None
+        return reason
+
     @staticmethod
     def _gemini_contents(user_prompt: str, conversation: list[dict]) -> list[dict]:
         contents: list[dict] = [{"role": "user", "parts": [{"text": user_prompt}]}]
@@ -288,14 +314,16 @@ class LLMRouter:
                     parsed = {"result": raw_content}
                 if not isinstance(parsed, dict):
                     parsed = {"result": parsed}
-                pending_responses.append(
-                    {
-                        "functionResponse": {
-                            "name": str(item.get("name") or ""),
-                            "response": parsed,
-                        }
-                    }
-                )
+                function_response: dict[str, Any] = {
+                    "name": str(item.get("name") or ""),
+                    "response": parsed,
+                }
+                # Gemini 3.x pairs responses to calls by id when it supplied one.
+                # Locally synthesised fallback ids are never sent back.
+                call_id = str(item.get("tool_call_id") or "")
+                if call_id and not call_id.startswith("gemini-call-") and call_id != "call":
+                    function_response["id"] = call_id
+                pending_responses.append({"functionResponse": function_response})
                 continue
 
             flush_tool_responses()
@@ -503,8 +531,13 @@ class LLMRouter:
                 ],
                 "tool_choice": "auto",
                 "temperature": temperature,
-                "max_tokens": 1024 if provider == "groq" else 2048,
+                "max_tokens": 2048,
             }
+            if provider == "groq":
+                # gpt-oss on Groq does not support parallel tool use; the agent
+                # loop is sequential by design, so request exactly that.
+                payload["parallel_tool_calls"] = False
+                self._apply_groq_reasoning(payload)
             if provider == "nvidia":
                 payload["chat_template_kwargs"] = {
                     "enable_thinking": True,
@@ -567,7 +600,7 @@ class LLMRouter:
                 "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
                 "generationConfig": {
                     "temperature": temperature,
-                    "maxOutputTokens": 1024,
+                    "maxOutputTokens": 2048,
                 },
             }
             try:
@@ -617,7 +650,9 @@ class LLMRouter:
         detail = (response.text or "").replace("\n", " ")[:200]
         message = f"{provider} rejected request with HTTP {status}: {detail}"
         if status in {400, 404, 422}:
-            self._rejected_models[(provider, get_model(provider))] = message
+            rejected_key = (provider, get_model(provider))
+            self._rejected_models[rejected_key] = message
+            self._rejected_at[rejected_key] = time.monotonic()
         raise RuntimeError(message)
 
     async def _execute_groq_pipeline(self, system_prompt: str, user_prompt: str, temperature: float) -> str:
@@ -632,8 +667,9 @@ class LLMRouter:
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": temperature,
-                "max_tokens": 512,
+                "max_tokens": 2048,
             }
+            self._apply_groq_reasoning(payload)
             try:
                 response = await self.client.post(
                     url,
@@ -664,10 +700,9 @@ class LLMRouter:
             key = self.key_manager.get_active_key(provider)
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
             payload = {
-                "contents": [{
-                    "parts": [{"text": f"System Guidelines: {system_prompt}\n\nUser Query: {user_prompt}"}]
-                }],
-                "generationConfig": {"temperature": temperature, "maxOutputTokens": 512},
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                "generationConfig": {"temperature": temperature, "maxOutputTokens": 2048},
             }
             try:
                 response = await self.client.post(
@@ -704,7 +739,7 @@ class LLMRouter:
                     {"role": "user", "content": user_prompt},
                 ],
                 "temperature": temperature,
-                "max_tokens": 1024,
+                "max_tokens": 2048,
             }
             try:
                 response = await self.client.post(

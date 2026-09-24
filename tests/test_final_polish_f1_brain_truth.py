@@ -23,7 +23,7 @@ from backend.app.install_paths import CONFIG_PATH
 class TestCurrentModelTruth(unittest.TestCase):
     def test_default_groq_model_is_current_official_replacement(self):
         with patch.dict(os.environ, {"GROQ_CHAT_MODEL": ""}, clear=False):
-            self.assertEqual(get_model("groq"), "openai/gpt-oss-20b")
+            self.assertEqual(get_model("groq"), "openai/gpt-oss-120b")
 
     def test_retired_groq_model_is_rejected_even_as_env_override(self):
         with patch.dict(os.environ, {"GROQ_CHAT_MODEL": "llama-3.1-8b-instant"}, clear=False):
@@ -33,7 +33,7 @@ class TestCurrentModelTruth(unittest.TestCase):
 
     def test_repository_config_matches_current_default(self):
         config = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
-        self.assertEqual(config["ai"]["models"]["groq"], "openai/gpt-oss-20b")
+        self.assertEqual(config["ai"]["models"]["groq"], "openai/gpt-oss-120b")
 
 
 class TestConfigDrivenProviderRouting(unittest.IsolatedAsyncioTestCase):

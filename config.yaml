@@ -23,7 +23,7 @@ ai:
   # NVIDIA_CHAT_MODEL / GEMINI_EMBEDDING_MODEL / GEMINI_EMBEDDING_DIMS).
   # Verified against provider documentation on 2026-08-23.
   models:
-    groq: "openai/gpt-oss-20b"
+    groq: "openai/gpt-oss-120b"
     gemini: "gemini-3.5-flash"
     nvidia: "nvidia/nemotron-3-ultra-550b-a55b"
     embedding: "gemini-embedding-001"

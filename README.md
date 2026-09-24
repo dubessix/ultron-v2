@@ -69,7 +69,7 @@ Effective model IDs are in `config.yaml` and may be overridden with environment 
 
 | Purpose | Default | Override |
 |---|---|---|
-| Groq chat | `openai/gpt-oss-20b` | `GROQ_CHAT_MODEL` |
+| Groq chat | `openai/gpt-oss-120b` | `GROQ_CHAT_MODEL` |
 | Gemini chat | `gemini-3.5-flash` | `GEMINI_CHAT_MODEL` |
 | NVIDIA coding | `nvidia/nemotron-3-ultra-550b-a55b` | `NVIDIA_CHAT_MODEL` |
 | Gemini embedding | `gemini-embedding-001` | `GEMINI_EMBEDDING_MODEL` |

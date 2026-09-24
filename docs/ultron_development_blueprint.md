@@ -8,7 +8,7 @@ One owner, one local laptop, localhost UI, local SQLite, cloud provider APIs whe
 
 ## Brain
 
-- Groq chat default: `openai/gpt-oss-20b`
+- Groq chat default: `openai/gpt-oss-120b`
 - Gemini fallback: `gemini-3.5-flash`
 - NVIDIA coding: `nvidia/nemotron-3-ultra-550b-a55b`
 - Embedding: `gemini-embedding-001`, configurable dimensions (default 768)
