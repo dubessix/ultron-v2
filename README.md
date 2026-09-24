@@ -110,7 +110,7 @@ Default URLs:
 - Optional hardware sensor missing: returns `Unavailable`; it does not invent temperature, battery, latency, or uptime.
 - Destructive/system tools: require a one-time token bound to the exact action, session, and canonical arguments.
 - Filesystem tools: are restricted to `security.allowed_directories` and reject sensitive/system paths and symlink escapes.
-- Native tool agent: loads at most eight relevant schemas, runs at most eight sequential inspect/act/observe steps, and binds relative paths to `security.project_roots[project_id]`.
+- Native tool agent: loads at most twelve relevant schemas (default utility belt when none match), runs at most eight sequential inspect/act/observe steps, and binds relative paths to `security.project_roots[project_id]`.
 - Cloud egress: local file content requires exact confirmation before it is returned to a provider; tool results are bounded and common credential patterns are redacted.
 - Coding writes: use current file fingerprints, syntax verification, backups and atomic replacement; exact single-block patch mode remains inside the existing `file_write` tool.
 - Database restore: accepts approved backup paths only, enters maintenance mode, creates a verified safety copy, and rolls back automatically if post-restore integrity fails.
