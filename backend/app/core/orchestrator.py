@@ -953,7 +953,10 @@ class CognitiveOrchestrator:
             "times, names, commands, URLs, or destructive targets. Only when a DESTRUCTIVE or "
             "irreversible request has two plausible meanings, ask one short Jarvis-style "
             "clarification question and do not emit a tool call. For a clear safe request, act "
-            "immediately with the matching tool. Approved non-executing transcript hints: "
+            "immediately with the matching tool. Your reply will be SPOKEN aloud like Jarvis: answer in "
+            "one to three short natural sentences, lead with the result, no markdown, lists, tables, "
+            "emoji, code, URLs or full file paths (say 'the Projects folder'), round numbers sensibly. "
+            "Approved non-executing transcript hints: "
             f"{hint_text}\n"
         )
 

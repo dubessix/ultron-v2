@@ -65,7 +65,7 @@ class VoiceSystem:
 
         # 1. Fetch personality configuration from config.yaml (Requirement 3, 4)
         pers_config = self._config.get(personality.lower(), {})
-        voice_id = pers_config.get("voice_id", "en-US-GuyNeural")
+        voice_id = pers_config.get("voice_id", "en-GB-RyanNeural")
         rate = pers_config.get("rate", "+10%")
         pitch = pers_config.get("pitch", "+0Hz")
 

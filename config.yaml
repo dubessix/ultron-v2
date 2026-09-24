@@ -64,14 +64,16 @@ voice:
   wake_words:
     - "hey ultron"
     - "ultron"
+  # Jarvis voice: calm British butler, slightly slower and deeper.
   ultron:
-    voice_id: "en-US-GuyNeural"
-    rate: "+5%"
-    pitch: "+0Hz"
+    voice_id: "en-GB-RyanNeural"
+    rate: "-4%"
+    pitch: "-2Hz"
+  # Zora: warm expressive Indian-English voice.
   zora:
-    voice_id: "en-IN-NeerjaNeural"
-    rate: "-5%"
-    pitch: "+2Hz"
+    voice_id: "en-IN-NeerjaExpressiveNeural"
+    rate: "-2%"
+    pitch: "+1Hz"
 
 security:
   confirm_level_2: true
