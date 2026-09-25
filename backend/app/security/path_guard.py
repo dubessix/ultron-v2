@@ -176,6 +176,7 @@ def check_path(path_str: str) -> dict:
 
 _TOOL_PATH_FIELDS = {
     "file_read": ("filepath",),
+    "file_actions": ("path",),
     "file_write": ("filepath",),
     "find_files": ("search_root",),
     "create_folder": ("folderpath",),
@@ -311,6 +312,8 @@ def _personal_candidate(value: str, root: Path, *, tool_id: str = "", field: str
         return candidate
 
     kind = "file" if field in _FILE_FIELDS else "folder"
+    if tool_id == "file_actions" and Path(str(value)).suffix:
+        kind = "any"  # "open resume.pdf" names a file
     if (tool_id, field) in _CREATE_FIELDS:
         parent_text = str(Path(value).parent)
         if parent_text in ("", ".") or candidate.parent.exists():
