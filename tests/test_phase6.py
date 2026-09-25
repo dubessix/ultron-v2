@@ -112,35 +112,38 @@ class TestPhase6RefactoredPersonalityArchitecture(unittest.IsolatedAsyncioTestCa
         engine = PersonalityEngine(cooldown_turns=2)
         orchestrator = CognitiveOrchestrator(memory_engine=memory, personality_engine=engine)
         
-        # Dispatch highly stressful prompt to trigger auto handoff to Zora
-        response_1 = await orchestrator.process_request(
-            user_prompt="broken Webpack build i give up nothing works crash fail error",
-            session_id="test_sess_refactored",
-            consecutive_errors=4,
-            current_hour=1, # 1 AM
-            delete_ratio=0.85
-        )
-        
-        # 1. Verify automatic handoff events were dispatched
+        # The AI itself notices the stress and calls switch_mode(zora, mood).
+        from tests._ai_script import reply, scripted_brain, use
+
+        def script(prompt, conv):
+            if any(m.get("role") == "tool" for m in conv):
+                return reply("Zora response")
+            if "give up" in prompt:
+                return reply("", [use("switch_mode", {"to": "zora", "why": "mood"})])
+            return reply("Ultron response")
+
+        with scripted_brain(orchestrator, script):
+            response_1 = await orchestrator.process_request(
+                user_prompt="broken Webpack build i give up nothing works crash fail error",
+                session_id="test_sess_refactored",
+            )
+
         events_1 = response_1["events"]
         event_types = [ev["type"] for ev in events_1]
-        
-        self.assertIn("emotion_score_updated", event_types)
-        self.assertIn("handoff_started", event_types)
         self.assertIn("personality_changed", event_types)
-        self.assertIn("handoff_completed", event_types)
-        
+
         # Confirm active profile was Zora
         self.assertEqual(response_1["active_personality"], "zora")
         self.assertEqual(response_1["metadata"]["personality"], "zora")
-        
+
         # 2. Since cooldown_turns is 2, the next request will be the 2nd Zora turn, triggering auto-return at Step 10!
         mock_completions.return_value = "Ultron response"
         
-        response_2 = await orchestrator.process_request(
-            user_prompt="I am feeling calm now.",
-            session_id="test_sess_refactored"
-        )
+        with scripted_brain(orchestrator, script):
+            response_2 = await orchestrator.process_request(
+                user_prompt="I am feeling calm now.",
+                session_id="test_sess_refactored"
+            )
         
         # Verify Zora lifecycle was decremented and returned back to Ultron
         self.assertEqual(response_2["active_personality"], "zora") # Answered under Zora's overlay

@@ -30,7 +30,7 @@ from backend.app.session.session_manager import SessionManager
 from backend.app.memory.recall_index import index_conversation_turn
 from backend.app.memory.session_summary import refresh_session_summary
 from backend.app.utils.text_cleaner import clean_text
-from backend.app.core.voice_intent import inspect_voice_aliases, plan_voice_clarification
+from backend.app.core.voice_intent import inspect_voice_aliases
 from backend.app.core.voice_preferences import apply_approved_voice_aliases, get_approved_voice_aliases
 
 
@@ -70,11 +70,9 @@ async def process_chat_message(
     # The future clarification gate, not this service, decides what to do.
     approved_voice_aliases = get_approved_voice_aliases() if input_source == "voice" else {}
     voice_alias_suggestions = inspect_voice_aliases(content) if input_source == "voice" else []
-    voice_clarification = (
-        plan_voice_clarification(content, voice_alias_suggestions, approved_voice_aliases)
-        if input_source == "voice"
-        else None
-    )
+    # No word-list gate stops the turn any more: the AI reads the transcript
+    # (with these hints) and asks the owner itself when it is truly unclear.
+    voice_clarification = None
     # Preserve raw text in history. Only owner-approved aliases are applied to
     # the transient agent prompt, never to paths/dates/commands or stored text.
     agent_content = (

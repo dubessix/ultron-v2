@@ -121,7 +121,7 @@ class TestSequentialOrchestration(unittest.IsolatedAsyncioTestCase):
 
         orchestrator.router.get_completions = fake_completion
         with patch.object(ToolRegistry, "execute_tool", fake_execute):
-            await orchestrator.process_request("write code file module", "phase3_stop")
+            await orchestrator.process_request("write code file module", "phase3_stop", force_coding=True)
         await orchestrator.close()
 
         self.assertEqual(executed, ["file_read"])
@@ -149,7 +149,7 @@ class TestSequentialOrchestration(unittest.IsolatedAsyncioTestCase):
 
         orchestrator.router.get_completions = fake_completion
         result = await orchestrator.process_request(
-            "write code file module", "phase3_inspection_missing"
+            "write code file module", "phase3_inspection_missing", force_coding=True
         )
         self.assertIsNone(result["pending_confirmation"])
         self.assertEqual(target.read_text(encoding="utf-8"), "VALUE = 1\n")
@@ -180,7 +180,7 @@ class TestSequentialOrchestration(unittest.IsolatedAsyncioTestCase):
 
         orchestrator.router.get_completions = fake_completion
         result = await orchestrator.process_request(
-            "write code file module", "phase3_inspection_ok"
+            "write code file module", "phase3_inspection_ok", force_coding=True
         )
         self.assertIsNotNone(result["pending_confirmation"])
         self.assertEqual(result["pending_confirmation"]["tool_id"], "file_write")

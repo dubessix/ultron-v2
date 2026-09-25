@@ -233,6 +233,12 @@ async def execute_backend_tool(request: ToolExecuteRequest) -> Dict[str, Any]:
             detail=f"Tool execution encountered unexpected failure: {str(e)}"
         ) from e
 
+def _with_offer(message: str, result: dict) -> str:
+    """Chat history text: the reply plus any "Always allow ...?" question, so the brain sees it."""
+    question = (result.get("trust_offer") or {}).get("question")
+    return f"{message} {question}".strip() if question else message
+
+
 @api_router.post("/actions/confirm", status_code=status.HTTP_200_OK)
 async def confirm_pending_action(request: ConfirmActionRequest) -> Dict[str, Any]:
     """Run the exact stored action (no LLM regeneration), then let Ultron finish the job.
@@ -256,6 +262,11 @@ async def confirm_pending_action(request: ConfirmActionRequest) -> Dict[str, Any
     if result.get("status") in {"ALREADY_DONE", "CONFIRMATION_REJECTED"}:
         return result
     orchestrator = get_orchestrator()
+    from backend.app.security.pending_actions import get_pending_action_registry
+
+    if result.get("trust_offer") and request.session_id:
+        # "Always allow?" - the owner may answer by voice next; the AI calls owner_reply(always).
+        getattr(orchestrator, "_trust_offers", {})[request.session_id] = result["trust_offer"]
     if resume_context:
         resume_result = dict(result)
         resume_result["_confirmed_action"] = confirmed_action
@@ -263,10 +274,12 @@ async def confirm_pending_action(request: ConfirmActionRequest) -> Dict[str, Any
             resume_context,
             resume_result,
         )
+        get_pending_action_registry().set_awaiting(
+            request.session_id, (resumed.get("pending_confirmation") or {}).get("confirmation_token"))
         ok = bool(resumed.get("success", result.get("success")))
         message = resumed.get("content") or ("Done, Sir." if ok else f"That did not work, Sir. {result.get('error') or ''}")
         original_data = result.get("data") or {}
-        record_followup(request.session_id, "yes", message, tools_used=resumed.get("called_tool_ids") or [tool_id],
+        record_followup(request.session_id, "yes", _with_offer(message, result), tools_used=resumed.get("called_tool_ids") or [tool_id],
                         orchestrator=orchestrator)
         return {
             "success": ok,
@@ -295,7 +308,7 @@ async def confirm_pending_action(request: ConfirmActionRequest) -> Dict[str, Any
     else:
         message = f"That did not work, Sir. {result.get('error') or ''}".strip()
         result["status"] = "FAILED"
-    record_followup(request.session_id, "yes", message, tools_used=[tool_id] if tool_id else [],
+    record_followup(request.session_id, "yes", _with_offer(message, result), tools_used=[tool_id] if tool_id else [],
                     orchestrator=orchestrator)
     return result
 

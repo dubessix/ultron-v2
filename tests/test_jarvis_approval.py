@@ -1,12 +1,12 @@
-"""Part 1: Jarvis approval - understand yes, ask only when it matters, one yes is
-enough, remember the outcome, honest answers, no false "Confirmation failed".
+"""Part 1: Jarvis approval - the AI understands the answer (owner_reply), ask only
+when it matters, one yes is enough, remember the outcome, honest answers, no
+false "Confirmation failed".
 
 Every test here is one of the owner's real complaints.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import tempfile
@@ -29,23 +29,6 @@ def _reply(content="", calls=None):
 
 def _use(tool, args, call_id="c1"):
     return {"id": call_id, "name": "use_tool", "arguments": {"tool": tool, "arguments_json": json.dumps(args)}}
-
-
-class TestUnderstandsYesAndNo(unittest.TestCase):
-    def test_natural_yes(self):
-        for text in ["ok do", "OK do it", "yes create it", "yes open it", "haan kar do", "hya koro",
-                     "Ultron, go ahead", "theek hai", "ok.", "sure", "karo"]:
-            self.assertEqual(approval.reply_intent(text), "yes", text)
-
-    def test_no_and_always(self):
-        for text in ["no", "nahi", "cancel it", "rehne do", "Sir, never mind", "not now"]:
-            self.assertEqual(approval.reply_intent(text), "no", text)
-        self.assertEqual(approval.reply_intent("yes always"), "always")
-
-    def test_new_commands_are_not_a_yes(self):
-        for text in ["ok close youtube", "yes but in Documents", "no, open the other folder",
-                     "open downloads", "koro na", "yes and also play some music after that please"]:
-            self.assertIsNone(approval.reply_intent(text), text)
 
 
 class TestAsksOnlyWhenItMatters(unittest.TestCase):
@@ -151,7 +134,8 @@ class ApiCase(unittest.TestCase):
 
     async def _brain(self, system_prompt, user_prompt, tools, conversation=None, **kwargs):
         conv = conversation or []
-        self.brain_calls.append({"system": system_prompt, "user": user_prompt, "conv": conv})
+        self.brain_calls.append({"system": system_prompt, "user": user_prompt, "conv": conv,
+                                 "tools": [t.get("tool_id") for t in tools]})
         return self.script(user_prompt, conv)
 
     def chat(self, text, session=None):
@@ -188,9 +172,12 @@ class TestOneYesIsEnough(ApiCase):
         def script(prompt, conv):
             if prompt.startswith("update"):
                 return _reply("Should I replace plan.txt with the new plan, Sir?")
-            if any(m.get("role") == "tool" for m in conv):
-                return _reply("Done, Sir. plan.txt is updated.")
-            return _reply("", [_use("file_write", {"filepath": str(target), "content": "new"})])
+            tools = [m for m in conv if m.get("role") == "tool"]
+            if not tools:  # the AI reads "ok do" as the answer to its question
+                return _reply("", [{"id": "a1", "name": "owner_reply", "arguments": {"answer": "yes"}}])
+            if len(tools) == 1:
+                return _reply("", [_use("file_write", {"filepath": str(target), "content": "new"}, "c2")])
+            return _reply("Done, Sir. plan.txt is updated.")
 
         self.script = script
         first = self.chat("update my plan file")
@@ -211,7 +198,9 @@ class TestOneYesIsEnough(ApiCase):
         def script(prompt, conv):
             if prompt.startswith("clean"):
                 return _reply("Should I delete the Old folder, Sir?")
-            return _reply("", [_use("delete_folder", {"folderpath": str(folder)})])
+            if not conv:
+                return _reply("", [{"id": "a1", "name": "owner_reply", "arguments": {"answer": "yes"}}])
+            return _reply("", [_use("delete_folder", {"folderpath": str(folder)}, "c2")])
 
         self.script = script
         session = self.chat("clean up the Old folder")["session_id"]

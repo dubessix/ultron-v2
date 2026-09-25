@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { applyWidgetAction } from './widgetActions';
-import { routeApproval } from './voiceApproval';
 import { createPresenceTracker } from './arrival';
 import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
@@ -35,7 +34,6 @@ export default function App() {
   const [codingLog, setCodingLog] = useState([]);
   // Exact one-time action returned by the backend; never regenerate on confirm.
   const [pendingAction, setPendingAction] = useState(null);
-  const [trustOffer, setTrustOffer] = useState(null);
   const [confirmingAction, setConfirmingAction] = useState(false);
   // Present only when the backend explicitly says a voice transcript has more
   // than one safe meaning. Normal clear requests never show this card.
@@ -384,7 +382,6 @@ export default function App() {
         setActivityText('Already done.');
       } else if (result.success) {
         const offer = result.trust_offer || null;
-        setTrustOffer(offer);
         say(offer?.question ? `${message || 'Done, Sir.'} ${offer.question}` : (message || 'Done, Sir.'));
         setActivityText(nextPending ? (nextPending.message || 'One more step needs your OK.') : 'Done.');
       } else if (result.status === 'CONFIRMATION_REJECTED') {
@@ -444,39 +441,10 @@ export default function App() {
     void speakResponse(text, activePersonality);
   };
 
-  // Owner accepted "always allow?" - the only way a trust rule is created.
-  const acceptTrustOffer = async (accept) => {
-    const offer = trustOffer;
-    setTrustOffer(null);
-    if (!offer) return;
-    let text = 'Understood, Sir. I will keep asking for that.';
-    if (accept) {
-      try {
-        const result = await api('/api/trust', {
-          method: 'POST',
-          body: JSON.stringify({ tool_id: offer.tool_id, kind: offer.kind, value: offer.value, label: offer.label }),
-        });
-        text = result.success
-          ? `Done, Sir. From now on I will ${offer.label} without asking.`
-          : `I cannot always-allow that, Sir: ${result.error || 'not permitted'}.`;
-      } catch (err) {
-        text = `I could not save that rule, Sir: ${err.message || 'backend unavailable'}.`;
-      }
-    }
-    setMessages(prev => [...prev, { id: `trust_${Date.now()}`, sender: 'ai', text, personality: activePersonality }]);
-    void speakResponse(text, activePersonality);
-  };
+  // "Always allow?" is answered by voice or text: the brain calls owner_reply(always).
 
-  // Returns true when the reply was an approval answer (handled locally, not sent to the brain).
-  const handleApprovalReply = (userText) => {
-    const route = routeApproval(userText, { pendingAction, trustOffer });
-    if (!route) return false;
-    setMessages(prev => [...prev, { id: `user_${Date.now()}`, sender: 'user', text: userText }]);
-    if (route === 'confirm') void handleConfirmRun({ spoken: true });
-    else if (route === 'cancel') void cancelPendingAction();
-    else void acceptTrustOffer(route === 'accept_trust');
-    return true;
-  };
+  // Owner answers ("ok do", "haan karo", "no leave it") are NOT caught here by a
+  // word list any more: they go to the brain, which calls owner_reply itself.
 
   // Existing Edge-TTS lifecycle. Stop Voice aborts both the browser fetch and
   // playback. Browsers with MSE audio/mpeg support begin from streamed chunks;
@@ -795,7 +763,6 @@ export default function App() {
   const handleVoiceCommand = async (text) => {
     const userText = String(text || "").trim();
     if (!userText || isProcessing || voiceRequestInFlightRef.current) return;
-    if (handleApprovalReply(userText)) { stopSpeaking(); return; }
     voiceRequestInFlightRef.current = true;
     // Barge-in: the user is speaking — stop any in-progress TTS immediately.
     stopSpeaking();
@@ -871,6 +838,10 @@ export default function App() {
           setPendingAction({ ...data.pending_confirmation, session_id: data.session_id || sessionIdRef.current });
           setActivityText(`Waiting for confirmation: ${data.pending_confirmation.tool_id}.`);
           addNotification('Confirmation required', data.pending_confirmation.message, 'high');
+        } else {
+          // The brain answered the question (or moved on): the chat's yellow bar closes.
+          // A widget's own confirm (it has onResult) stays until its buttons are used.
+          setPendingAction(prev => (prev?.onResult ? prev : null));
         }
         setVoiceClarification(data.voice_clarification || null);
       } else {
@@ -1017,7 +988,6 @@ export default function App() {
 
     const userText = inputValue.trim();
     setInputValue("");
-    if (handleApprovalReply(userText)) return;
     setIsProcessing(true);
     setAiState("thinking");
     setActivityText("Connecting to chat stream…");
@@ -1065,6 +1035,10 @@ export default function App() {
           setPendingAction({ ...data.pending_confirmation, session_id: data.session_id || sessionIdRef.current });
           setActivityText(`Waiting for confirmation: ${data.pending_confirmation.tool_id}.`);
           addNotification('Confirmation required', data.pending_confirmation.message, 'high');
+        } else {
+          // The brain answered the question (or moved on): the chat's yellow bar closes.
+          // A widget's own confirm (it has onResult) stays until its buttons are used.
+          setPendingAction(prev => (prev?.onResult ? prev : null));
         }
         // Open widgets driven ONLY by the backend structured action (never keyword guesses).
         // (open_widget / close_widget / close_all_widgets, refresh reloads an open panel).

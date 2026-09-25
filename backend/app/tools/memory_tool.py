@@ -24,7 +24,7 @@ from backend.app.tools.tool_base import BaseTool
 class MemoryArgs(BaseModel):
     action: str = Field(
         ...,
-        description="list, organize, remember, forget, correct, export, restore, reembed",
+        description="search (past chats and saved facts), list, organize, remember, forget, correct, export, restore, reembed",
     )
     project_id: str = Field("personal", min_length=1)
     content: Optional[str] = None
@@ -41,7 +41,7 @@ class MemoryTool(BaseTool):
         super().__init__(
             tool_id="manage_memory",
             name="Memory Manager",
-            description="Project-scoped list/organize/remember/forget/correct/export/restore/re-embed.",
+            description="Project-scoped search/list/organize/remember/forget/correct/export/restore/re-embed.",
             category="memory",
             tags=["memory", "organize", "remember", "forget", "correct", "export", "restore"],
             permission_level=1,
@@ -55,7 +55,7 @@ class MemoryTool(BaseTool):
 
     def permission_for_arguments(self, arguments: Dict[str, Any]) -> int:
         action = str(arguments.get("action", "list")).lower()
-        if action in {"list", "organize", "export"}:
+        if action in {"search", "list", "organize", "export"}:
             return 0
         if action == "remember":
             return 1
@@ -118,6 +118,32 @@ class MemoryTool(BaseTool):
                 } if ok else {},
                 "error": None if ok else "Failed to save memory (duplicate or provider error).",
             }
+
+        if action == "search":
+            # The AI decides when to look into the past (no word-list trigger).
+            query = str(content or "").strip()
+            if not query:
+                return {"success": False, "error": "content (what to search for) is required.", "data": {}}
+            from backend.app.database.db import get_db_connection
+            from backend.app.memory.recall_index import search_recall_index
+
+            try:
+                with get_db_connection() as conn:
+                    found = search_recall_index(conn, query, project_id=project_id, limit=min(limit, 8))
+            except Exception as exc:  # the index is optional; semantic search may still work
+                print(f"[MEMORY_TOOL] recall index skipped: {exc}")
+                found = []
+            try:
+                events = await self.memory.episodic.recall_related_events(query, limit=5, project_id=project_id)
+            except Exception:
+                events = []
+            hits = [
+                {"text": bounded_text(str(item.get("content") or item.get("text") or ""), 300),
+                 "when": item.get("updated_at") or item.get("created_at") or item.get("timestamp")}
+                for item in list(found) + [e for e in events if e.get("similarity", 0.0) >= 0.45]
+            ]
+            hits = [hit for hit in hits if hit["text"]][:10]
+            return {"success": True, "data": {"count": len(hits), "results": hits}, "error": None}
 
         if action in {"list", "export"}:
             rows = self.memory.vector_store.list_recent_memories(

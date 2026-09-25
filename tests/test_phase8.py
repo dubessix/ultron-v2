@@ -71,9 +71,18 @@ class TestPhase8WebSocketArchitecture(unittest.TestCase):
 
     def test_websocket_widget_push(self):
         """Test 3: Assert that querying 'todo' pushes a floating TodoWidget trigger."""
+        from backend.app.router import get_orchestrator
+        from tests._ai_script import reply, scripted_brain, use
+
         client = TestClient(app)
-        
-        with client.websocket_connect("/ws/chat?client_id=test_widget_client") as websocket:
+
+        def script(prompt, conv):  # the AI itself picks the todo panel
+            if any(m.get("role") == "tool" for m in conv):
+                return reply("Here is your todo list, Sir.")
+            return reply("", [use("show_widget", {"widget_id": "todo"})])
+
+        with scripted_brain(get_orchestrator(), script), \
+                client.websocket_connect("/ws/chat?client_id=test_widget_client") as websocket:
             payload = {
                 "session_id": "test_ws_sess",
                 "content": "Show my todo list."

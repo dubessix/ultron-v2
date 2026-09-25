@@ -159,15 +159,19 @@ class TestJarvisFinalExam(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((target / "keep.txt").exists())
 
     async def test_small_talk_stays_light(self):
+        """No word list decides 'this is small talk': the AI gets its tools and simply
+        answers without calling one (one LLM call, same as before)."""
         orchestrator = CognitiveOrchestrator()
-        native = AsyncMock()
+        native = AsyncMock(return_value={"content": "Hey Debjeet, all good.", "tool_calls": [],
+                                         "provider": "groq", "native_tools": True, "provider_state": None})
         orchestrator.router.get_completions_with_tools = native
-        orchestrator.router.get_completions = AsyncMock(return_value="Hey Debjeet, all good.")
         try:
-            await orchestrator.process_request("Hi there, good morning!", session_id="exam-hi")
+            result = await orchestrator.process_request("Hi there, good morning!", session_id="exam-hi")
         finally:
             await orchestrator.close()
-        native.assert_not_awaited()
+        native.assert_awaited_once()
+        self.assertEqual(result["content"], "Hey Debjeet, all good.")
+        self.assertEqual(result["tools_used"], [])
 
 
 if __name__ == "__main__":

@@ -3,46 +3,9 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import AsyncMock
 
 from backend.app.core.orchestrator import CognitiveOrchestrator
 from backend.app.personalities.personality_engine import PersonalityEngine
-
-
-def _switch(start: str, text: str) -> str:
-    engine = PersonalityEngine()
-    engine.update_state(start, "test", "manual")
-    changed = engine.detect_manual_switch(text)
-    return changed.active_personality if changed else start
-
-
-class TestCallingANameSwitches(unittest.TestCase):
-    def test_many_ways_to_call_zora(self):
-        for text in (
-            "Hey Zora", "hey zora, how are you", "Zora, I'm tired", "zora", "ok zora what's up",
-            "switch to zora", "switch me back to zora", "bring zora back", "talk to zora",
-            "I want zora", "i need zora", "zora mode", "zora kahan ho", "zora kothay",
-            "where is zora", "Zorah, hi", "Can you switch to Zora please",
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(_switch("ultron", text), "zora")
-
-    def test_ways_back_to_ultron(self):
-        for text in (
-            "Ultron, open downloads", "hey ultron", "back to work", "switch to ultron",
-            "go back to ultron", "ultron mode", "altron open chrome", "bring ultron back",
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(_switch("zora", text), "ultron")
-
-    def test_mentioning_a_name_does_not_switch(self):
-        """Old bug: any sentence containing 'ultron' dragged Zora away."""
-        for text in ("how does ultron handle memory?", "i love the ultron voice", "play music"):
-            with self.subTest(text=text):
-                self.assertEqual(_switch("zora", text), "zora")
-        for text in ("what can zora do?", "is zora better than ultron", "open downloads"):
-            with self.subTest(text=text):
-                self.assertEqual(_switch("ultron", text), "ultron")
 
 
 class TestZoraStaysWhenChosen(unittest.TestCase):
@@ -70,18 +33,36 @@ class TestZoraStaysWhenChosen(unittest.TestCase):
 
 
 class TestConversationThroughTheOrchestrator(unittest.IsolatedAsyncioTestCase):
+    """Who answers is chosen by the AI with switch_mode - no word list."""
+
     async def asyncSetUp(self):
+        from tests._ai_script import reply, use
+
         self.orchestrator = CognitiveOrchestrator(personality_engine=PersonalityEngine(cooldown_turns=3))
-        reply = {"content": "Of course.", "tool_calls": [], "provider": "groq", "model": "t",
-                 "native_tools": True, "provider_state": None}
-        self.orchestrator.router.get_completions_with_tools = AsyncMock(return_value=reply)
-        self.orchestrator.router.get_completions = AsyncMock(return_value="Of course.")
+
+        def script(prompt, conv):
+            if any(m.get("role") == "tool" for m in conv):
+                return reply("Of course.")
+            low = prompt.lower()
+            if "zora" in low and "long day" in low:
+                return reply("", [use("switch_mode", {"to": "zora", "why": "asked"})])
+            if "back to work" in low:
+                return reply("", [use("switch_mode", {"to": "ultron", "why": "asked"})])
+            if "nothing works" in low:
+                return reply("", [use("switch_mode", {"to": "zora", "why": "mood"})])
+            return reply("Of course.")
+
+        self.script = script
 
     async def asyncTearDown(self):
         await self.orchestrator.close()
 
     async def say(self, text):
-        result = await self.orchestrator.process_request(text, session_id="step3-switch")
+        from tests._ai_script import scripted_brain
+
+        with scripted_brain(self.orchestrator, self.script) as calls:
+            result = await self.orchestrator.process_request(text, session_id="step3-switch")
+        self.last_calls = calls
         return result["active_personality"]
 
     async def test_a_real_evening(self):
@@ -89,16 +70,19 @@ class TestConversationThroughTheOrchestrator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.say("Hey Zora, I had a long day"), "zora")
         for text in ("tell me something nice", "play some calm music", "what's the weather",
                      "how does ultron compare to you?"):
-            self.assertEqual(await self.say(text), "zora", text)
+            self.assertEqual(await self.say(text), "zora", text)  # he asked: she stays
         self.assertEqual(await self.say("ok back to work"), "ultron")
-        self.assertEqual(await self.say("what can zora do?"), "ultron")
+        self.assertEqual(await self.say("what can zora do?"), "ultron")  # AI: a question, not a switch
 
     async def test_zora_prompt_is_used_after_switch(self):
-        await self.say("switch to zora")
-        system_prompt = self.orchestrator.router.get_completions.await_args
-        native = self.orchestrator.router.get_completions_with_tools.await_args
-        sent = str(system_prompt) + str(native)
-        self.assertIn("Zora", sent)
+        await self.say("Hey Zora, I had a long day")
+        await self.say("tell me something nice")
+        self.assertIn("Zora", self.last_calls[0]["system"])
+
+    async def test_stress_noticed_by_the_ai_returns_to_ultron_later(self):
+        self.assertEqual(await self.say("the build is broken, nothing works"), "zora")
+        states = [await self.say(t) for t in ("ok", "thanks", "fine")]
+        self.assertEqual(self.orchestrator.personalities.state.active_personality, "ultron", states)
 
 
 if __name__ == "__main__":

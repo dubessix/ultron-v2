@@ -3,7 +3,6 @@ Ultron Personality State & Coordination Engine
 Manages active personality lifecycles, manual switches, and automatic returns to Ultron.
 """
 
-import re
 import yaml
 import datetime
 from typing import Dict, Optional
@@ -41,33 +40,8 @@ class PersonalityEngine:
             "zora": ZoraPersonality()
         }
 
-        # Manual triggers. Rule: CALLING a name switches ("Hey Zora", "Zora, ...",
-        # "switch to Zora"); merely MENTIONING it ("what can zora do?") does not.
-        # Heard-as spellings from browser speech-to-text are included.
-        zora = r"(?:zora|zorah|zohra|jora)"
-        ultron = r"(?:ultron|altron|ultran|ultra)"
-        self._to_zora_triggers = self._name_triggers(zora) + [
-            re.compile(r"\b(where is zora|zora come here|i need zora)\b", re.IGNORECASE),
-        ]
-        self._to_ultron_triggers = self._name_triggers(ultron) + [
-            re.compile(r"\b(back to work|let'?s get back to it|work mode)\b", re.IGNORECASE),
-        ]
-
-    @staticmethod
-    def _name_triggers(name: str) -> list:
-        call = r"(?:hey|hi|hello|ok|okay|oi|yo|arre|are|o)"
-        verbs = r"(?:switch|change|swap|go|come|bring|call|get|give|put)"
-        return [
-            # Addressed at the start: "Zora, ...", "Hey Zora ...", "ok zora".
-            re.compile(rf"^\s*(?:{call}[\s,]+)?{name}\b(?:\s*[,.!?:-]|\s|$)", re.IGNORECASE),
-            # "switch to zora", "bring zora back", "switch me back to zora", "go back to ultron"
-            re.compile(rf"\b{verbs}\b(?:\s+(?:me|us|it|back|over|now))*\s+(?:to\s+|with\s+)?{name}\b", re.IGNORECASE),
-            re.compile(rf"\b(?:talk|speak|chat)\s+(?:to|with)\s+{name}\b", re.IGNORECASE),
-            re.compile(rf"\b(?:i\s+)?(?:want|need)\s+{name}\b", re.IGNORECASE),
-            # "zora mode", "zora please", Hinglish/Bengali "zora aao", "zora kahan ho", "zora kothay"
-            re.compile(rf"\b{name}\s+(?:mode|please|come|aao|aaja|kahan|kaha|kothay|bolo)\b", re.IGNORECASE),
-            re.compile(rf"\bback\s+to\s+{name}\b", re.IGNORECASE),
-        ]
+        # No name-matching word lists: the AI decides a switch with switch_mode
+        # (core/control_tools.py); the UI toggle calls update_state directly.
 
     @staticmethod
     def _load_cooldown_from_config() -> int:
@@ -127,29 +101,3 @@ class PersonalityEngine:
             return self.state
         return None
 
-    def detect_manual_switch(self, user_prompt: str) -> Optional[PersonalityState]:
-        """Scans prompts for natural language manual switching triggers."""
-        clean = user_prompt.strip()
-        current = self.state.active_personality
-
-        if current == "ultron":
-            for pattern in self._to_zora_triggers:
-                if pattern.search(clean):
-                    self.update_state(
-                        personality="zora",
-                        reason="Manual user override: Switch to Zora.",
-                        switch_type="manual"
-                    )
-                    return self.state
-
-        elif current == "zora":
-            for pattern in self._to_ultron_triggers:
-                if pattern.search(clean):
-                    self.update_state(
-                        personality="ultron",
-                        reason="Manual user override: Back to work.",
-                        switch_type="manual"
-                    )
-                    return self.state
-
-        return None

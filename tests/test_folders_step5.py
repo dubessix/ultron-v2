@@ -183,9 +183,10 @@ class TestShortAnswerReachesTheBrain(unittest.IsolatedAsyncioTestCase):
             orchestrator.router.get_completions = AsyncMock(return_value=reply["content"])
             result = await orchestrator.process_request("2", session_id=session)
             self.assertNotIn("not entirely sure", result["content"])
-            # without a question before, "2" is still treated as vague
+            # without a question before, "2" also goes to the AI (no canned gate); it decides
             fresh = await orchestrator.process_request("2", session_id="step5-fresh")
-            self.assertIn("not entirely sure", fresh["content"])
+            self.assertEqual(fresh["content"], "Opening the Documents one, Sir.")
+            self.assertEqual(orchestrator.router.get_completions_with_tools.await_count, 2)
         finally:
             await orchestrator.close()
 

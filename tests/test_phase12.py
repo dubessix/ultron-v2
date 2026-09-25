@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from fastapi.testclient import TestClient
 
-from backend.app.core.orchestrator import CognitiveOrchestrator
 from backend.app.main import app
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -72,32 +71,23 @@ class TestPhase12SystemPolishArchitecture(unittest.TestCase):
             self.assertIn("RightPanel", content)
             self.assertIn("BlobCanvas", content)
 
-    def test_orchestrator_structured_actions_resolution(self):
-        """Test 5: Verify that CognitiveOrchestrator resolves queries into structured AI action JSON objects (Rule 8)."""
-        orchestrator = CognitiveOrchestrator()
-        
-        # Test 5.1: File explorer intent query
-        action_1 = orchestrator._resolve_structured_action("Show me D drive.")
-        self.assertEqual(action_1["action"], "open_widget")
-        self.assertEqual(action_1["widget_id"], "file_explorer")
-        
-        # Test 5.2: Deep research intent query
-        action_2 = orchestrator._resolve_structured_action("Research current artificial agents.")
-        self.assertEqual(action_2["action"], "open_widget")
-        self.assertEqual(action_2["widget_id"], "deep_research")
-        
-        # Test 5.3: Generic prompt query
-        action_3 = orchestrator._resolve_structured_action("What is JavaScript?")
-        self.assertEqual(action_3["action"], "none")
-
     def test_e2e_api_chat_structured_action_delivery(self):
         """Test 6: Verify that POST /api/chat delivers structured actions over HTTP payloads."""
+        from backend.app.router import get_orchestrator
+        from tests._ai_script import reply, scripted_brain, use
+
         client = TestClient(app)
-        
-        response = client.post(
-            "/api/chat",
-            json={"session_id": "test_sess_constitutional", "content": "Open downloads."}
-        )
+
+        def script(prompt, conv):  # the AI itself picks the panel
+            if any(m.get("role") == "tool" for m in conv):
+                return reply("Downloads is open, Sir.")
+            return reply("", [use("show_widget", {"widget_id": "file_explorer"})])
+
+        with scripted_brain(get_orchestrator(), script):
+            response = client.post(
+                "/api/chat",
+                json={"session_id": "test_sess_constitutional", "content": "Open downloads."}
+            )
         self.assertEqual(response.status_code, 200)
         data = response.json()
         

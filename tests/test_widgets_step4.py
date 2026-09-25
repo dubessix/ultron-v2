@@ -17,30 +17,6 @@ from backend.app.tools.widget_tool import ShowWidgetTool
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class TestNoMoreMisfires(unittest.TestCase):
-    def test_ordinary_sentences_open_nothing(self):
-        """Old substring guesser: explain->calendar, program->system, digital->git ..."""
-        for text in (
-            "explain quantum physics", "write a python program", "the digital world is big",
-            "let's have brunch", "find the capital of France", "photograph ideas for a trip",
-            "what is JavaScript?", "I planted a tree", "tell me about the ram in a sheep farm story",
-            "that was a great task force movie", "running late today",
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(widgets.explicit_request(text)["action"], "none", text)
-
-    def test_explicit_requests_still_open(self):
-        for text, widget in (
-            ("Show me D drive.", "file_explorer"), ("Open downloads.", "file_explorer"),
-            ("Research current artificial agents.", "deep_research"), ("show my calendar", "calendar"),
-            ("pull up the weather", "weather"), ("open my todo list", "todo"),
-            ("show system stats", "system"), ("reminders", "reminder"),
-            ("calendar kholo", "calendar"),
-        ):
-            with self.subTest(text=text):
-                self.assertEqual(widgets.explicit_request(text), {"action": "open_widget", "widget_id": widget})
-
-
 class TestToolDecides(unittest.TestCase):
     def test_ai_show_widget_wins(self):
         results = [

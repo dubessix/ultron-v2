@@ -25,7 +25,6 @@ from backend.app.memory.session_summary import get_last_session_summary, load_se
 from backend.app.memory.structured_memory import bounded_text, build_structured_turn_memory
 from backend.app.brain.llm_router import LLMRouter
 from backend.app.personalities.personality_engine import PersonalityEngine
-from backend.app.emotion.zora_trigger import ZoraTrigger
 from backend.app.tools.context_builder import ToolContextBuilder
 from backend.app.tools.tool_registry import ToolRegistry
 from backend.app.core import widgets as widget_choice
@@ -44,7 +43,7 @@ class CognitiveOrchestrator:
         memory_engine: Optional[MemoryEngine] = None,
         llm_router: Optional[LLMRouter] = None,
         personality_engine: Optional[PersonalityEngine] = None,
-        zora_trigger: Optional[ZoraTrigger] = None
+        zora_trigger: Any = None  # unused: the AI switches to Zora itself
     ) -> None:
         self.intent_analyzer = intent_analyzer or IntentAnalyzer()
         self.confidence_engine = confidence_engine or ConfidenceEngine()
@@ -52,7 +51,6 @@ class CognitiveOrchestrator:
         self.memory = memory_engine or MemoryEngine()
         self.router = llm_router or LLMRouter()
         self.personalities = personality_engine or PersonalityEngine()
-        self.zora_trigger = zora_trigger or ZoraTrigger()
         self.tool_context_builder = ToolContextBuilder()
         
         # Coding Mode state
@@ -73,6 +71,9 @@ class CognitiveOrchestrator:
         # The personality/event engine is process-shared. Serialize turns so two
         # concurrent transports cannot clear or overwrite each other's state.
         self._request_lock = asyncio.Lock()
+        self._turn_owner_yes = False
+        # "Always allow?" offers waiting for the owner's answer, per chat.
+        self._trust_offers: Dict[str, dict] = {}
 
     def set_coding_mode(self, enabled: bool) -> None:
         """Manually toggle coding mode.
@@ -92,13 +93,11 @@ class CognitiveOrchestrator:
     def _should_use_coding_provider(self, intent: str, user_prompt: str) -> bool:
         """True if this turn should use the NVIDIA coding provider.
 
-        Reads the process-shared manual flag so every transport sees the same mode.
-        Manual ON forces NVIDIA for all turns; Auto mode reserves it for CODING.
+        Only the owner's manual toggle forces it here. In Auto mode the AI itself
+        decides (switch_mode coding) - the regex intent label no longer does.
         """
-        # Manual ON forces NVIDIA for all turns; otherwise only CODING intents use it.
-        if _SHARED_CODING_MODE:
-            return True
-        return intent == "CODING"
+        del intent, user_prompt  # kept for API compatibility; they decide nothing
+        return bool(_SHARED_CODING_MODE)
 
     def _dispatch_event(self, event_type: str, payload: Dict[str, Any]) -> None:
         """Publishes structured personality/emotional event frameworks."""
@@ -589,25 +588,19 @@ class CognitiveOrchestrator:
         except Exception:
             return ""
 
-    def _owner_said_yes(self, session_id: str, user_prompt: str) -> bool:
-        from backend.app.core import approval
+    def _control_tool_definitions(self, session_id: str) -> list[dict]:
+        """owner_reply only when there is something to answer (switch_mode lives in
+        the cached prompt and is called through use_tool, so it costs no tokens)."""
+        from backend.app.core import approval, control_tools
+        from backend.app.security.pending_actions import get_pending_action_registry
 
-        if approval.reply_intent(user_prompt) not in {"yes", "always"}:
-            return False
-        return approval.asked_question(self._last_ai_reply(session_id))
-
-    def _answers_last_question(self, session_id: str, user_prompt: str) -> bool:
-        if not str(user_prompt or "").strip():
-            return False
-        try:
-            history = self.memory.get_session_context(session_id) or []
-        except Exception:
-            return False
-        if not history or not isinstance(history[-1], dict):
-            return False
-        last = history[-1]
-        reply = last.get("ai") if "ai" in last else (last.get("content") if last.get("role") == "assistant" else "")
-        return "?" in str(reply or "")[-240:]
+        if (
+            get_pending_action_registry().awaiting_for_session(session_id)
+            or session_id in self._trust_offers
+            or approval.asked_question(self._last_ai_reply(session_id))
+        ):
+            return [control_tools.owner_reply_metadata()]
+        return []
 
     _FOLDER_ARG_FIELDS = ("folderpath", "path", "directory", "destination_path", "source_path",
                           "extract_to", "cwd", "filepath", "zippath", "save_path")
@@ -676,6 +669,10 @@ class CognitiveOrchestrator:
         real_id, real_args, error = parse_use_tool_call(call.get("arguments") or {})
         if error:
             return {**call, "name": real_id or USE_TOOL_ID}, error
+        from backend.app.core.control_tools import CONTROL_TOOL_IDS
+
+        if real_id in CONTROL_TOOL_IDS:
+            return {"id": call.get("id"), "name": real_id, "arguments": real_args, "wire_name": USE_TOOL_ID}, None
         registered = registry.get_registered_ids()
         if real_id not in registered:
             import difflib
@@ -714,6 +711,119 @@ class CognitiveOrchestrator:
         if tool is None:
             return tools
         return [*tools, self._tool_metadata_item(tool)]
+
+    async def _run_control_tool(
+        self,
+        tool_id: str,
+        arguments: dict,
+        *,
+        session_id: str,
+        coding_turn: bool,
+        first_call: bool,
+    ) -> tuple[str, dict, dict]:
+        """owner_reply / switch_mode, chosen by the AI. Returns (tool_id, args, result).
+
+        When owner_reply runs the waiting action, the returned tool_id is the real
+        tool (so honesty checks and widgets see what truly ran).
+        """
+        from backend.app.core import control_tools
+
+        args = arguments if isinstance(arguments, dict) else {}
+        if tool_id == control_tools.SWITCH_MODE_ID:
+            target = str(args.get("to") or "").lower()
+            if target == "coding":
+                if coding_turn:
+                    return tool_id, args, {"success": True, "data": {"message": "Already in coding mode."}, "error": None}
+                # The orchestrator restarts this same turn with the coding brain.
+                return tool_id, args, {"success": True, "data": {"restart_as_coding": True}, "error": None}
+            if target not in {"zora", "ultron"}:
+                return tool_id, args, {"success": False, "data": {}, "error": "to must be zora, ultron or coding."}
+            if self.personalities.state.active_personality != target:
+                # "mood" = the AI noticed stress: Zora looks after him for a few turns,
+                # then hands back to Ultron. "asked" = the owner chose; she stays.
+                by_mood = target == "zora" and str(args.get("why") or "").lower() == "mood"
+                self.personalities.update_state(
+                    personality=target,
+                    reason=("Zora noticed you sound stressed." if by_mood else f"Owner asked for {target.title()}."),
+                    switch_type="automatic" if by_mood else "manual",
+                )
+                self._dispatch_event("personality_changed", {
+                    "active_personality": target,
+                    "reason": self.personalities.state.switch_reason,
+                    "type": "manual",
+                })
+            return tool_id, args, {
+                "success": True,
+                "data": {"message": f"You are now {target.title()}. Reply in {target.title()}'s voice."},
+                "error": None,
+            }
+
+        # owner_reply
+        answer = str(args.get("answer") or "").lower()
+        if answer not in {"yes", "no", "always"}:
+            return tool_id, args, {"success": False, "data": {}, "error": "answer must be yes, no or always."}
+        if not first_call:
+            # Only the owner's own message can approve: text that came back from a
+            # tool this turn (a file, a web page) must never say yes for him.
+            return tool_id, args, {
+                "success": False, "data": {},
+                "error": "owner_reply only counts as the first call of a turn.",
+            }
+        from backend.app.core import approval, trust_rules
+        from backend.app.security.pending_actions import get_pending_action_registry
+
+        waiting = get_pending_action_registry().awaiting_for_session(session_id)
+        if answer == "no":
+            if waiting:
+                get_pending_action_registry().claim(waiting["confirmation_token"], session_id, cancel=True)
+                get_pending_action_registry().set_awaiting(session_id, None)
+                return tool_id, args, {"success": True, "data": {
+                    "message": "Cancelled. Nothing was changed.", "cancelled_tool": waiting["tool_id"]}, "error": None}
+            return tool_id, args, {"success": True, "data": {"message": "Owner said no. Do not do it."}, "error": None}
+
+        if waiting:
+            result = await ToolRegistry().execute_pending_action(
+                confirmation_token=waiting["confirmation_token"],
+                session_id=session_id,
+                timeout=180.0,
+                include_resume_context=True,
+            )
+            paused = result.pop("_resume_context", None) or {}
+            result.pop("_confirmed_action", None)
+            get_pending_action_registry().set_awaiting(session_id, None)
+            if isinstance(paused, dict) and paused.get("user_prompt") and result.get("success"):
+                result = {**result, "data": {**(result.get("data") or {}),
+                                             "job": str(paused["user_prompt"])[:300],
+                                             "next": "Finish any remaining steps of this job."}}
+            offer = result.pop("trust_offer", None)
+            if answer == "always" and result.get("success"):
+                scope = trust_rules.scope_for(waiting["tool_id"], waiting["arguments"])
+                try:
+                    if scope:
+                        trust_rules.allow(scope)
+                        result.setdefault("data", {})["always_allowed"] = scope.get("label")
+                except ValueError as exc:
+                    result.setdefault("data", {})["always_allowed_error"] = str(exc)
+            elif offer:
+                self._trust_offers[session_id] = offer
+            self._turn_owner_yes = True
+            return waiting["tool_id"], waiting["arguments"], result
+
+        offer = self._trust_offers.pop(session_id, None)
+        if answer == "always" and offer:
+            try:
+                rule = trust_rules.allow(offer)
+                return tool_id, args, {"success": True, "data": {"always_allowed": rule.get("label")}, "error": None}
+            except ValueError as exc:
+                return tool_id, args, {"success": False, "data": {}, "error": str(exc)}
+        if approval.asked_question(self._last_ai_reply(session_id)):
+            # "Should I open YouTube?" -> "ok do": approved, do exactly what you offered.
+            self._turn_owner_yes = True
+            return tool_id, args, {"success": True, "data": {
+                "message": "Owner approved your offer. Do it now with the right tool; no second question."},
+                "error": None}
+        return tool_id, args, {"success": False, "data": {},
+                               "error": "Nothing was waiting for an answer. Treat the message as a normal request."}
 
     async def _execute_native_agent_call(
         self,
@@ -912,12 +1022,32 @@ class CognitiveOrchestrator:
                     "pending_call": call,
                     "skipped_calls": skipped_calls,
                 }
+                from backend.app.core.control_tools import CONTROL_TOOL_IDS
+
                 if meta_error:
                     arguments, result = call.get("arguments") or {}, {
                         "success": False,
                         "data": {},
                         "error": meta_error,
                     }
+                elif tool_id in CONTROL_TOOL_IDS:
+                    tool_id, arguments, result = await self._run_control_tool(
+                        tool_id,
+                        call.get("arguments") or {},
+                        session_id=session_id,
+                        coding_turn=coding_turn,
+                        first_call=not results,
+                    )
+                    called[-1] = tool_id
+                    if (result.get("data") or {}).get("restart_as_coding"):
+                        return {
+                            "content": "",
+                            "called_tool_ids": called,
+                            "tool_results": results,
+                            "pending_confirmation": None,
+                            "steps_used": steps_used,
+                            "restart_as_coding": True,
+                        }
                 else:
                     arguments, result = await self._execute_native_agent_call(
                         call,
@@ -927,7 +1057,7 @@ class CognitiveOrchestrator:
                         project_root=project_root,
                         resume_context=resume_context,
                     )
-                if wire_name != tool_id and not meta_error:
+                if wire_name != tool_id and not meta_error and wire_name not in CONTROL_TOOL_IDS and tool_id not in CONTROL_TOOL_IDS:
                     result = self._repair_hint_for_meta_call(tool_id, result, registry)
                     tools = self._attach_tool_schema(tools, tool_id, registry)
                 item = self._agent_result_item(tool_id, arguments, result)
@@ -1113,6 +1243,8 @@ class CognitiveOrchestrator:
     @staticmethod
     def _action_mandate_block() -> str:
         """System-prompt clause that makes the model act like Jarvis, not a chatbot."""
+        from backend.app.core.control_tools import control_rules
+
         return (
             "\n\n[ACTION MANDATE]\n"
             "You are Jarvis for your owner: you have REAL tools via native function calling "
@@ -1126,10 +1258,9 @@ class CognitiveOrchestrator:
             "- If a step fails, try another route once (other tool, other path) before giving up.\n"
             "- Never ask permission in words: call the tool. The app itself asks the owner "
             "before truly risky steps. Ask a question only when the target is truly unclear.\n"
-            "- If your last message offered something and the owner now says yes (ok, do it, "
-            "haan, hya), do exactly that now.\n"
+            + control_rules() +
             "- Never claim something happened unless a tool result this turn confirms it.\n"
-            "- Pure knowledge questions: answer directly, no tools.\n"
+            "- Greetings, small talk and knowledge questions: answer directly, no tools.\n"
             "- Final reply: one to three short sentences, result first.\n"
         )
 
@@ -1212,13 +1343,6 @@ class CognitiveOrchestrator:
             f"{hint_text}\n"
         )
 
-    def _resolve_structured_action(self, user_prompt: str) -> Dict[str, Any]:
-        """
-        CONSTITUTIONAL DESIGN (Rule 8):
-        Provides standard keyword matching fallback in case no tool calling is resolved by the LLM.
-        """
-        return widget_choice.explicit_request(user_prompt)
-
     async def process_request(
         self,
         user_prompt: str,
@@ -1232,6 +1356,7 @@ class CognitiveOrchestrator:
         confirmation_token: Optional[str] = None,
         input_source: str = "text",
         voice_alias_suggestions: Optional[List[Dict[str, str]]] = None,
+        force_coding: bool = False,
     ) -> Dict[str, Any]:
         async with self._request_lock:
             return await self._process_request_unlocked(
@@ -1246,6 +1371,7 @@ class CognitiveOrchestrator:
                 confirmation_token=confirmation_token,
                 input_source=input_source,
                 voice_alias_suggestions=voice_alias_suggestions,
+                force_coding=force_coding,
             )
 
     async def _process_request_unlocked(
@@ -1261,6 +1387,7 @@ class CognitiveOrchestrator:
         confirmation_token: Optional[str] = None,
         input_source: str = "text",
         voice_alias_suggestions: Optional[List[Dict[str, str]]] = None,
+        force_coding: bool = False,
     ) -> Dict[str, Any]:
         """
         Asynchronous coordinator running the complete pipeline.
@@ -1274,8 +1401,8 @@ class CognitiveOrchestrator:
         
         # Clear past events for this turn
         self.dispatched_events.clear()
-        # One yes is enough: Ultron asked "Should I...?" and the owner said yes.
-        self._turn_owner_yes = self._owner_said_yes(session_id, user_prompt)
+        # Set only by the AI's owner_reply call this turn (never by word matching).
+        self._turn_owner_yes = False
 
         # Fix #9: restore persisted personality for this session if provided.
         if initial_personality and initial_personality in ("ultron", "zora"):
@@ -1288,61 +1415,16 @@ class CognitiveOrchestrator:
 
         current_personality = self.personalities.state.active_personality
 
-        # Step 1: DETECT MANUAL SWITCHOVERS
-        manual_state = self.personalities.detect_manual_switch(user_prompt)
-        if manual_state:
-            self._dispatch_event("personality_changed", {
-                "active_personality": manual_state.active_personality,
-                "reason": manual_state.switch_reason,
-                "type": manual_state.switch_type
-            })
-            current_personality = manual_state.active_personality
+        # Personality switches (Zora / Ultron) are decided by the AI itself via
+        # switch_mode - no word list. The owner can also use the UI toggle.
 
-        # Step 2: EVALUATE AUTOMATIC TRANSITIONS (Es Score)
-        elif current_personality == "ultron":
-            should_handoff, stress_score = self.zora_trigger.evaluate_handoff(
-                user_prompt=user_prompt,
-                consecutive_errors=consecutive_errors,
-                current_hour=current_hour,
-                delete_ratio=delete_ratio
-            )
-            
-            # Dispatch real-time stress scores
-            self._dispatch_event("emotion_score_updated", {
-                "stress_score": stress_score,
-                "threshold": self.zora_trigger.threshold
-            })
-
-            if should_handoff:
-                self._dispatch_event("handoff_started", {
-                    "source": "ultron",
-                    "target": "zora",
-                    "reason": f"Stress Score {stress_score:.3f} exceeded threshold."
-                })
-                
-                self.personalities.update_state(
-                    personality="zora",
-                    reason=f"Auto-handoff: Stress score {stress_score:.3f} reached.",
-                    switch_type="automatic"
-                )
-                
-                self._dispatch_event("personality_changed", {
-                    "active_personality": "zora",
-                    "reason": self.personalities.state.switch_reason,
-                    "type": self.personalities.state.switch_type
-                })
-                
-                self._dispatch_event("handoff_completed", {
-                    "active_personality": "zora"
-                })
-                current_personality = "zora"
-
-        # Step 3: ANALYZE INTENT
+        # Step 3: INTENT LABEL (logs/analytics only - it decides nothing)
         intent = self.intent_analyzer.analyze(user_prompt)
 
-        # Step 3b: CODING MODE — force NVIDIA only when manual force mode is ON
-        # or Auto detects CODING; every other turn uses configured primary routing.
-        coding_turn = self._should_use_coding_provider(intent, user_prompt)
+        # Step 3b: CODING MODE - the manual toggle, or the AI chose switch_mode(coding).
+        coding_turn = bool(force_coding) or self._should_use_coding_provider(intent, user_prompt)
+        if force_coding:
+            intent = "CODING"
         provider_for_turn = "nvidia" if coding_turn else self.router.primary_provider
         from backend.app.security.path_guard import resolve_project_root
         project_root_decision = resolve_project_root(project_id)
@@ -1361,58 +1443,10 @@ class CognitiveOrchestrator:
         # Step 6: CACHE DECOUPLED POLICY CHECK
         cache_skip = self.router.cache_policy.should_bypass_cache("", user_prompt)
 
-        # Step 7: RESOLVE STRUCTURED AI ACTION (Fallback)
-        structured_action = self._resolve_structured_action(user_prompt)
+        # Step 7: panels open only when the AI shows one or a tool ran (no keyword guess).
+        structured_action = {"action": "none"}
 
-        # Step 8: HANDLE LOW CONFIDENCE (VAGUE INPUTS)
-        # V2 Step 5: a short answer ("2", "the second one", "D drive") to a question
-        # Jarvis just asked is NOT vague - it goes to the brain with the history.
-        if confidence < 0.60 and self._answers_last_question(session_id, user_prompt):
-            confidence = 0.60
-        if confidence < 0.60:
-            clarification_response = (
-                "I'm not entirely sure I follow, Sir. Your request lacks context. "
-                "Could you clarify what specific file, tool, or goal you want to work on?"
-            )
-            
-            # Save memory
-            memory_meta = {
-                "personality": current_personality,
-                "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "memory_type": "short_term",
-                "confidence": confidence
-            }
-            self.memory.save_chat_turn(session_id, user_prompt, clarification_response)
-            
-            end_time = time.perf_counter()
-            response_ms = int((end_time - start_time) * 1000)
-            
-            # Handle Zora automatic lifecycle decrement (update current_personality too,
-            # so the session persists the correct value and Zora doesn't get stuck).
-            if current_personality == "zora":
-                auto_return_state = self.personalities.increment_zora_lifecycle()
-                if auto_return_state:
-                    self._dispatch_event("personality_changed", {
-                        "active_personality": "ultron",
-                        "reason": auto_return_state.switch_reason,
-                        "type": auto_return_state.switch_type
-                    })
-            
-            return {
-                "id": str(uuid.uuid4()),
-                "content": clarification_response,
-                "intent": intent,
-                "confidence": confidence,
-                "speed_track": speed_track,
-                "cache_skip": cache_skip,
-                "response_ms": response_ms,
-                "active_personality": current_personality,
-                "events": list(self.dispatched_events),
-                "metadata": memory_meta,
-                "structured_action": {"action": "none"},
-                "provider_route": self.router.get_route_metadata(),
-                "input_source": input_source,
-            }
+        # Step 8: no canned "please clarify" gate - the AI asks itself when unclear.
 
         # Step 9: CONTEXT ASSEMBLY & SYSTEM INSTRUCTIONS (With Dynamic 65 Tools schemas!)
         # P0-5: Load last turns from DB (per-session, survives restarts) + merge RAM.
@@ -1485,19 +1519,14 @@ class CognitiveOrchestrator:
         # prompt-relevant native schemas + use_tool + the cached menu of ALL
         # tools, so the model itself decides. Intent/track remain hints only.
         tool_definitions: list[dict] = []
-        pure_conversation = intent == "CONVERSATION" and not coding_turn
-        if pure_conversation:
-            system_prompt += (
-                "\n\nThis turn is social small talk. Reply briefly and warmly in character."
-            )
-        else:
+        if True:  # every turn: the AI itself decides whether a tool is needed
             tools_metadata_str = await asyncio.to_thread(
                 self._compile_tools_metadata,
                 user_prompt,
                 coding_turn=coding_turn,
                 allow_defaults=True,
             )
-            tool_definitions = json.loads(tools_metadata_str)
+            tool_definitions = self._control_tool_definitions(session_id) + json.loads(tools_metadata_str)
             native_ids = [item.get("tool_id") for item in tool_definitions]
             if "use_tool" in native_ids:
                 # Static block FIRST: identical bytes every turn, so Groq's
@@ -1515,6 +1544,7 @@ class CognitiveOrchestrator:
         # Step 10: ROUTE TO LLM CLIENT / NATIVE AGENT LOOP
         called_tool_ids: list[str] = []
         tool_results: list[dict] = []
+        restart_as_coding = False
         native_pending_confirmation = None
         native_protocol_active = False
         try:
@@ -1544,6 +1574,7 @@ class CognitiveOrchestrator:
                     called_tool_ids = agent_result["called_tool_ids"]
                     tool_results = agent_result["tool_results"]
                     native_pending_confirmation = agent_result["pending_confirmation"]
+                    restart_as_coding = bool(agent_result.get("restart_as_coding"))
             else:
                 ai_response = await self.router.get_completions(
                     system_prompt=system_prompt,
@@ -1557,6 +1588,26 @@ class CognitiveOrchestrator:
                 "I could not complete this turn because the configured AI provider "
                 "or native tool channel failed. No unverified action was reported as done."
             )
+
+        if restart_as_coding and not coding_turn:
+            # The AI chose switch_mode(coding): run this same message with the coding brain.
+            self._dispatch_log("info", "Switching to the coding brain for this job.")
+            return await self._process_request_unlocked(
+                user_prompt=user_prompt,
+                session_id=session_id,
+                project_id=project_id,
+                consecutive_errors=consecutive_errors,
+                current_hour=current_hour,
+                delete_ratio=delete_ratio,
+                initial_personality=self.personalities.state.active_personality,
+                user_confirmed=user_confirmed,
+                confirmation_token=confirmation_token,
+                input_source=input_source,
+                voice_alias_suggestions=voice_alias_suggestions,
+                force_coding=True,
+            )
+        # The AI may have switched Zora/Ultron with switch_mode this turn.
+        current_personality = self.personalities.state.active_personality
 
         # Step 11: LEGACY SENTINEL COMPATIBILITY FALLBACK
         if (
@@ -1838,6 +1889,14 @@ class CognitiveOrchestrator:
                     "expires_in_seconds": tr.get("expires_in_seconds"),
                 }
                 break
+
+        # Remember the ONE action this reply asks about; owner_reply can only run
+        # that one. A reply without a question closes any older waiting action.
+        from backend.app.security.pending_actions import get_pending_action_registry
+
+        get_pending_action_registry().set_awaiting(
+            session_id, (pending_confirmation or {}).get("confirmation_token")
+        )
 
         # Compile standard memory metadata parameters
         memory_meta = {

@@ -11,7 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from backend.app.core.orchestrator import CognitiveOrchestrator
-from backend.app.core.voice_intent import inspect_voice_aliases, plan_voice_clarification
+from backend.app.core.voice_intent import inspect_voice_aliases
 from backend.app.core.voice_preferences import (
     apply_approved_voice_aliases,
     get_approved_voice_aliases,
@@ -85,25 +85,6 @@ class TestPromptAndSkillBudgets(unittest.TestCase):
             {"heard": "jora", "suggested": "Zora", "category": "personality"},
         ])
 
-    def test_voice_clarification_is_selective_not_a_question_for_every_turn(self):
-        self.assertIsNone(plan_voice_clarification("open calender"))
-        self.assertEqual(
-            plan_voice_clarification("open code"),
-            {
-                "question": "I heard open code. Did you mean VS Code, Code Optimizer, or Code Graph?",
-                "options": ["Open VS Code", "Open Code Optimizer", "Open Code Graph"],
-                "reason": "open_code_ambiguous",
-            },
-        )
-        self.assertEqual(
-            plan_voice_clarification("Jora help me", inspect_voice_aliases("Jora help me"))["reason"],
-            "personality_alias",
-        )
-        self.assertEqual(
-            plan_voice_clarification("delete the report")["reason"],
-            "unsafe_target_missing",
-        )
-
     def test_voice_alias_is_used_only_after_explicit_owner_approval(self):
         memory = PersistentMemory()
         memory.delete("voice_alias_preferences.v1")
@@ -113,9 +94,6 @@ class TestPromptAndSkillBudgets(unittest.TestCase):
             approved = get_approved_voice_aliases()
             self.assertEqual(approved, {"jora": "Zora"})
             self.assertEqual(apply_approved_voice_aliases("Jora open calendar", approved), "Zora open calendar")
-            self.assertIsNone(
-                plan_voice_clarification("Jora open calendar", inspect_voice_aliases("Jora open calendar"), approved)
-            )
         finally:
             memory.delete("voice_alias_preferences.v1")
 
@@ -153,21 +131,25 @@ class TestPromptAndSkillBudgets(unittest.TestCase):
 
 
 class TestVoiceClarificationExecutionGate(unittest.TestCase):
-    def test_known_ambiguous_voice_turn_never_reaches_agent_or_tools(self):
-        class AgentMustNotRun:
-            async def process_request(self, **_kwargs):
-                raise AssertionError("Ambiguous voice request reached the agent")
+    def test_unclear_voice_turn_goes_to_the_ai_not_a_word_list(self):
+        """'open code' used to be stopped by a regex. Now the AI reads it (with the
+        voice hints) and asks the owner itself if it is unclear."""
+        class RecordingAgent:
+            captured = None
 
-        result = asyncio.run(
-            process_chat_message(
-                AgentMustNotRun(),
-                "open code",
-                input_source="voice",
-            )
-        )
-        self.assertEqual(result["intent"], "VOICE_CLARIFICATION")
-        self.assertEqual(result["content"], "I heard open code. Did you mean VS Code, Code Optimizer, or Code Graph?")
-        self.assertEqual(result["voice_clarification"]["reason"], "open_code_ambiguous")
+            async def process_request(self, **kwargs):
+                self.captured = kwargs
+                return {"id": str(uuid.uuid4()), "content": "VS Code or the Code Optimizer, Sir?",
+                        "active_personality": "ultron", "persisted_personality": "ultron",
+                        "structured_action": {"action": "none"}, "coding": False, "intent": "APP_CONTROL",
+                        "events": [], "pending_confirmation": None, "provider_route": {},
+                        "memory_provenance": [], "input_source": kwargs["input_source"]}
+
+        agent = RecordingAgent()
+        result = asyncio.run(process_chat_message(agent, "open code", input_source="voice"))
+        self.assertEqual(agent.captured["user_prompt"], "open code")
+        self.assertIsNone(result["voice_clarification"])
+        self.assertEqual(result["content"], "VS Code or the Code Optimizer, Sir?")
 
     def test_clear_voice_turn_reaches_agent_with_raw_text_and_safe_hints(self):
         class RecordingAgent:

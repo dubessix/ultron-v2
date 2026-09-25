@@ -67,18 +67,14 @@ class TestPhase4OrchestratorArchitecture(unittest.IsolatedAsyncioTestCase):
         
         orchestrator = CognitiveOrchestrator(memory_engine=memory)
         
-        # --- Case A: Low Confidence Prompt (Should trigger single clarifying question instantly) ---
-        # A genuinely vague input (e.g. "123") scores low -> clarify.
+        # --- Case A: a short or odd input ("123") is NOT answered by a canned
+        # "please clarify" gate any more - it goes to the AI, which decides.
         response_a = await orchestrator.process_request("123", session_id="test_sess_4")
-        
-        self.assertIn("clarify", response_a["content"])
-        self.assertLess(response_a["confidence"], 0.60)
-        self.assertEqual(response_a["speed_track"], "heavy")
-        
-        # Verify clarifying turn was saved to memory history
+
+        self.assertEqual(response_a["content"], "Mocked completions success response")
+        self.assertLess(response_a["confidence"], 0.60)  # still reported, decides nothing
         self.assertEqual(len(memory.get_session_context("test_sess_4")), 1)
         self.assertEqual(memory.get_session_context("test_sess_4")[0]["user"], "123")
-        self.assertIn("clarify", memory.get_session_context("test_sess_4")[0]["ai"])
 
         # --- Case B: Detailed Prompt (Should execute full pipeline and call router) ---
         response_b = await orchestrator.process_request(

@@ -187,6 +187,45 @@ class PendingActionRegistry:
                 self._used_reason[token] = "cancelled"
             return {"valid": True, "action": dict(item)}
 
+    def set_awaiting(self, session_id: Optional[str], token: Optional[str]) -> None:
+        """Mark the ONE action Ultron's latest reply asked about (None = no open question).
+
+        owner_reply can only run this action, so a later "yes" to another
+        question can never fire an old waiting action by mistake.
+        """
+        if not session_id:
+            return
+        with self._lock:
+            self._prune_locked()
+            changed = False
+            for key, item in self._items.items():
+                if item.get("session_id") != session_id:
+                    continue
+                flag = key == token
+                if bool(item.get("awaiting")) != flag:
+                    item["awaiting"] = flag
+                    changed = True
+            if changed:
+                self._save_locked()
+
+    def awaiting_for_session(self, session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The action Ultron's latest reply asked about (public fields only), or None."""
+        if not session_id:
+            return None
+        with self._lock:
+            self._prune_locked()
+            for token, item in self._items.items():
+                if item.get("session_id") == session_id and item.get("awaiting"):
+                    return {
+                        "confirmation_token": token,
+                        "tool_id": item["tool_id"],
+                        "arguments": dict(item["arguments"]),
+                        "arguments_hash": item["arguments_hash"],
+                        "summary": _safe_summary(item["arguments"]),
+                        "expires_in_seconds": max(0.0, self._ttl - (time.time() - item["created"])),
+                    }
+        return None
+
     def pending_count(self) -> int:
         with self._lock:
             self._prune_locked()

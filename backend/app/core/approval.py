@@ -1,10 +1,10 @@
-"""Jarvis approval rules: understand yes/no, ask only when it matters, ask like a human.
+"""Jarvis approval rules: ask only when it matters, ask like a human, stay honest.
 
 Personal (non-coding) turns:
   * normal jobs run at once (the owner said it, Ultron does it);
   * Ultron asks only before truly risky steps (see needs_ask);
-  * one yes is enough: if Ultron asked "Should I...?" and the owner answers yes,
-    that turn's actions run without a second question (level 3 still asks).
+  * one yes is enough: the AI calls owner_reply(yes) when the owner answers his
+    question; that turn's actions then run without a second question (level 3 still asks).
 Coding turns keep their exact-confirmation workflow unchanged.
 """
 
@@ -13,60 +13,11 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 
-# ---------------------------------------------------------------- yes / no
-_FILLER = re.compile(r"\b(ultron|zora|sir|please|pls|plz|bhai|boss|jarvis|dear|then|now|ji)\b")
-_YES_START = {
-    "yes", "yeah", "yep", "yup", "ya", "yea", "ok", "okay", "okey", "k", "sure", "fine", "alright",
-    "go", "do", "proceed", "confirm", "confirmed", "approve", "approved", "right", "correct", "absolutely",
-    "haan", "han", "ha", "haa", "theek", "thik", "thick", "karo", "kar", "kardo", "chalo",
-    "hya", "hyan", "hae", "ho", "koro", "kor", "done", "definitely", "course", "please",
-}
-_NO_WORDS = {
-    "no", "nope", "nah", "cancel", "stop", "dont", "don't", "not", "never", "nahi", "nahin", "mat",
-    "rehne", "rehnedo", "leave", "skip", "wait", "hold", "abort", "na", "naa", "thak", "koro-na", "later",
-}
-_GENERIC = {
-    "it", "that", "this", "them", "those", "do", "does", "go", "ahead", "now", "same", "one", "then", "again",
-    "create", "make", "open", "run", "write", "save", "start", "play", "send", "move", "copy", "rename",
-    "close", "delete", "remove", "install", "download", "apply", "continue", "finish", "all", "both",
-    "karo", "kar", "kardo", "do", "de", "dijiye", "dijye", "diya", "dao", "diye", "koro", "kore", "kor",
-    "banao", "bana", "kholo", "khol", "chalao", "chala", "hai", "hain", "ji", "bhai", "haan", "yes", "ok",
-    "okay", "sure", "go", "yeah", "please", "right", "away", "fine", "i", "want", "you", "can", "yup",
-}
-_ALWAYS = {"always", "hamesha", "every time", "sob somoy", "always allow", "allow always"}
-
-
-def _clean(text: str) -> list[str]:
-    low = str(text or "").lower().replace("’", "'")
-    low = re.sub(r"[.,!?।;:\"()]+", " ", low)
-    low = _FILLER.sub(" ", low)
-    return [w for w in low.split() if w]
-
-
-def reply_intent(text: str) -> Optional[str]:
-    """'yes' | 'no' | 'always' | None (None = a real request, send it to the brain).
-
-    Short replies only (<= 6 meaningful words): "ok do", "yes open it", "haan kar do",
-    "hya koro", "no", "cancel it". "No, open the other folder" is a new request -> None.
-    """
-    words = _clean(text)
-    if not words or len(words) > 6:
-        return None
-    phrase = " ".join(words)
-    if any(item in phrase for item in _ALWAYS) and not (set(words) & {"no", "not", "never", "dont", "don't"}):
-        return "always"
-    if words[0] in _NO_WORDS or phrase in {"mat karo", "rehne do", "not now", "no thanks"}:
-        return "no" if len(words) <= 3 else None
-    if set(words) & (_NO_WORDS - {"na", "wait"}):
-        return None  # mixed ("yes but don't...") -> let the brain read it
-    if words[0] in _YES_START or phrase in {"go ahead", "do it", "of course", "kar do", "kore dao", "why not"}:
-        # "ok close YouTube" is a NEW command, not a yes: after the yes word only
-        # general words may follow ("ok do", "yes create it", "haan kar do").
-        if all(w in _YES_START or w in _GENERIC for w in words[1:]):
-            return "yes"
-    return None
+# ------------------------------------------------------------ owner answers
+# There is no yes/no word list here any more: the AI itself decides whether the
+# owner's message answers a question and calls owner_reply (core/control_tools).
 
 
 def asked_question(last_ai_reply: str) -> bool:

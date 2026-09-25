@@ -11,7 +11,6 @@ Priority (orchestrator step 12):
 
 from __future__ import annotations
 
-import re
 from typing import Iterable, Optional
 
 # id -> short purpose (also the AI's menu for show_widget)
@@ -69,28 +68,6 @@ _ALWAYS_REFRESH = {"create_folder", "rename_folder", "delete_folder", "copy_fold
                    "list_contents", "locate_path"}  # File Explorer follows where Ultron works
 
 # Fallback words (whole words only) -> widget
-_WORDS: tuple[tuple[str, str], ...] = (
-    (r"to-?dos?|todo list|tasks?", "todo"),
-    (r"reminders?|alarms?|timers?|remind", "reminder"),
-    (r"calendar|schedule|agenda", "calendar"),
-    (r"git|branch(?:es)?", "git"),
-    (r"[a-z] drive|drive|downloads|documents|desktop|explorer|folders?|files", "file_explorer"),
-    (r"research", "deep_research"),
-    (r"search", "universal_search"),
-    (r"weather|forecast", "weather"),
-    (r"stocks?|bitcoin|crypto|market|share prices?", "market"),
-    (r"terminal|console", "terminal"),
-    (r"memory|memories", "memory"),
-    (r"notifications?|alerts?", "notification"),
-    (r"system|cpu|ram|hardware|battery", "system"),
-    (r"music|player|songs?", "music"),
-    (r"world monitor|world news", "world_monitor"),
-    (r"security", "security_guardian"),
-    (r"briefing", "daily_briefing"),
-)
-_SHOW = re.compile(r"\b(show|open|display|pull up|bring up|launch|view|see|dikhao|kholo|dekhao)\b", re.I)
-
-
 def _entry(action: str, widget_id: Optional[str] = None, refresh: bool = False) -> dict:
     result: dict = {"action": action}
     if widget_id:
@@ -98,22 +75,6 @@ def _entry(action: str, widget_id: Optional[str] = None, refresh: bool = False) 
     if refresh:
         result["refresh"] = True
     return result
-
-
-def explicit_request(prompt: str) -> dict:
-    """Fallback when no tool ran: only an explicit, whole-word panel request."""
-    text = " ".join(str(prompt or "").lower().split())
-    if not text:
-        return _entry("none")
-    has_show = bool(_SHOW.search(text))
-    first_word = text.split(" ", 1)[0].strip(",.!?")
-    for pattern, widget in _WORDS:
-        match = re.search(rf"\b(?:{pattern})\b", text)
-        if not match:
-            continue
-        if has_show or re.fullmatch(rf"(?:{pattern})", first_word):
-            return _entry("open_widget", widget)
-    return _entry("none")
 
 
 def from_tool_results(tool_results: Iterable[dict]) -> Optional[dict]:

@@ -200,6 +200,33 @@ describe('Voice C6 — canonical transport and response preservation', () => {
     expect(shellCapture.props.activityText).toContain('Confirm the exact write.');
   });
 
+  it('a spoken "ok do" goes to the brain (no word list in the browser) and the bar closes', async () => {
+    const chatBodies = [];
+    let turn = 0;
+    await renderConnectedApp(async (url, init) => {
+      if (String(url).endsWith('/api/health')) {
+        return jsonResponse({ status: 'healthy', system_metrics: {} });
+      }
+      if (String(url).endsWith('/api/chat')) {
+        chatBodies.push(JSON.parse(init.body).content);
+        turn += 1;
+        return jsonResponse(turn === 1
+          ? voiceResponse('Should I delete junk.txt, Sir?')
+          : voiceResponse('Deleted junk.txt, Sir.', { pending_confirmation: null }));
+      }
+      if (String(url).includes('/api/tts') || String(url).includes('/api/speech')) return jsonResponse({});
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+
+    await act(async () => { await shellCapture.props.handleVoiceCommand('delete junk.txt'); });
+    expect(shellCapture.props.pendingAction?.confirmation_token).toBe('c6-exact-token-1234567890');
+
+    await act(async () => { await shellCapture.props.handleVoiceCommand('haan bhai kar de'); });
+    expect(chatBodies).toEqual(['delete junk.txt', 'haan bhai kar de']);
+    expect(apiMocks.api).not.toHaveBeenCalledWith('/api/actions/confirm', expect.anything());
+    expect(shellCapture.props.pendingAction).toBeNull();
+  });
+
   it('Stop Voice aborts an in-flight Edge TTS fetch before playback exists', async () => {
     const OriginalAudio = global.Audio;
     let capturedSignal = null;

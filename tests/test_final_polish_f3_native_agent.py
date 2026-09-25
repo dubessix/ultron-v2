@@ -365,6 +365,7 @@ class TestNativeAgentConfirmationResume(unittest.IsolatedAsyncioTestCase):
             "Read and update the code file module",
             self.session,
             project_id="personal",
+            force_coding=True,  # the AI chose switch_mode(coding) / the owner's toggle
         )
         read_pending = first["pending_confirmation"]
         self.assertEqual(read_pending["tool_id"], "file_read")

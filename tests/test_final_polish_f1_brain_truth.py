@@ -142,7 +142,8 @@ class TestCodingModeTruth(unittest.IsolatedAsyncioTestCase):
         orchestrator = CognitiveOrchestrator()
         try:
             orchestrator.set_coding_mode(False)
-            self.assertTrue(orchestrator._should_use_coding_provider("CODING", "write code"))
+            # Auto mode: no word list turns coding on - the AI calls switch_mode(coding).
+            self.assertFalse(orchestrator._should_use_coding_provider("CODING", "write code"))
             self.assertFalse(orchestrator._should_use_coding_provider("CONVERSATION", "hello"))
 
             orchestrator.set_coding_mode(True)

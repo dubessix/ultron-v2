@@ -73,7 +73,7 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("manage_task", "action=create|list|update_status|update_priority|delete, ?title, ?priority, ?status, ?due_date, ?task_id"),
             ("manage_calendar", "action=create|list|delete|smart_schedule, ?title, ?start_time, ?end_time, ?duration_hours, ?event_id"),
             ("daily_briefing", "(none): weather, tasks, schedule, news"),
-            ("manage_memory", "action=remember|list|forget|correct|export, ?content, ?memory_id: owner facts"),
+            ("manage_memory", "action=search|remember|list|forget|correct, ?content, ?memory_id: past chats, owner facts"),
             ("weather_tool", "?city: live weather and forecast"),
         ),
     ),

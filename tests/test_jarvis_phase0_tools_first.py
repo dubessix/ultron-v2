@@ -133,13 +133,14 @@ class TestOrchestratorAlwaysArmsTheBrain(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(tool_ids, "fast turns must still receive the default tool belt")
         self.assertLessEqual(len(tool_ids), ToolContextBuilder.MAX_RELEVANT_TOOLS)
 
-    async def test_pure_greeting_skips_tools(self):
+    async def test_greeting_is_also_decided_by_the_ai(self):
+        # No regex "small talk" gate: the brain always has its tools and decides.
         await self._ask("Hello, how are you today?", "p0-hello")
-        self.native.assert_not_awaited()
-        self.plain.assert_awaited()
-        call = self.plain.await_args
-        sent = " ".join(str(v) for v in list(call.args) + list(call.kwargs.values()))
-        self.assertNotIn("No tool execution is needed", sent)
+        self.native.assert_awaited_once()
+        self.plain.assert_not_awaited()
+        tool_ids = [item["tool_id"] for item in self.native.await_args.args[2]]
+        self.assertIn("use_tool", tool_ids)
+        self.assertIn("switch_mode", self.native.await_args.args[0])  # its guide is in the cached prompt
 
 
 if __name__ == "__main__":
