@@ -39,6 +39,15 @@ export function wakeNameOf(phrase) {
   return null;
 }
 
+// Always-listen (the infinity button): speech with no wake word becomes a
+// command, but these lone filler sounds are ignored so a cough or "hmm"
+// does not reach the AI (saves tokens and wrong actions).
+const FILLER_ONLY = /^(?:hmm+|hm+|umm*|uh+|uhh+|ah+|oh+|er+|erm|mm+|huh|ha+|haha+|okay|ok|yeah|hi|hello)$/;
+
+export function isFillerOnly(text) {
+  return FILLER_ONLY.test(String(text || '').toLowerCase().replace(/[^a-z\s]/g, '').trim());
+}
+
 function addressFor(name, activePersonality) {
   if (!name || name === (activePersonality || 'ultron')) return '';
   return name === 'zora' ? 'Zora' : 'Ultron';
@@ -143,7 +152,13 @@ function silenceDelay(command) {
   return SILENCE_BASE_MS;
 }
 
-export default function useVoice({ onCommand, enabled, paused = false, activePersonality = 'ultron' }) {
+export default function useVoice({
+  onCommand,
+  enabled,
+  paused = false,
+  activePersonality = 'ultron',
+  alwaysListen = false,
+}) {
   const [isListening, setIsListening] = useState(false);
   const [wakeDetected, setWakeDetected] = useState(false);
   // In Option A this means a wake/command turn is currently open. It is reset
@@ -159,6 +174,7 @@ export default function useVoice({ onCommand, enabled, paused = false, activePer
   const pausedRef = useRef(paused);
   const onCommandRef = useRef(onCommand);
   const activePersonalityRef = useRef(activePersonality);
+  const alwaysListenRef = useRef(alwaysListen);
   const fatalRef = useRef(false);
   const sessionIdRef = useRef(0);
 
@@ -188,6 +204,7 @@ export default function useVoice({ onCommand, enabled, paused = false, activePer
   pausedRef.current = paused;
   onCommandRef.current = onCommand;
   activePersonalityRef.current = activePersonality;
+  alwaysListenRef.current = alwaysListen;
 
   const clearTimer = useCallback((ref) => {
     if (ref.current) {
@@ -312,7 +329,7 @@ export default function useVoice({ onCommand, enabled, paused = false, activePer
   const dispatch = useCallback((rawCommand) => {
     if (dispatchingRef.current) return false;
     let command = cleanText(rawCommand);
-    if (!command) {
+    if (!command || (!captureWakePhraseRef.current && isFillerOnly(command))) {
       resetTurn(false);
       return false;
     }
@@ -454,6 +471,17 @@ export default function useVoice({ onCommand, enabled, paused = false, activePer
         if (!wake.matched) continue;
         beginWakeTurn(event, index, wake.matched, wake.alt);
         return;
+      }
+
+      // Infinity mode: no wake word needed. The first words heard open a
+      // command turn; the same silence timer sends it. A name ("Zora, ...")
+      // is still honoured above, so switching keeps working.
+      if (alwaysListenRef.current) {
+        for (let index = event.resultIndex; index < event.results.length; index += 1) {
+          if (!resultText(event.results[index], 0)) continue;
+          beginWakeTurn(event, index, null, 0);
+          return;
+        }
       }
     };
 

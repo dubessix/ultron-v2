@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
-import { Check, Code2, KeyRound, Mic, Orbit, Server } from 'lucide-react';
+import { Check, Code2, KeyRound, Mic, Orbit, Server, Infinity as InfinityIcon } from 'lucide-react';
 import LeftPanel from './LeftPanel';
 import RightPanel from './RightPanel';
 import BlobCanvas from './BlobCanvas';
 import WidgetRail from './WidgetRail';
 import useVoice from '../hooks/useVoice';
+
+const ALWAYS_LISTEN_KEY = 'ultron.alwaysListen';
 import { getPersonalityTheme } from '../theme/personalityTheme';
 
 // Import dynamic widget registry structures (Requirement: Never hardcode widgets in AppShell)
@@ -80,10 +82,16 @@ export default function AppShell({
 
   // Voice control: wake-word listening wired to the bottom mic toggle.
   const [voiceEnabled, setVoiceEnabled] = useState(false);
+  // Infinity button: keep listening with no wake word. Off = old behaviour
+  // (say "Ultron" for each command). Remembered across reloads.
+  const [alwaysListen, setAlwaysListen] = useState(() => {
+    try { return window.localStorage?.getItem(ALWAYS_LISTEN_KEY) === '1'; } catch (_error) { return false; }
+  });
   const voice = useVoice({
     enabled: voiceEnabled,
     paused: Boolean(voicePaused),
     activePersonality,
+    alwaysListen,
     onCommand: (cmd) => {
       if (handleVoiceCommand) handleVoiceCommand(cmd);
     }
@@ -93,6 +101,16 @@ export default function AppShell({
     setVoiceEnabled((previous) => {
       const next = !previous;
       if (!next) onVoiceStop?.("voice_session_stopped");
+      return next;
+    });
+  };
+
+  const handleAlwaysListenToggle = () => {
+    setAlwaysListen((previous) => {
+      const next = !previous;
+      try { window.localStorage?.setItem(ALWAYS_LISTEN_KEY, next ? '1' : '0'); } catch (_error) {}
+      // Turning infinity ON also starts the mic, so one tap is enough.
+      if (next) setVoiceEnabled(true);
       return next;
     });
   };
@@ -112,7 +130,9 @@ export default function AppShell({
             ? "Wake phrase heard — speak your command."
             : voice.conversationActive
               ? "Wake phrase heard — speak your command."
-              : "Say “Ultron” to start a voice command.";
+              : alwaysListen
+                ? "Always listening — just speak."
+                : "Say “Ultron” to start a voice command.";
 
   return (
     <div
@@ -275,6 +295,27 @@ export default function AppShell({
                 <span>{confirmingAction ? 'Confirming…' : `Confirm ${pendingAction.tool_id}`}</span>
               </button>
             )}
+
+            {/* Infinity — continuous listening, no wake word. Off = say "Ultron" each time. */}
+            <button
+              type="button"
+              onClick={handleAlwaysListenToggle}
+              aria-label={alwaysListen ? "Stop always listening" : "Always listen (no wake word)"}
+              aria-pressed={alwaysListen}
+              data-testid="always-listen-toggle"
+              className={`relative flex h-8 w-8 items-center justify-center rounded-full border transition-all duration-500 ${
+                alwaysListen
+                  ? isZora
+                    ? "text-pink-300 border-pink-400/40 bg-pink-500/10 shadow-[0_0_14px_rgba(244,114,182,0.25)]"
+                    : "text-emerald-300 border-emerald-400/40 bg-emerald-500/10 shadow-[0_0_14px_rgba(52,211,153,0.25)]"
+                  : "border-white/[0.10] bg-white/[0.025] text-white/40 hover:border-white/20 hover:text-white/75"
+              }`}
+              title={alwaysListen
+                ? "Always listening: just speak, no need to say Ultron. Click to go back to wake word."
+                : "Tap to keep listening without saying Ultron every time."}
+            >
+              <InfinityIcon size={16} strokeWidth={1.9} aria-hidden="true" />
+            </button>
 
             {/* Mic icon — real wake-word listening toggle with pulse-ring effect */}
             <button

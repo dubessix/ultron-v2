@@ -170,3 +170,32 @@ describe('Voice Option A — truthful owner-facing states', () => {
     expect(screen.getByRole('button', { name: 'Start voice session' })).toBeTruthy();
   });
 });
+
+describe('Infinity button (always listen)', () => {
+  beforeEach(() => { window.localStorage.clear(); voiceHarness.state = {}; });
+
+  it('is off by default so the old wake-word behaviour stays', () => {
+    render(<AppShell {...baseProps} />);
+    const button = screen.getByTestId('always-listen-toggle');
+    expect(button.getAttribute('aria-pressed')).toBe('false');
+    expect(voiceHarness.options.alwaysListen).toBe(false);
+  });
+
+  it('one tap turns on always-listen AND the mic, and is remembered', () => {
+    render(<AppShell {...baseProps} />);
+    fireEvent.click(screen.getByTestId('always-listen-toggle'));
+    expect(screen.getByTestId('always-listen-toggle').getAttribute('aria-pressed')).toBe('true');
+    expect(voiceHarness.options.alwaysListen).toBe(true);
+    expect(voiceHarness.options.enabled).toBe(true);
+    expect(window.localStorage.getItem('ultron.alwaysListen')).toBe('1');
+  });
+
+  it('tapping again returns to wake-word mode', () => {
+    render(<AppShell {...baseProps} />);
+    const button = screen.getByTestId('always-listen-toggle');
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(voiceHarness.options.alwaysListen).toBe(false);
+    expect(window.localStorage.getItem('ultron.alwaysListen')).toBe('0');
+  });
+});

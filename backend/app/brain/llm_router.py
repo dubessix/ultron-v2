@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import hashlib
 import json
+import os
 import time
 from typing import Any, ClassVar, Optional
 
@@ -39,7 +40,7 @@ class LLMRouter:
         self.provider_attempts = settings["max_attempts"]
         self.backoff_base_seconds = settings["backoff_base_seconds"]
         self._rejected_models: dict[tuple[str, str], str] = {}
-        # Free-tier guard (Groq limits are per account, not per key).
+        # Free-tier guard, counted per API key (see _keys_share_limit).
         self.token_budget = TokenBudget()
         # Rejections expire so one transient 400/404 (bad payload, provider blip,
         # temporary model outage) does not disable a provider for the process life.
@@ -323,14 +324,78 @@ class LLMRouter:
     # Longest pause for the per-minute window before sending anyway.
     _MAX_BUDGET_WAIT_SECONDS: ClassVar[float] = 20.0
 
-    async def _respect_budget(self, provider: str, payload: dict[str, Any]) -> None:
-        """Pause briefly when this request would exceed the per-minute window."""
-        estimate = self.token_budget.estimate(
-            provider,
+    # -- budget per API key (keeps the old round-robin capacity) ----------
+    @staticmethod
+    def _keys_share_limit(provider: str) -> bool:
+        """True only when the owner says all keys of this provider are ONE account.
+
+        Default is per key: keys from different accounts each have their own
+        free limit, so N keys = N x the capacity (the reason for round-robin).
+        Set ULTRON_GROQ_KEYS_SHARE_LIMIT=1 if every key is from one account.
+        """
+        flag = os.getenv(f"ULTRON_{provider.upper()}_KEYS_SHARE_LIMIT", "")
+        return flag.strip().lower() in {"1", "true", "yes", "on"}
+
+    def _bucket(self, provider: str, key: Optional[str] = None) -> str:
+        if not key or self._keys_share_limit(provider):
+            return provider
+        return f"{provider}#{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+
+    def _active_keys(self, provider: str) -> list[str]:
+        lister = getattr(self.key_manager, "active_keys", None)
+        try:
+            return list(lister(provider)) if callable(lister) else []
+        except Exception:
+            return []
+
+    def _provider_wait(self, provider: str, request_chars: int) -> float:
+        """Seconds until ANY key of this provider has room (0 = send now)."""
+        keys = self._active_keys(provider)
+        buckets = {self._bucket(provider, key) for key in keys} or {provider}
+        return min(
+            self.token_budget.room(bucket, self.token_budget.estimate(bucket, request_chars))
+            for bucket in buckets
+        )
+
+    def _payload_estimate(self, bucket: str, payload: dict[str, Any]) -> int:
+        return self.token_budget.estimate(
+            bucket,
             len(json.dumps(payload, default=str)),
             max_output=min(int(payload.get("max_tokens") or 600), 600),
         )
-        wait = self.token_budget.room(provider, estimate)
+
+    async def _acquire_key(self, provider: str, payload: dict[str, Any]) -> str:
+        """Round-robin to the next key that has room this minute.
+
+        Walks the pool in the normal rotation order; a key whose minute is
+        full is skipped (not waited on). Only when every key is full does it
+        pause (max 20 s) on the key that frees up first.
+        """
+        pool_size = max(1, len(self._active_keys(provider)))
+        best_key, best_wait = None, float("inf")
+        for _ in range(pool_size):
+            key = self.key_manager.get_active_key(provider)
+            bucket = self._bucket(provider, key)
+            wait = self.token_budget.room(bucket, self._payload_estimate(bucket, payload))
+            if wait <= 0:
+                return key
+            if wait < best_wait:
+                best_key, best_wait = key, wait
+        if best_key is not None and best_wait > 0:
+            await self._respect_budget(provider, payload, key=best_key)
+        return best_key or self.key_manager.get_active_key(provider)
+
+    def _record_usage(self, provider: str, key: Optional[str], usage: Any) -> None:
+        self.token_budget.record_usage(
+            self._bucket(provider, key), usage if isinstance(usage, dict) else None
+        )
+
+    async def _respect_budget(
+        self, provider: str, payload: dict[str, Any], key: Optional[str] = None
+    ) -> None:
+        """Pause briefly when this request would exceed the per-minute window."""
+        bucket = self._bucket(provider, key)
+        wait = self.token_budget.room(bucket, self._payload_estimate(bucket, payload))
         if wait > 0:
             wait = min(wait, self._MAX_BUDGET_WAIT_SECONDS)
             print(f"[LLM_ROUTER] Pausing {wait:.1f}s to stay inside the {provider} per-minute limit.")
@@ -521,12 +586,10 @@ class LLMRouter:
                 continue
             configured_provider_seen = True
             if not provider_lock and any(p in configured for p in provider_order[position + 1 :]):
-                wait = self.token_budget.room(
-                    provider, self.token_budget.estimate(provider, request_chars)
-                )
+                wait = self._provider_wait(provider, request_chars)
                 if wait > 0:
                     print(
-                        f"[LLM_ROUTER] {provider} per-minute budget nearly used "
+                        f"[LLM_ROUTER] every {provider} key's per-minute budget nearly used "
                         f"(free in ~{wait:.0f}s); starting this job on the next provider."
                     )
                     continue
@@ -597,7 +660,6 @@ class LLMRouter:
             else "https://integrate.api.nvidia.com/v1/chat/completions"
         )
         for attempt in range(self.provider_attempts):
-            key = self.key_manager.get_active_key(provider)
             payload: dict[str, Any] = {
                 "model": get_model(provider),
                 "messages": self._openai_messages(system_prompt, user_prompt, conversation),
@@ -614,7 +676,7 @@ class LLMRouter:
                 # loop is sequential by design, so request exactly that.
                 payload["parallel_tool_calls"] = False
                 self._apply_groq_reasoning(payload)
-            await self._respect_budget(provider, payload)
+            key = await self._acquire_key(provider, payload)
             if provider == "nvidia":
                 payload["chat_template_kwargs"] = {
                     "enable_thinking": True,
@@ -645,7 +707,7 @@ class LLMRouter:
                 self._classify_http_failure(provider, key, response)
                 continue
             body = response.json()
-            self.token_budget.record_usage(provider, body.get("usage") if isinstance(body, dict) else None)
+            self._record_usage(provider, key, body.get("usage") if isinstance(body, dict) else None)
             return self._parse_openai_native_message(body)
         raise RuntimeError(f"{provider} native-tool key pool is unavailable")
 
@@ -738,7 +800,6 @@ class LLMRouter:
         url = "https://api.groq.com/openai/v1/chat/completions"
         provider = "groq"
         for attempt in range(self.provider_attempts):
-            key = self.key_manager.get_active_key(provider)
             payload = {
                 "model": get_model(provider),
                 "messages": [
@@ -749,7 +810,7 @@ class LLMRouter:
                 "max_tokens": 2048,
             }
             self._apply_groq_reasoning(payload)
-            await self._respect_budget(provider, payload)
+            key = await self._acquire_key(provider, payload)
             try:
                 response = await self.client.post(
                     url,
@@ -769,7 +830,7 @@ class LLMRouter:
                 continue
             try:
                 body = response.json()
-                self.token_budget.record_usage(provider, body.get("usage"))
+                self._record_usage(provider, key, body.get("usage"))
                 return body["choices"][0]["message"]["content"]
             except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
                 raise RuntimeError("Groq returned an invalid response schema") from exc

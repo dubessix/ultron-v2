@@ -101,6 +101,13 @@ class APIKeyManager:
                 raise APIKeyCoolingError(provider, min(cooling) - time.time())
             raise RuntimeError(f"All configured API keys for {provider} are failed")
 
+    def active_keys(self, provider: str) -> List[str]:
+        """ACTIVE keys in pool order, without moving the round-robin cursor."""
+        provider = provider.lower()
+        with self._lock:
+            self._clean_cooldowns_locked()
+            return [item["key"] for item in self._keys.get(provider, []) if item["state"] == "ACTIVE"]
+
     def has_real_key(self, provider: str) -> bool:
         provider = provider.lower()
         with self._lock:

@@ -1,7 +1,11 @@
-"""Per-provider sliding-window token/request budget (free-tier guard).
+"""Sliding-window token/request budget (free-tier guard), one bucket per API key.
 
-Groq's free tier limits are per ORGANIZATION (all keys share them), e.g.
-gpt-oss-120b: 30 requests/min and 8K tokens/min. Cached prompt-prefix tokens
+Groq's free tier limits are per ACCOUNT, e.g. gpt-oss-120b: 30 requests/min
+and 8K tokens/min. Keys from different accounts each have their own limit, so
+the router keeps one bucket per key ("groq#<hash>") and round-robins to a key
+with room. If every key is from ONE account, set ULTRON_GROQ_KEYS_SHARE_LIMIT=1
+and all keys share the single "groq" bucket. Limits are looked up by the part
+before "#". Cached prompt-prefix tokens
 do NOT count toward those limits, so the router records
 ``prompt_tokens - cached_tokens + completion_tokens`` from each response.
 
@@ -46,6 +50,7 @@ class TokenBudget:
     # -- configuration -------------------------------------------------
     @staticmethod
     def limits(provider: str) -> tuple[int, int]:
+        provider = provider.split("#", 1)[0]
         tpm, rpm = _DEFAULT_LIMITS.get(provider, (0, 0))
         prefix = f"ULTRON_{provider.upper()}"
         return _env_int(f"{prefix}_TPM", tpm), _env_int(f"{prefix}_RPM", rpm)
