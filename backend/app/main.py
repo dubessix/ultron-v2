@@ -85,6 +85,21 @@ class HealthStatusResponse(BaseModel):
 # Boot timestamp tracker
 START_TIME = time.time()
 
+async def run_heads_up_scheduler():
+    """Once a minute: speak deadline (60 min) and event (15 min) warnings, each once."""
+    from backend.app.core import arrival
+
+    while True:
+        try:
+            for warning in arrival.due_warnings():
+                await ws_manager.broadcast("events", warning)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(f"[HEADS_UP] check skipped: {exc}")
+        await asyncio.sleep(60)
+
+
 async def run_reminder_scheduler():
     """
     Background scheduler loop that runs every 5 seconds to look for
@@ -238,6 +253,8 @@ async def startup_event_handler():
         from backend.app.core.folder_index import start_background_indexer
 
         start_background_indexer()
+        # V2 Step 8: "Sir, your deadline is in 1 hour." (checked once a minute)
+        tasks.start_singleton("heads_up_scheduler", run_heads_up_scheduler)
     except Exception as e:
         print(f"[ERROR] Core startup initialization failed: {e}")
         raise RuntimeError("Core startup initialization failure.") from e
@@ -407,6 +424,7 @@ async def websocket_chat_endpoint(websocket: WebSocket, client_id: str = "defaul
                 "provider_route": result.get("provider_route") or {},
                 "pending_confirmation": result.get("pending_confirmation"),
                 "memory_provenance": result.get("memory_provenance") or [],
+                "arrival": result.get("arrival"),
             })
 
     except WebSocketDisconnect:

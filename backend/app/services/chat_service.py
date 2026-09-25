@@ -53,6 +53,14 @@ async def process_chat_message(
     content = str(content or "").strip()
     if not content:
         raise ValueError("Chat content cannot be empty.")
+    # V2 Step 8: back after 2+ hours? The welcome-back briefing rides along (no LLM call).
+    try:
+        from backend.app.core import arrival as _arrival
+
+        arrival_briefing = _arrival.briefing()
+    except Exception as exc:
+        print(f"[ARRIVAL] skipped: {exc}")
+        arrival_briefing = None
     if len(content) > 12000:
         raise ValueError("Chat content exceeds the 12,000-character safety limit.")
     input_source = str(input_source or "text").strip().lower()
@@ -186,4 +194,5 @@ async def process_chat_message(
         "voice_alias_suggestions": voice_alias_suggestions,
         "voice_clarification": voice_clarification,
         "memory_provenance": result.get("memory_provenance") or [],
+        "arrival": arrival_briefing,
     }

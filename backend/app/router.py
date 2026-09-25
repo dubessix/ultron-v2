@@ -80,6 +80,9 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Content-free provenance for saved memory sources injected into this turn.",
     )
+    arrival: Optional[Dict[str, Any]] = Field(
+        None, description="Welcome-back briefing when the owner returns after 2+ hours (V2 Step 8).",
+    )
 
 class VoicePreferenceRequest(BaseModel):
     alias: str = Field(..., min_length=1, max_length=48)
@@ -270,6 +273,16 @@ async def confirm_pending_action(request: ConfirmActionRequest) -> Dict[str, Any
             **({"trust_offer": result["trust_offer"]} if result.get("trust_offer") else {}),
         }
     return result
+
+
+@api_router.get("/arrival", status_code=status.HTTP_200_OK)
+async def arrival_check(force: bool = False) -> Dict[str, Any]:
+    """Frontend calls this when the owner shows up (app opened, activity after idle).
+    Returns the welcome-back briefing if he was away 2+ hours; also marks him present."""
+    from backend.app.core import arrival
+
+    briefing = arrival.briefing(force=force)
+    return {"success": True, "data": briefing or {"type": "none"}, "error": None}
 
 
 class CancelActionRequest(BaseModel):

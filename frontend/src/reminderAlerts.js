@@ -92,6 +92,19 @@ export function liveSpeech(item, owner = 'Sir') {
 //   { action: 'queue', items }        owner is away (tab hidden)
 //   { action: 'ignore' }
 export function planForEvent(event, { hidden, storage = globalThis.localStorage } = {}) {
+  // V2 Step 8: time-critical heads-up and the welcome-back briefing speak at once.
+  if (event && event.type === 'heads_up' && typeof event.speech === 'string') {
+    return {
+      action: 'speak', text: event.speech, heading: 'Heads up',
+      items: [{ key: `heads_${event.kind}_${event.title}_${event.minutes}`, title: cleanTitle(event.title), kind: 'heads_up' }],
+    };
+  }
+  if (event && event.type === 'arrival_briefing' && typeof event.speech === 'string') {
+    return {
+      action: 'speak', text: event.speech, heading: 'Welcome back',
+      items: [{ key: `arrival_${Date.now()}`, title: 'Welcome back briefing', kind: 'arrival' }],
+    };
+  }
   const items = itemsFromEvent(event);
   if (!items.length) return { action: 'ignore' };
   if (hidden) {

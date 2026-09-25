@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { applyWidgetAction } from './widgetActions';
 import { routeApproval } from './voiceApproval';
+import { createPresenceTracker } from './arrival';
 import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
 import { api, apiBase, executeTool, websocketBase } from './api';
@@ -657,7 +658,8 @@ export default function App() {
   const announceReminders = useCallback((plan) => {
     if (!plan || plan.action !== 'speak') return;
     const count = plan.items.length;
-    const heading = count > 1 ? `${count} reminders` : (plan.items[0].kind === 'alarm' ? 'Alarm' : 'Reminder');
+    const heading = plan.heading
+      || (count > 1 ? `${count} reminders` : (plan.items[0].kind === 'alarm' ? 'Alarm' : 'Reminder'));
     setMessages(prev => [...prev, {
       id: `reminder_${plan.items.map(item => item.key).join('_')}`,
       sender: 'ai',
@@ -695,6 +697,34 @@ export default function App() {
     } catch (_error) { /* notifications unsupported */ }
     return () => {
       stop();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [announceReminders]);
+
+  // V2 Step 8: welcome-back briefing when the owner shows up after 2+ hours
+  // (app opened, or first click / key / mouse move after being idle).
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    let cancelled = false;
+    const tracker = createPresenceTracker();
+    const check = async () => {
+      try {
+        const result = await api('/api/arrival');
+        const briefing = result?.data;
+        if (!cancelled && briefing?.type === 'arrival_briefing') {
+          announceReminders(planForEvent(briefing, { hidden: false }));
+        }
+      } catch { /* backend offline: nothing to say */ }
+    };
+    const onActivity = () => { if (tracker.activity()) void check(); };
+    const onVisible = () => { if (document.visibilityState !== 'hidden') onActivity(); };
+    const events = ['pointerdown', 'keydown', 'mousemove', 'touchstart'];
+    events.forEach(name => window.addEventListener(name, onActivity, { passive: true }));
+    document.addEventListener('visibilitychange', onVisible);
+    void check();  // app just opened: the backend knows how long he was gone
+    return () => {
+      cancelled = true;
+      events.forEach(name => window.removeEventListener(name, onActivity));
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [announceReminders]);
@@ -767,6 +797,7 @@ export default function App() {
         setAiState("speaking");
         setActivityText("Voice command processed — speaking the response…");
         void speakResponse(data.content, data.personality || "ultron").then(() => {
+          if (data.arrival?.speech) announceReminders(planForEvent(data.arrival, { hidden: false }));
           setAiState("idle");
           if (!data.pending_confirmation?.confirmation_token) {
             setActivityText("Ready — listening for your next turn.");
@@ -907,7 +938,8 @@ export default function App() {
             session_id: msg.session_id || null,
             provider_route: msg.provider_route || {},
             pending_confirmation: msg.pending_confirmation || null,
-            memory_provenance: msg.memory_provenance || []
+            memory_provenance: msg.memory_provenance || [],
+            arrival: msg.arrival || null
           }, false);
         }
       };
@@ -1002,6 +1034,10 @@ export default function App() {
               );
             }
           }
+        }
+        if (data.arrival?.speech) {
+          // Back after 2+ hours: the welcome-back briefing follows the answer.
+          speechSequence = speechSequence.then(() => announceReminders(planForEvent(data.arrival, { hidden: false })));
         }
         void speechSequence.then(() => {
           setAiState("idle");
