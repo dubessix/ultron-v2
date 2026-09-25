@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
 import { api, apiBase, executeTool, websocketBase } from './api';
+import { connectEvents, planForEvent, planForReturn } from './reminderAlerts';
 
 /**
  * Ultron Web Client Root App
@@ -580,6 +581,57 @@ export default function App() {
   }, [addNotification, stopSpeaking]);
 
   useEffect(() => () => { stopSpeaking("unmounted"); }, [stopSpeaking]);
+
+  // ── V2 Step 2: reminders reach the owner (live, or "while you were away") ──
+  const personalityRef = useRef(activePersonality);
+  useEffect(() => { personalityRef.current = activePersonality; }, [activePersonality]);
+  const speakRef = useRef(speakResponse);
+  useEffect(() => { speakRef.current = speakResponse; }, [speakResponse]);
+
+  const announceReminders = useCallback((plan) => {
+    if (!plan || plan.action !== 'speak') return;
+    const count = plan.items.length;
+    const heading = count > 1 ? `${count} reminders` : (plan.items[0].kind === 'alarm' ? 'Alarm' : 'Reminder');
+    setMessages(prev => [...prev, {
+      id: `reminder_${plan.items.map(item => item.key).join('_')}`,
+      sender: 'ai',
+      text: plan.text,
+      personality: personalityRef.current,
+      response_ms: 0,
+    }]);
+    addNotification(heading, plan.items.map(item => item.title).join(', '), 'high');
+    speakRef.current?.(plan.text, personalityRef.current);
+  }, [addNotification]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.WebSocket !== 'function') return undefined;
+    const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
+    const stop = connectEvents(`${websocketBase()}/ws/events?client_id=web-reminders`, (event) => {
+      const plan = planForEvent(event, { hidden: isHidden() });
+      if (plan.action === 'queue') {
+        // Away: a quiet system notification now, the spoken summary on return.
+        try {
+          if ('Notification' in window && window.Notification.permission === 'granted') {
+            new window.Notification('Ultron reminder', { body: plan.items.map(item => item.title).join(', ') });
+          }
+        } catch (_error) { /* notifications unsupported */ }
+        return;
+      }
+      announceReminders(plan);
+    });
+    const onVisible = () => { if (!isHidden()) announceReminders(planForReturn()); };
+    document.addEventListener('visibilitychange', onVisible);
+    onVisible();  // anything queued before a reload
+    try {
+      if ('Notification' in window && window.Notification.permission === 'default') {
+        window.Notification.requestPermission().catch?.(() => {});
+      }
+    } catch (_error) { /* notifications unsupported */ }
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [announceReminders]);
 
   // Toggle individual widget visibility
   const toggleWidget = (widgetId) => {

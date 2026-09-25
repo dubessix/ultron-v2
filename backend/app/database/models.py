@@ -98,6 +98,26 @@ def initialize_database(conn: sqlite3.Connection) -> None:
         );
     """)
 
+    # 3b. Reminder inbox: one row per fired reminder. delivered_at stays NULL
+    # until a live screen actually received it, so reminders that fire while
+    # the owner is away (or the app/PC was off) are told when he comes back.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS reminder_inbox (
+            id TEXT PRIMARY KEY,
+            reminder_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            target_time DATETIME NOT NULL,
+            fired_at DATETIME NOT NULL,
+            delivered_at DATETIME
+        );
+    """)
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_reminder_inbox_undelivered "
+        "ON reminder_inbox (delivered_at, fired_at);"
+    )
+
     # 4. Create Project Tasks table (Hierarchical Project-Module tree for TrustQuiz support)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS project_tasks (

@@ -117,6 +117,10 @@ async def run_reminder_scheduler():
                     
                     print(f"[SCHEDULER] Triggering {type_val} '{title}' (ID: {item_id})")
                     
+                    # 0. Inbox row first: if nobody is at a screen, it waits for him.
+                    from backend.app.core import reminder_inbox
+                    inbox_entry = reminder_inbox.record_fired(cursor, item)
+
                     # 1. Update database status
                     if rec == "one_time":
                         cursor.execute("UPDATE reminders_alarms SET status = 'triggered' WHERE id = ?;", (item_id,))
@@ -149,18 +153,13 @@ async def run_reminder_scheduler():
                     conn.commit()
                     
                     # 2. Broadcast WebSocket event on the 'events' channel
-                    event_payload = {
-                        "type": "reminder_triggered",
-                        "reminder": {
-                            "id": item_id,
-                            "type": type_val,
-                            "title": title,
-                            "description": item["description"],
-                            "recurrence": rec,
-                            "snooze_count": item["snooze_count"]
-                        }
-                    }
-                    await ws_manager.broadcast("events", event_payload)
+                    event_payload = reminder_inbox.event_payload(inbox_entry)
+                    event_payload["reminder"].update(
+                        {"recurrence": rec, "snooze_count": item["snooze_count"]}
+                    )
+                    received = await ws_manager.broadcast("events", event_payload)
+                    if isinstance(received, int) and received > 0:
+                        reminder_inbox.mark_delivered([inbox_entry["id"]])
                     
         except Exception as e:
             print(f"[SCHEDULER] Error in scheduler loop: {e}")
@@ -429,10 +428,21 @@ async def websocket_events_endpoint(websocket: WebSocket, client_id: str = "defa
     """Server-initiated push channel. Broadcasters trigger alerts, reminders, and Zora auto-handoffs."""
     await ws_manager.connect("events", client_id, websocket)
     try:
+        # "Tell me when I come": reminders that fired while no screen was
+        # connected (away, app closed, PC off) are delivered right now.
+        from backend.app.core import reminder_inbox
+        # (Tiny indexed SQLite query: run inline so disconnect cleanup stays ordered.)
+        waiting = reminder_inbox.undelivered()
+        if waiting:
+            await websocket.send_json(reminder_inbox.away_payload(waiting))
+            reminder_inbox.mark_delivered([e["id"] for e in waiting])
         while True:
             # Keeps connection alive and responsive to ping-pong frames
             await websocket.receive_text()
     except WebSocketDisconnect:
+        ws_manager.disconnect("events", client_id)
+    except Exception as exc:  # a failed send must not leave a dead socket registered
+        print(f"[WS_EVENTS] Connection closed: {exc}")
         ws_manager.disconnect("events", client_id)
 
 @app.websocket("/ws/logs")

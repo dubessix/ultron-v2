@@ -14,11 +14,11 @@ from backend.app.database.db import get_db_connection
 
 class ReminderArgs(BaseModel):
     action: str = Field(..., description="Action to perform: create, snooze, dismiss, list, delete.")
-    reminder_id: Optional[str] = Field(None, description="The UUID of the reminder or alarm (required for snooze, dismiss, delete).")
+    reminder_id: Optional[str] = Field(None, description="Reminder id (for snooze, dismiss, delete). If unknown, pass the title instead.")
     type: Optional[str] = Field("reminder", description="Type of alert: 'reminder' or 'alarm'.")
     title: Optional[str] = Field(None, description="The subject or description of the alert.")
     description: Optional[str] = Field(None, description="Optional extra details.")
-    target_time: Optional[str] = Field(None, description="Target time. Can be ISO format (YYYY-MM-DDTHH:MM:SS) or relative offset (e.g. '10m', '1h', '30s', '+5m').")
+    target_time: Optional[str] = Field(None, description="When, in the owner's local time: 'in 10 minutes', 'tomorrow 10am', 'monday 9am', '2h', or ISO local time. For snooze: how long (default 5m).")
     recurrence: Optional[str] = Field("one_time", description="Recurrence policy: 'one_time', 'daily', 'weekly'.")
     recurrence_details: Optional[str] = Field(None, description="Optional JSON details for recurrence.")
 
@@ -40,45 +40,32 @@ class ReminderTool(BaseTool):
         )
 
     def _parse_time(self, time_str: str) -> datetime.datetime:
-        """Parses ISO timestamp or parses duration offsets (e.g., '10m', '1h', '30s')."""
-        now = datetime.datetime.now(datetime.timezone.utc)
-        
-        # Try relative offset parsing first
-        clean = time_str.strip().lower().lstrip("+")
-        if not clean or clean.startswith("-"):
-            raise ValueError("target_time must be a future ISO time or positive relative duration.")
+        """Owner-local natural/relative/ISO time -> aware UTC datetime."""
+        from backend.app.core.time_parse import parse_when
 
-        # Matches formats like '10m', '30s', '2h', '1d'
-        digits = "".join([c for c in clean if c.isdigit() or c == "."])
-        unit = "".join([c for c in clean if not c.isdigit() and c != "."])
-        
-        if digits and unit:
-            try:
-                val = float(digits)
-                if val <= 0:
-                    raise ValueError("Relative target_time must be greater than zero.")
-                if "s" in unit:
-                    return now + datetime.timedelta(seconds=val)
-                elif "m" in unit:
-                    return now + datetime.timedelta(minutes=val)
-                elif "h" in unit:
-                    return now + datetime.timedelta(hours=val)
-                elif "d" in unit:
-                    return now + datetime.timedelta(days=val)
-            except Exception:
-                pass
-                
-        # Try ISO parsing
-        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-            try:
-                dt = datetime.datetime.strptime(time_str, fmt)
-                return dt.replace(tzinfo=datetime.timezone.utc)
-            except ValueError:
-                continue
-                
-        raise ValueError(
-            "Invalid target_time. Use ISO format or a positive relative value such as 10m, 2h, or 1d."
-        )
+        return parse_when(time_str).astimezone(datetime.timezone.utc)
+
+    @staticmethod
+    def _local_words(value: str) -> str:
+        from backend.app.core.time_parse import speakable_time
+
+        try:
+            return speakable_time(datetime.datetime.fromisoformat(value))
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _find_id(cursor, reminder_id: str) -> Optional[str]:
+        """Accept a real id, or a title the model remembered instead of the id."""
+        row = cursor.execute("SELECT id FROM reminders_alarms WHERE id = ?;", (reminder_id,)).fetchone()
+        if row:
+            return row["id"]
+        rows = cursor.execute(
+            "SELECT id FROM reminders_alarms WHERE lower(title) LIKE ? "
+            "AND status IN ('pending', 'snoozed', 'triggered') ORDER BY target_time ASC LIMIT 2;",
+            (f"%{reminder_id.strip().lower()}%",),
+        ).fetchall()
+        return rows[0]["id"] if len(rows) == 1 else None
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         action = kwargs.get("action", "list").lower()
@@ -110,6 +97,16 @@ class ReminderTool(BaseTool):
                     parsed_dt = self._parse_time(target_time_str)
                 except ValueError as exc:
                     return {"success": False, "error": str(exc), "data": {}}
+                now_utc = datetime.datetime.now(datetime.timezone.utc)
+                if parsed_dt < now_utc - datetime.timedelta(minutes=1):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"That time ({self._local_words(parsed_dt.isoformat())}) is already past. "
+                            "Ask the owner for a future time."
+                        ),
+                        "data": {},
+                    }
                 new_id = str(uuid.uuid4())
                 
                 cursor.execute(
@@ -134,9 +131,10 @@ class ReminderTool(BaseTool):
                 return {
                     "success": True,
                     "data": {
-                        "message": f"Successfully created {alert_type} '{title}'.",
+                        "message": f"Successfully created {alert_type} '{title}' for {self._local_words(parsed_dt.isoformat())}.",
                         "id": new_id,
                         "target_time": parsed_dt.isoformat(),
+                        "when_local": self._local_words(parsed_dt.isoformat()),
                         "type": alert_type,
                         "recurrence": recurrence
                     },
@@ -148,11 +146,16 @@ class ReminderTool(BaseTool):
                     """
                     SELECT id, type, title, description, target_time, recurrence, recurrence_details, snooze_count, status, created_at 
                     FROM reminders_alarms 
-                    ORDER BY target_time ASC;
+                    WHERE status IN ('pending', 'snoozed')
+                    ORDER BY target_time ASC
+                    LIMIT 50;
                     """
                 )
                 rows = cursor.fetchall()
-                results = [dict(row) for row in rows]
+                results = [
+                    {**dict(row), "when_local": self._local_words(row["target_time"])}
+                    for row in rows
+                ]
                 
                 return {
                     "success": True,
@@ -166,6 +169,7 @@ class ReminderTool(BaseTool):
             elif action == "snooze":
                 if not reminder_id:
                     return {"success": False, "error": "Parameter 'reminder_id' is required for action='snooze'.", "data": {}}
+                reminder_id = self._find_id(cursor, reminder_id) or reminder_id
                 
                 # Fetch existing record to increment snooze count
                 cursor.execute("SELECT snooze_count, title FROM reminders_alarms WHERE id = ?;", (reminder_id,))
@@ -174,7 +178,12 @@ class ReminderTool(BaseTool):
                     return {"success": False, "error": f"Reminder ID '{reminder_id}' not found.", "data": {}}
                 
                 current_snooze = row["snooze_count"] or 0
-                snoozed_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
+                try:
+                    snoozed_time = self._parse_time(target_time_str) if target_time_str else (
+                        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
+                    )
+                except ValueError as exc:
+                    return {"success": False, "error": str(exc), "data": {}}
                 
                 cursor.execute(
                     """
@@ -189,7 +198,7 @@ class ReminderTool(BaseTool):
                 return {
                     "success": True,
                     "data": {
-                        "message": f"Successfully snoozed '{row['title']}' for 5 minutes.",
+                        "message": f"Snoozed '{row['title']}' until {self._local_words(snoozed_time.isoformat())}.",
                         "id": reminder_id,
                         "new_target_time": snoozed_time.isoformat(),
                         "snooze_count": current_snooze + 1
@@ -200,6 +209,7 @@ class ReminderTool(BaseTool):
             elif action == "dismiss":
                 if not reminder_id:
                     return {"success": False, "error": "Parameter 'reminder_id' is required for action='dismiss'.", "data": {}}
+                reminder_id = self._find_id(cursor, reminder_id) or reminder_id
                 
                 cursor.execute("SELECT title, type, recurrence, target_time FROM reminders_alarms WHERE id = ?;", (reminder_id,))
                 row = cursor.fetchone()
@@ -250,6 +260,7 @@ class ReminderTool(BaseTool):
             elif action == "delete":
                 if not reminder_id:
                     return {"success": False, "error": "Parameter 'reminder_id' is required for action='delete'.", "data": {}}
+                reminder_id = self._find_id(cursor, reminder_id) or reminder_id
                 
                 cursor.execute("DELETE FROM reminders_alarms WHERE id = ?;", (reminder_id,))
                 deleted = cursor.rowcount > 0

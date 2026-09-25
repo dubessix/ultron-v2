@@ -41,17 +41,20 @@ class WebSocketManager:
                 print(f"[WS_MANAGER] Error sending to client '{client_id}': {e}. Disconnecting.")
                 self.disconnect(channel, client_id)
 
-    async def broadcast(self, channel: str, message: Dict[str, Any]) -> None:
-        """Broadcasts a structured JSON packet to all active subscribers on a specific channel."""
+    async def broadcast(self, channel: str, message: Dict[str, Any]) -> int:
+        """Broadcasts to all subscribers of a channel; returns how many received it."""
+        delivered = 0
         if channel in self._active_connections:
             # Create snapshot of current pool to avoid mutation errors during iteration
             clients = list(self._active_connections[channel].items())
             for client_id, ws in clients:
                 try:
                     await ws.send_json(message)
+                    delivered += 1
                 except Exception:
                     # Handle dropped sockets on-the-fly to protect server health
                     self.disconnect(channel, client_id)
+        return delivered
                     
     def get_active_client_count(self, channel: str) -> int:
         """Returns the number of active connected clients on a given channel."""
