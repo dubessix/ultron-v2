@@ -8,6 +8,9 @@ import { getPersonalityTheme } from '../../theme/personalityTheme';
  * Uses useDraggable hook for pointer tracking, supports double-click collapse states,
  * and configures active personality-based neon border accents.
  */
+export const WIDGET_SCALE_W = 1.4;
+export const WIDGET_SCALE_H = 1.45;
+
 export default function WidgetContainer({ 
   widgetId,
   title, 
@@ -19,6 +22,13 @@ export default function WidgetContainer({
   personality = "ultron", 
   children 
 }) {
+  // Jarvis-size panels: every widget opens ~40% bigger than its registry size.
+  // Width/height stay capped by the workspace, so small screens never overflow.
+  // Already-large panels (Memory Console) keep their own size.
+  if (initialWidth < 600) {
+    initialWidth = Math.round(initialWidth * WIDGET_SCALE_W);
+    initialHeight = Math.round(initialHeight * WIDGET_SCALE_H);
+  }
   const { position, handlePointerDown, isDragging } = useDraggable(
     initialX,
     initialY,
@@ -55,17 +65,17 @@ export default function WidgetContainer({
       <div 
         onPointerDown={handlePointerDown}
         onDoubleClick={handleHeaderDoubleClick}
-        className="flex touch-none justify-between items-center bg-white/[0.02] border-b border-white/5 px-4 py-2.5 cursor-grab active:cursor-grabbing text-[#8B8B96]"
+        className="flex touch-none justify-between items-center bg-white/[0.02] border-b border-white/5 px-4 py-3 cursor-grab active:cursor-grabbing text-[#8B8B96]"
         title="Drag header to move. Double-click to collapse/expand."
       >
-        <span className="text-[9px] uppercase font-bold tracking-widest text-[#F5F5F7]">
+        <span className="text-[12px] uppercase font-bold tracking-widest text-[#F5F5F7]">
           {title} {isCollapsed && "(Collapsed)"}
         </span>
         <button
           type="button"
           onClick={onClose}
           aria-label={`Close ${title}`}
-          className="no-drag text-[9px] text-[#8B8B96] hover:text-rose-400 uppercase tracking-widest transition-colors"
+          className="no-drag text-[11px] text-[#8B8B96] hover:text-rose-400 uppercase tracking-widest transition-colors"
         >
           Close
         </button>
@@ -73,7 +83,7 @@ export default function WidgetContainer({
 
       {/* Embedded Inner Children Viewport (Lazy rendered/hidden on collapse) */}
       {!isCollapsed && (
-        <div className={`${widgetId === "memory" ? "min-h-0" : "max-h-60"} flex-1 overflow-x-hidden overflow-y-auto p-4 select-text no-visible-scrollbar`}>
+        <div className={`ultron-widget-body min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-4 select-text no-visible-scrollbar`}>
           {children}
         </div>
       )}

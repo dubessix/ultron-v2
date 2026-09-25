@@ -249,7 +249,7 @@ export const WIDGET_REGISTRY = {
     title: "Hardware System Metrics",
     category: "system",
     defaultWidth: 320,
-    defaultHeight: 280,
+    defaultHeight: 340,
     Component: SystemWidget
   }
 };

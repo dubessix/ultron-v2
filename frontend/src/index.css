@@ -205,3 +205,21 @@
 .gooey-canvas {
   filter: url(#gooey-blend);
 }
+
+/* Jarvis readability: widgets were written with 6-11px micro text. Inside a
+   widget, lift every tiny arbitrary size to a readable one (min 11px). */
+.ultron-widget-container [class*="text-[6px]"],
+.ultron-widget-container [class*="text-[7px]"],
+.ultron-widget-container [class*="text-[8px]"] { font-size: 11px; }
+.ultron-widget-container [class*="text-[9px]"] { font-size: 12px; }
+.ultron-widget-container [class*="text-[10px]"] { font-size: 12.5px; }
+.ultron-widget-container [class*="text-[11px]"],
+.ultron-widget-container .text-xs { font-size: 13px; }
+.ultron-widget-container .text-sm { font-size: 15px; }
+.ultron-widget-container input,
+.ultron-widget-container select,
+.ultron-widget-container textarea,
+.ultron-widget-container button { font-size: max(12px, 1em); }
+/* Inner lists were capped (max-h-40…220px) for the old 320px boxes. The
+   widget body now scrolls as one piece, so let inner lists use the space. */
+.ultron-widget-body [class*="max-h-"] { max-height: none; }
