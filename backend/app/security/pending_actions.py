@@ -9,7 +9,9 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
-DEFAULT_TTL_SECONDS = 300.0
+DEFAULT_TTL_SECONDS = 600.0  # 10 minutes to say yes
+USED_MEMORY_SECONDS = 180.0  # a second confirm of a just-used token = "already done"
+MAX_PERSISTED = 20
 MAX_PENDING = 200
 MAX_RESUME_CONTEXT_BYTES = 128 * 1024
 
@@ -43,18 +45,63 @@ def _safe_summary(arguments: Dict[str, Any]) -> dict:
 
 
 class PendingActionRegistry:
-    def __init__(self, ttl_seconds: float = DEFAULT_TTL_SECONDS) -> None:
+    def __init__(self, ttl_seconds: float = DEFAULT_TTL_SECONDS, *, persist: bool = False) -> None:
         self._ttl = ttl_seconds
         self._lock = threading.RLock()
         self._items: Dict[str, Dict[str, Any]] = {}
+        self._used: Dict[str, float] = {}
+        self._used_reason: Dict[str, str] = {}
+        self._persist = persist
+        self._loaded = not persist
+
+    # -- disk: waiting actions survive a backend restart (like a checkpointer)
+    @staticmethod
+    def _store_path():
+        from backend.app.runtime_paths import runtime_data_path
+
+        return runtime_data_path("pending_actions.json")
+
+    def _load_locked(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            data = json.loads(self._store_path().read_text(encoding="utf-8"))
+            for token, item in (data or {}).items():
+                if isinstance(item, dict) and item.get("tool_id") and token not in self._items:
+                    self._items[token] = item
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def _save_locked(self) -> None:
+        if not self._persist:
+            return
+        newest = sorted(self._items.items(), key=lambda kv: kv[1]["created"], reverse=True)[:MAX_PERSISTED]
+        try:
+            path = self._store_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(dict(newest), default=str), encoding="utf-8")
+            tmp.replace(path)
+        except OSError:
+            pass
 
     def _prune_locked(self) -> None:
+        self._load_locked()
         now = time.time()
         for token in [
             token for token, item in self._items.items()
             if now - item["created"] >= self._ttl
         ]:
             self._items.pop(token, None)
+        for token in [t for t, used in self._used.items() if now - used >= USED_MEMORY_SECONDS]:
+            self._used.pop(token, None)
+            self._used_reason.pop(token, None)
+
+    def _consume_locked(self, token: str) -> None:
+        self._items.pop(token, None)
+        self._used[token] = time.time()
+        self._save_locked()
 
     def create(
         self,
@@ -85,6 +132,7 @@ class PendingActionRegistry:
                 "created": time.time(),
                 "resume_context": safe_resume_context,
             }
+            self._save_locked()
         return {
             "confirmation_token": token,
             "tool_id": str(tool_id),
@@ -118,10 +166,10 @@ class PendingActionRegistry:
             if item["arguments_hash"] != _argument_hash(arguments):
                 return {"valid": False, "reason": "arguments_mismatch"}
             if consume:
-                self._items.pop(token, None)
+                self._consume_locked(token)
             return {"valid": True, "action": dict(item)}
 
-    def claim(self, token: Optional[str], session_id: Optional[str]) -> Dict[str, Any]:
+    def claim(self, token: Optional[str], session_id: Optional[str], *, cancel: bool = False) -> Dict[str, Any]:
         """Atomically consume a stored action without asking the LLM to regenerate it."""
         if not token:
             return {"valid": False, "reason": "missing_confirmation_token"}
@@ -129,10 +177,14 @@ class PendingActionRegistry:
             self._prune_locked()
             item = self._items.get(token)
             if item is None:
+                if token in self._used:
+                    return {"valid": False, "reason": self._used_reason.get(token, "already_used")}
                 return {"valid": False, "reason": "unknown_or_expired_token"}
             if item["session_id"] != session_id:
                 return {"valid": False, "reason": "session_mismatch"}
-            self._items.pop(token, None)
+            self._consume_locked(token)
+            if cancel:
+                self._used_reason[token] = "cancelled"
             return {"valid": True, "action": dict(item)}
 
     def pending_count(self) -> int:
@@ -142,10 +194,14 @@ class PendingActionRegistry:
 
     def clear(self) -> None:
         with self._lock:
+            self._loaded = True
             self._items.clear()
+            self._used.clear()
+            self._used_reason.clear()
+            self._save_locked()
 
 
-_pending_actions = PendingActionRegistry()
+_pending_actions = PendingActionRegistry(persist=True)
 
 
 def get_pending_action_registry() -> PendingActionRegistry:

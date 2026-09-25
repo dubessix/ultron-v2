@@ -348,66 +348,94 @@ export default function App() {
   };
 
   // Execute the exact stored action. No prompt replay and no second LLM decision.
+  // Ultron then finishes the job (or tries another way) and the outcome is saved
+  // into chat memory by the backend. A lock stops click + voice running it twice.
+  const confirmLockRef = useRef(false);
   const handleConfirmRun = async (options) => {
     const spoken = Boolean(options && options.spoken === true);
-    if (!pendingAction?.confirmation_token || confirmingAction) return;
+    const action = pendingAction;
+    if (!action?.confirmation_token || confirmingAction || confirmLockRef.current) return;
+    confirmLockRef.current = true;
     setConfirmingAction(true);
-    setActivityText(`Running confirmed action: ${pendingAction.tool_id}…`);
+    setActivityText('Working on it…');
+    const say = (text, priority = 'medium', title = 'Ultron') => {
+      if (!text) return;
+      setMessages(prev => [...prev, {
+        id: `confirmed_${Date.now()}`, sender: 'ai', text, personality: activePersonality,
+      }]);
+      if (spoken || priority === 'high') void speakResponse(text, activePersonality);
+      addNotification(title, text, priority);
+    };
     try {
       const result = await api('/api/actions/confirm', {
         method: 'POST',
         body: JSON.stringify({
-          confirmation_token: pendingAction.confirmation_token,
-          session_id: sessionId,
+          confirmation_token: action.confirmation_token,
+          session_id: action.session_id || sessionIdRef.current || sessionId,
         }),
       });
-      if (result.success) {
+      action.onResult?.(result);
+      const nextPending = result.pending_confirmation?.confirmation_token
+        ? { ...result.pending_confirmation, session_id: action.session_id || sessionIdRef.current }
+        : null;
+      setPendingAction(nextPending);
+      const message = result.data?.message || '';
+      if (result.status === 'ALREADY_DONE') {
+        setActivityText('Already done.');
+      } else if (result.success) {
         const offer = result.trust_offer || null;
-        const done = result.data?.message || `Confirmed action ${pendingAction.tool_id} completed.`;
-        // Tony mode: after a few OKs for the same thing, offer "always allow?"
-        const message = offer?.question ? `${done} ${offer.question}` : done;
         setTrustOffer(offer);
-        if (spoken || offer) void speakResponse(message, activePersonality);
-        setMessages(prev => [...prev, {
-          id: `confirmed_${Date.now()}`,
-          sender: 'ai',
-          text: message,
-          personality: activePersonality,
-          response_ms: result.metadata?.execution_time_ms || 0,
-        }]);
-        const nextPending = result.pending_confirmation?.confirmation_token
-          ? result.pending_confirmation
-          : null;
-        setPendingAction(nextPending);
-        if (nextPending) {
-          setActivityText(`Waiting for confirmation: ${nextPending.tool_id}.`);
-          addNotification('Next confirmation required', nextPending.message, 'high');
-        } else {
-          setActivityText(`Confirmed action completed: ${pendingAction.tool_id}.`);
-          addNotification('Action completed', message, 'medium');
-        }
+        say(offer?.question ? `${message || 'Done, Sir.'} ${offer.question}` : (message || 'Done, Sir.'));
+        setActivityText(nextPending ? (nextPending.message || 'One more step needs your OK.') : 'Done.');
+      } else if (result.status === 'CONFIRMATION_REJECTED') {
+        say(result.error || 'That request is no longer waiting, Sir. Say it again.', 'high', 'Please ask again');
+        setActivityText('Please ask again.');
       } else {
-        setActivityText(`Confirmed action failed: ${result.error || 'not executed'}`);
-        addNotification('Confirmation failed', result.error || 'The pending action was not executed.', 'high');
-        if (result.status === 'CONFIRMATION_REJECTED') setPendingAction(null);
+        // The OK worked; the job itself failed. Ultron's own explanation comes first.
+        say(message || `That did not work, Sir. ${result.error || ''}`.trim(), 'high', "Couldn't finish");
+        setActivityText("Couldn't finish.");
       }
     } catch (err) {
-      setActivityText(`Confirmation failed: ${err.message || 'backend unavailable'}`);
-      addNotification('Confirmation failed', err.message || 'Backend unavailable.', 'high');
+      action.onResult?.({ success: false, error: err.message || 'backend unavailable' });
+      setActivityText(`Ultron is offline: ${err.message || 'backend unavailable'}`);
+      addNotification('Ultron is offline', err.message || 'Backend unavailable.', 'high');
     } finally {
+      confirmLockRef.current = false;
       setConfirmingAction(false);
     }
   };
+
+  // Widgets (Terminal, Code optimizer...) ask through this same confirm bar.
+  useEffect(() => {
+    window.__ultronConfirmBar = true;
+    const onWidgetConfirm = (event) => {
+      const { pending, sessionId: widgetSession, resolve } = event.detail || {};
+      if (!pending?.confirmation_token) return;
+      setPendingAction({ ...pending, session_id: widgetSession, onResult: resolve });
+      setActivityText(pending.message || 'Waiting for your OK.');
+      addNotification('Your OK is needed', pending.message || 'Say yes or no.', 'high');
+    };
+    window.addEventListener('ultron:confirm', onWidgetConfirm);
+    return () => {
+      window.removeEventListener('ultron:confirm', onWidgetConfirm);
+      window.__ultronConfirmBar = false;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Owner said no (voice/chat): drop the stored action for good.
   const cancelPendingAction = async () => {
     const action = pendingAction;
     setPendingAction(null);
     if (!action?.confirmation_token) return;
+    action.onResult?.({ success: false, status: 'CANCELLED', error: 'Cancelled.' });
     try {
       await api('/api/actions/cancel', {
         method: 'POST',
-        body: JSON.stringify({ confirmation_token: action.confirmation_token, session_id: sessionId }),
+        body: JSON.stringify({
+          confirmation_token: action.confirmation_token,
+          session_id: action.session_id || sessionIdRef.current || sessionId,
+        }),
       });
     } catch { /* token expires by itself */ }
     const text = 'Cancelled, Sir. Nothing was changed.';
@@ -840,7 +868,7 @@ export default function App() {
           }
         }
         if (data.pending_confirmation?.confirmation_token) {
-          setPendingAction(data.pending_confirmation);
+          setPendingAction({ ...data.pending_confirmation, session_id: data.session_id || sessionIdRef.current });
           setActivityText(`Waiting for confirmation: ${data.pending_confirmation.tool_id}.`);
           addNotification('Confirmation required', data.pending_confirmation.message, 'high');
         }
@@ -1034,7 +1062,7 @@ export default function App() {
         let speechSequence = speakResponse(data.content, data.personality || "ultron");
         handleCodingResponse(data);
         if (data.pending_confirmation?.confirmation_token) {
-          setPendingAction(data.pending_confirmation);
+          setPendingAction({ ...data.pending_confirmation, session_id: data.session_id || sessionIdRef.current });
           setActivityText(`Waiting for confirmation: ${data.pending_confirmation.tool_id}.`);
           addNotification('Confirmation required', data.pending_confirmation.message, 'high');
         }
@@ -1121,6 +1149,7 @@ export default function App() {
         codingModeSaving={codingModeSaving}
         codingLog={codingLog}
         onConfirmRun={handleConfirmRun}
+        onCancelPending={cancelPendingAction}
         pendingAction={pendingAction}
         confirmingAction={confirmingAction}
         logs={logs}

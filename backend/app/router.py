@@ -235,7 +235,14 @@ async def execute_backend_tool(request: ToolExecuteRequest) -> Dict[str, Any]:
 
 @api_router.post("/actions/confirm", status_code=status.HTTP_200_OK)
 async def confirm_pending_action(request: ConfirmActionRequest) -> Dict[str, Any]:
-    """Execute the exact stored pending action without regenerating it through an LLM."""
+    """Run the exact stored action (no LLM regeneration), then let Ultron finish the job.
+
+    Success or failure, the outcome goes back to the brain for personal jobs (a
+    failed step is retried another way once, then reported honestly) and is saved
+    into chat memory so Ultron never asks again for something already done.
+    """
+    from backend.app.services.chat_service import record_followup
+
     registry = ToolRegistry()
     result = await registry.execute_pending_action(
         confirmation_token=request.confirmation_token,
@@ -245,33 +252,51 @@ async def confirm_pending_action(request: ConfirmActionRequest) -> Dict[str, Any
     )
     resume_context = result.pop("_resume_context", None)
     confirmed_action = result.pop("_confirmed_action", None)
-    if result.get("success") and resume_context:
+    tool_id = (confirmed_action or {}).get("tool_id")
+    if result.get("status") in {"ALREADY_DONE", "CONFIRMATION_REJECTED"}:
+        return result
+    orchestrator = get_orchestrator()
+    if resume_context:
         resume_result = dict(result)
         resume_result["_confirmed_action"] = confirmed_action
-        resumed = await get_orchestrator().resume_agent_after_confirmation(
+        resumed = await orchestrator.resume_agent_after_confirmation(
             resume_context,
             resume_result,
         )
+        ok = bool(resumed.get("success", result.get("success")))
+        message = resumed.get("content") or ("Done, Sir." if ok else f"That did not work, Sir. {result.get('error') or ''}")
         original_data = result.get("data") or {}
+        record_followup(request.session_id, "yes", message, tools_used=resumed.get("called_tool_ids") or [tool_id],
+                        orchestrator=orchestrator)
         return {
-            "success": True,
+            "success": ok,
             "data": {
-                "message": resumed.get("content") or "Confirmed action completed.",
+                "message": message,
                 "agent_resumed": True,
-                "agent_resume_success": bool(resumed.get("success", True)),
-                "confirmed_tool": (confirmed_action or {}).get("tool_id"),
+                "agent_resume_success": ok,
+                "confirmed_tool": tool_id,
                 "confirmation_result": {
                     key: value
                     for key, value in original_data.items()
                     if key != "content"
                 },
+                **{k: v for k, v in original_data.items() if k in {"stdout", "stderr", "exit_code"}},
             },
-            "error": None,
+            "error": None if ok else (result.get("error") or "The job did not finish."),
+            "status": "DONE" if ok else "FAILED",
             "metadata": result.get("metadata") or {},
             "pending_confirmation": resumed.get("pending_confirmation"),
             "tools_used": resumed.get("called_tool_ids") or [],
             **({"trust_offer": result["trust_offer"]} if result.get("trust_offer") else {}),
         }
+    # No agent to resume (widget / direct tool): report the real result.
+    if result.get("success"):
+        message = (result.get("data") or {}).get("message") or "Done, Sir."
+    else:
+        message = f"That did not work, Sir. {result.get('error') or ''}".strip()
+        result["status"] = "FAILED"
+    record_followup(request.session_id, "yes", message, tools_used=[tool_id] if tool_id else [],
+                    orchestrator=orchestrator)
     return result
 
 
@@ -293,7 +318,12 @@ class CancelActionRequest(BaseModel):
 @api_router.post("/actions/cancel", status_code=status.HTTP_200_OK)
 async def cancel_pending_action(request: CancelActionRequest) -> Dict[str, Any]:
     """Owner said no (button or voice): the stored action is dropped for good."""
+    from backend.app.services.chat_service import record_followup
+
     dropped = ToolRegistry().discard_pending_action(request.confirmation_token, request.session_id)
+    if dropped:
+        record_followup(request.session_id, "no", "Cancelled, Sir. Nothing was changed.",
+                        orchestrator=get_orchestrator())
     return {"success": True, "data": {"cancelled": dropped}, "error": None}
 
 

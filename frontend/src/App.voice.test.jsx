@@ -197,7 +197,7 @@ describe('Voice C6 — canonical transport and response preservation', () => {
       confirmation_token: 'f3-next-token-1234567890',
       tool_id: 'file_write',
     });
-    expect(shellCapture.props.activityText).toContain('Waiting for confirmation: file_write');
+    expect(shellCapture.props.activityText).toContain('Confirm the exact write.');
   });
 
   it('Stop Voice aborts an in-flight Edge TTS fetch before playback exists', async () => {

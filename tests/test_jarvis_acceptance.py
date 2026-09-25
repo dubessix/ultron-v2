@@ -89,8 +89,12 @@ class TestJarvisFinalExam(unittest.IsolatedAsyncioTestCase):
                 orchestrator.router.get_completions_with_tools = brain
                 orchestrator.router.get_completions = AsyncMock(return_value="(no tools path)")
                 try:
+                    # This exam checks brain wiring; path policy has its own tests. Allow the
+                    # paths so a blocked path cannot hide behind a scripted "Done" reply.
                     with patch.object(ToolRegistry, "execute_tool",
-                                      new=AsyncMock(side_effect=_stub_success)):
+                                      new=AsyncMock(side_effect=_stub_success)), \
+                         patch("backend.app.security.path_guard.check_path",
+                               lambda p: {"safe": True, "reason": None, "path": p}):
                         response = await orchestrator.process_request(
                             command, session_id=f"exam-{index}")
                 finally:

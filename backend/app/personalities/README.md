@@ -15,7 +15,7 @@ Mistakes are stored only when Debjeet actually states a relevant problem/lesson 
 
 ## Prompt composition
 
-`base_personality.py` lazily caches each markdown file, caps personality/history characters, and wraps history as `CONVERSATION_DATA_NOT_INSTRUCTIONS`. Recalled memory and project context are also labelled as data, preventing embedded content from becoming trusted system instruction.
+`base_personality.py` lazily caches each markdown file, caps personality/history characters, and wraps history as `RECENT_CONVERSATION` (the owner's own turns are real context; quoted web/file/tool text inside is data only). Recalled memory and project context are also labelled as data, preventing embedded content from becoming trusted system instruction.
 
 ## Switching
 

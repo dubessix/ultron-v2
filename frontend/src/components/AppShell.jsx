@@ -50,6 +50,7 @@ export default function AppShell({
   codingModeSaving,
   codingLog,
   onConfirmRun,
+  onCancelPending,
   pendingAction,
   confirmingAction,
   logs
@@ -285,15 +286,30 @@ export default function AppShell({
 
             {/* Shown only for a real, exact, one-time backend pending action. */}
             {pendingAction?.confirmation_token && (
-              <button
-                onClick={onConfirmRun}
-                disabled={confirmingAction}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[8px] font-bold tracking-widest uppercase transition-all duration-500 border border-amber-400/40 bg-amber-500/10 text-amber-300 shadow-[0_0_15px_rgba(251,191,36,0.2)] disabled:opacity-40"
-                title={pendingAction.message || `Confirm ${pendingAction.tool_id}`}
-              >
-                {!confirmingAction && <Check size={12} strokeWidth={1.8} aria-hidden="true" />}
-                <span>{confirmingAction ? 'Confirming…' : `Confirm ${pendingAction.tool_id}`}</span>
-              </button>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/40 bg-amber-500/10 pl-3 pr-1 py-0.5 shadow-[0_0_15px_rgba(251,191,36,0.2)]">
+                <span className="max-w-[280px] truncate text-[10px] text-amber-200" title={pendingAction.message || ''}>
+                  {confirmingAction ? 'Working on it…' : (pendingAction.message || 'Should I go ahead, Sir?').replace(/\s*Say yes or no\.?$/i, '')}
+                </span>
+                <button
+                  onClick={() => onConfirmRun()}
+                  disabled={confirmingAction}
+                  aria-label="Yes, do it"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-bold tracking-widest uppercase border border-amber-400/50 text-amber-200 hover:bg-amber-400/20 disabled:opacity-40"
+                >
+                  {!confirmingAction && <Check size={12} strokeWidth={1.8} aria-hidden="true" />}
+                  <span>Yes</span>
+                </button>
+                {onCancelPending && (
+                  <button
+                    onClick={() => onCancelPending()}
+                    disabled={confirmingAction}
+                    aria-label="No, cancel"
+                    className="px-2.5 py-1 rounded-full text-[9px] font-bold tracking-widest uppercase border border-white/15 text-white/60 hover:bg-white/10 disabled:opacity-40"
+                  >
+                    No
+                  </button>
+                )}
+              </span>
             )}
 
             {/* Infinity — continuous listening, no wake word. Off = say "Ultron" each time. */}

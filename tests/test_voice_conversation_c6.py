@@ -54,7 +54,7 @@ class TestCanonicalVoiceTransport(unittest.TestCase):
     def test_exact_pending_token_is_forwarded_not_regenerated(self):
         voice = self._voice_block()
 
-        self.assertIn("setPendingAction(data.pending_confirmation)", voice)
+        self.assertIn("setPendingAction({ ...data.pending_confirmation, session_id", voice)
         self.assertIn("data.pending_confirmation?.confirmation_token", voice)
         self.assertNotIn("confirmation_token: Math", voice)
         self.assertNotIn("confirmation_token: crypto", voice)

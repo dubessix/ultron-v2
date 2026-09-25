@@ -226,7 +226,8 @@ class TestConfirmationAPI(unittest.TestCase):
             },
         ).json()
         self.assertFalse(replay["success"])
-        self.assertEqual(replay["status"], "CONFIRMATION_REJECTED")
+        # A replayed token never runs again; it answers "Already done" (info, not a failure).
+        self.assertEqual(replay["status"], "ALREADY_DONE")
 
     def test_websocket_carries_pending_token_and_direct_confirm_executes(self):
         target = isolated_test_artifact_path("phase2_ws", "module.py")

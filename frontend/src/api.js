@@ -54,10 +54,21 @@ export function executeTool(toolId, args = {}, options = {}) {
   });
 }
 
-/** Ask once, then return the exact token for the exact same tool arguments. */
+/**
+ * Ask once through Ultron's own confirm bar (click or say yes/no), then return the
+ * real result of the exact stored action. Falls back to a browser prompt only when
+ * the Ultron app shell is not mounted (e.g. a widget rendered on its own).
+ */
 export async function executeToolWithConfirmation(toolId, args = {}, sessionId = 'frontend_tools') {
   const first = await executeTool(toolId, args, { sessionId });
   if (first.status !== 'PENDING_CONFIRMATION') return first;
+  if (typeof window !== 'undefined' && window.__ultronConfirmBar) {
+    return new Promise((resolve) => {
+      window.dispatchEvent(new CustomEvent('ultron:confirm', {
+        detail: { pending: first, sessionId, resolve },
+      }));
+    });
+  }
   const approved = typeof window !== 'undefined' && window.confirm(first.message);
   if (!approved) return first;
   return executeTool(toolId, args, {

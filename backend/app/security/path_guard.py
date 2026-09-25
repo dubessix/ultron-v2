@@ -311,7 +311,9 @@ def _personal_candidate(value: str, root: Path, *, tool_id: str = "", field: str
         else:
             # Whole-disk Jarvis: last folder used -> home -> project root, first hit wins.
             bases = [recent_folders.personal_base(), Path.home(), root]
-            candidate = next((base / raw for base in bases if (base / raw).exists()), Path.home() / raw)
+            candidate = next((base / raw for base in bases if (base / raw).exists()), None)
+            if candidate is None:  # new name: home when allowed, else the project root
+                candidate = Path.home() / raw if check_path(str(Path.home()))["safe"] else root / raw
     if candidate.exists() or not tool_id:
         return candidate
 
@@ -365,6 +367,8 @@ def resolve_agent_tool_arguments(
 
                 # search the whole home; shell / git start where Ultron last worked
                 base = Path.home() if tool_id == "find_files" else recent_folders.personal_base()
+                if not check_path(str(base))["safe"]:
+                    base = root  # restricted access mode: stay in the allowed project
                 resolved_arguments[field] = str(base)
 
     for field in _TOOL_PATH_FIELDS.get(tool_id, ()):

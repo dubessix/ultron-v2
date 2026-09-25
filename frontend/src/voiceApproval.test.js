@@ -10,6 +10,18 @@ describe('voice approval (V2 Step 7)', () => {
     for (const t of ['no', 'nahi', 'rehne do', 'cancel it', 'thak', 'Sir, never mind']) expect(approvalIntent(t)).toBe('no');
   });
 
+  it('understands natural yes like "ok do" (owner bug report)', () => {
+    for (const t of ['ok do', 'OK do it', 'yes create it', 'yes open it', 'haan kar do', 'hya koro', 'go ahead', 'ok.']) {
+      expect(approvalIntent(t)).toBe('yes');
+    }
+  });
+
+  it('a new command is never taken as yes', () => {
+    for (const t of ['ok close youtube', 'yes but in Documents', 'koro na', 'haan youtube kholo']) {
+      expect(approvalIntent(t)).toBe(null);
+    }
+  });
+
   it('longer sentences are normal commands, not approvals', () => {
     expect(approvalIntent('no, open the other folder')).toBe(null);
     expect(approvalIntent('yes and also play some music after that please')).toBe(null);

@@ -228,7 +228,8 @@ class Phase6DatabaseCase(unittest.TestCase):
             )
         )
         self.assertFalse(replay["success"])
-        self.assertEqual(replay["status"], "CONFIRMATION_REJECTED")
+        # A replayed token never runs again; it answers "Already done" (info, not a failure).
+        self.assertEqual(replay["status"], "ALREADY_DONE")
 
     def test_failed_post_restore_integrity_automatically_rolls_back(self):
         _insert_conversation("backup-content")

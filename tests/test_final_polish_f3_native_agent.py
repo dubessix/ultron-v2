@@ -432,7 +432,7 @@ class TestToolMetadataPersistence(unittest.IsolatedAsyncioTestCase):
         app = Path("frontend/src/App.jsx").read_text(encoding="utf-8")
         self.assertIn("result.pending_confirmation?.confirmation_token", app)
         self.assertIn("setPendingAction(nextPending)", app)
-        self.assertIn("Next confirmation required", app)
+        self.assertIn("One more step needs your OK.", app)
 
 
 if __name__ == "__main__":

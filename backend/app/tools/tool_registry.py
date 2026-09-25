@@ -65,6 +65,15 @@ def _redact_audit_arguments(value: Any, key: str = "") -> Any:
     return value
 
 
+def _ask_text(tool_id: str, arguments: Dict[str, Any]) -> str:
+    try:
+        from backend.app.core.approval import describe
+
+        return describe(tool_id, arguments)
+    except Exception:
+        return "Should I go ahead with that, Sir? Say yes or no."
+
+
 class ToolRegistry:
     def __init__(self, gate: Optional[ConfirmationGate] = None) -> None:
         self.gate = gate or ConfirmationGate()
@@ -280,6 +289,7 @@ class ToolRegistry:
         require_confirmation: bool = False,
         resume_context: Optional[Dict[str, Any]] = None,
         _confirmation_prevalidated: bool = False,
+        owner_approved: bool = False,
     ) -> Dict[str, Any]:
         """
         Main execution router.
@@ -354,6 +364,11 @@ class ToolRegistry:
             trusted_rule = trust_rules.allows(tool_id, args_payload)
             if trusted_rule:
                 requires_confirmation = False
+        # Jarvis: the owner already approved this step (a normal personal job, or
+        # he said yes to Ultron's own question). Level 3 and forced asks never skip.
+        if (requires_confirmation and owner_approved and not require_confirmation
+                and not _confirmation_prevalidated and permission_level < 3):
+            requires_confirmation = False
         if requires_confirmation and not _confirmation_prevalidated:
             pending = get_pending_action_registry()
             if has_confirmed and confirmation_token:
@@ -379,10 +394,7 @@ class ToolRegistry:
                         "success": False,
                         "status": "PENDING_CONFIRMATION",
                         "tool_id": tool_id,
-                        "message": (
-                            f"Confirmation rejected ({validation['reason']}). "
-                            f"Approve the newly-issued exact action for '{tool_id}'."
-                        ),
+                        "message": _ask_text(tool_id, args_payload),
                         "required_permission_level": confirmation_level,
                         **created,
                     }
@@ -401,7 +413,7 @@ class ToolRegistry:
                     "success": False,
                     "status": "PENDING_CONFIRMATION",
                     "tool_id": tool_id,
-                    "message": f"Tool '{tool_id}' requires exact one-time confirmation.",
+                    "message": _ask_text(tool_id, args_payload),
                     "required_permission_level": confirmation_level,
                     **created,
                 }
@@ -475,7 +487,7 @@ class ToolRegistry:
 
     def discard_pending_action(self, confirmation_token: str, session_id: Optional[str]) -> bool:
         """Owner said no: drop the stored action so it can never run."""
-        claimed = get_pending_action_registry().claim(confirmation_token, session_id)
+        claimed = get_pending_action_registry().claim(confirmation_token, session_id, cancel=True)
         return bool(claimed.get("valid"))
 
     async def execute_pending_action(
@@ -489,11 +501,22 @@ class ToolRegistry:
         """Claim and execute the exact stored action without regenerating it."""
         claimed = get_pending_action_registry().claim(confirmation_token, session_id)
         if not claimed["valid"]:
+            if claimed["reason"] == "already_used":
+                # Click + voice at the same moment: the first one already ran it.
+                # Nothing runs twice; the UI shows this as info, not as a failure.
+                return {"success": False, "status": "ALREADY_DONE", "error": None,
+                        "data": {"message": "Already done, Sir."}}
+            friendly = {
+                "cancelled": "That was cancelled, Sir. Say it again if you want it.",
+                "unknown_or_expired_token": "That request expired, Sir. Say it again and I will do it.",
+                "session_mismatch": "That request belongs to another chat, Sir. Say it again here.",
+            }.get(claimed["reason"], "That request is no longer waiting, Sir. Say it again.")
             return {
                 "success": False,
                 "data": {},
-                "error": f"Confirmation rejected: {claimed['reason']}",
+                "error": friendly,
                 "status": "CONFIRMATION_REJECTED",
+                "reason": claimed["reason"],
             }
         action = claimed["action"]
         result = await self.execute_tool(

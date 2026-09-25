@@ -217,7 +217,7 @@ class CognitiveOrchestrator:
         for turn in list(turns or [])[-6:]:
             user = bounded_text(turn.get("user", ""), 1200)
             assistant = bounded_text(turn.get("ai", ""), 1200)
-            lines.append(f"User data: {user}\nAssistant data: {assistant}")
+            lines.append(f"Owner: {user}\nYou: {assistant}")
         return "\n".join(lines)[-7000:]
 
     def _compile_tools_metadata(
@@ -571,6 +571,31 @@ class CognitiveOrchestrator:
             "expires_in_seconds": result.get("expires_in_seconds"),
         }
 
+    def _last_ai_reply(self, session_id: str) -> str:
+        """Ultron's previous reply in this chat (RAM first, then the database)."""
+        try:
+            history = self.memory.get_session_context(session_id) or []
+            if history and isinstance(history[-1], dict) and history[-1].get("ai"):
+                return str(history[-1]["ai"])
+        except Exception:
+            pass
+        try:
+            from backend.app.database.db import get_db_connection
+            from backend.app.database.models import get_conversation_history
+
+            with get_db_connection() as conn:
+                rows = get_conversation_history(conn, session_id, limit=1)
+            return str(rows[-1].get("ai_response") or "") if rows else ""
+        except Exception:
+            return ""
+
+    def _owner_said_yes(self, session_id: str, user_prompt: str) -> bool:
+        from backend.app.core import approval
+
+        if approval.reply_intent(user_prompt) not in {"yes", "always"}:
+            return False
+        return approval.asked_question(self._last_ai_reply(session_id))
+
     def _answers_last_question(self, session_id: str, user_prompt: str) -> bool:
         if not str(user_prompt or "").strip():
             return False
@@ -770,15 +795,30 @@ class CognitiveOrchestrator:
                     ),
                 }
 
+        owner_approved = False
+        if not coding_turn:
+            # Jarvis: the owner said it, Ultron does it. Ask only before truly risky
+            # steps, and never twice after the owner already said yes.
+            from backend.app.core import approval
+
+            try:
+                level = int(tool.permission_for_arguments(arguments))
+            except Exception:
+                level = int(getattr(tool, "permission_level", 2))
+            owner_approved = level < 3 and (
+                getattr(self, "_turn_owner_yes", False)
+                or not approval.needs_ask(tool_id, arguments, level)
+            )
         result = await registry.execute_tool(
             tool_id=tool_id,
             args=arguments,
             session_id=session_id,
             max_retries=0,
-            # Local file content is private. Native cloud-agent reads require an
-            # exact owner confirmation even though direct local file_read stays L0.
-            require_confirmation=(tool_id == "file_read"),
+            # Coding turns: project file content needs an exact owner confirmation
+            # before a cloud agent reads it. Personal turns: the owner asked.
+            require_confirmation=(tool_id == "file_read" and coding_turn),
             resume_context=resume_context,
+            owner_approved=owner_approved,
         )
         if result.get("success") and coding_turn and filepath:
             if tool_id in {"file_read", "file_write"}:
@@ -815,6 +855,9 @@ class CognitiveOrchestrator:
                 content = str(response.get("content") or "").strip()
                 if not content and results:
                     content = "The requested verified tool work completed."
+                from backend.app.core.approval import honest_reply
+
+                content = honest_reply(content, results)
                 return {
                     "content": content,
                     "called_tool_ids": called,
@@ -894,10 +937,7 @@ class CognitiveOrchestrator:
                 if result.get("status") == "PENDING_CONFIRMATION":
                     self._dispatch_log("info", f"Waiting for exact confirmation: {tool_id}")
                     return {
-                        "content": (
-                            "Waiting for your exact confirmation before continuing "
-                            f"the {tool_id} step."
-                        ),
+                        "content": str(result.get("message") or "Should I go ahead, Sir? Say yes or no."),
                         "called_tool_ids": called,
                         "tool_results": results,
                         "pending_confirmation": self._agent_pending_confirmation(
@@ -947,10 +987,13 @@ class CognitiveOrchestrator:
     ) -> dict:
         """Serialize confirmation resume with normal shared-orchestrator turns."""
         async with self._request_lock:
-            return await self._resume_agent_after_confirmation_unlocked(
-                resume_context,
-                confirmed_result,
-            )
+            try:
+                return await self._resume_agent_after_confirmation_unlocked(
+                    resume_context,
+                    confirmed_result,
+                )
+            finally:
+                self._turn_owner_yes = False
 
     async def _resume_agent_after_confirmation_unlocked(
         self,
@@ -1006,7 +1049,8 @@ class CognitiveOrchestrator:
             )
             results.append(self._agent_result_item(skipped_id, skipped.get("arguments") or {}, skipped_result))
 
-        if not confirmed_result.get("success"):
+        coding_resume = bool(resume_context.get("coding_turn"))
+        if not confirmed_result.get("success") and coding_resume:
             return {
                 "content": f"Confirmed {tool_id} step failed: {confirmed_result.get('error')}",
                 "called_tool_ids": list(resume_context.get("called_tool_ids") or []),
@@ -1015,6 +1059,10 @@ class CognitiveOrchestrator:
                 "success": False,
             }
 
+        # Personal job: the owner approved it, so later steps of the same job run
+        # without asking again (level 3 still asks). A failed step goes back to the
+        # brain too: it tries another way once, then answers honestly.
+        self._turn_owner_yes = not coding_resume
         try:
             response = await self.router.get_completions_with_tools(
                 str(resume_context.get("system_prompt") or ""),
@@ -1040,9 +1088,20 @@ class CognitiveOrchestrator:
                 called_tool_ids=list(resume_context.get("called_tool_ids") or []),
                 tool_results=results,
             )
-            resumed["success"] = True
+            resumed["success"] = bool(confirmed_result.get("success")) or any(
+                item.get("success") for item in resumed.get("tool_results") or []
+                if isinstance(item, dict)
+            )
             return resumed
         except Exception as exc:
+            if not confirmed_result.get("success"):
+                return {
+                    "content": f"That did not work, Sir. {confirmed_result.get('error') or ''}".strip(),
+                    "called_tool_ids": list(resume_context.get("called_tool_ids") or []),
+                    "tool_results": results,
+                    "pending_confirmation": None,
+                    "success": False,
+                }
             return {
                 "content": f"Confirmed {tool_id}, but the agent could not resume: {exc}",
                 "called_tool_ids": list(resume_context.get("called_tool_ids") or []),
@@ -1065,8 +1124,10 @@ class CognitiveOrchestrator:
             "Finish the whole job before replying.\n"
             "- Live facts (weather, news, prices, PC status, anything recent): use a tool, never guess.\n"
             "- If a step fails, try another route once (other tool, other path) before giving up.\n"
-            "- Ask a question only when the target is truly unclear or the action is "
-            "destructive; risky tools already ask the owner for approval.\n"
+            "- Never ask permission in words: call the tool. The app itself asks the owner "
+            "before truly risky steps. Ask a question only when the target is truly unclear.\n"
+            "- If your last message offered something and the owner now says yes (ok, do it, "
+            "haan, hya), do exactly that now.\n"
             "- Never claim something happened unless a tool result this turn confirms it.\n"
             "- Pure knowledge questions: answer directly, no tools.\n"
             "- Final reply: one to three short sentences, result first.\n"
@@ -1213,6 +1274,8 @@ class CognitiveOrchestrator:
         
         # Clear past events for this turn
         self.dispatched_events.clear()
+        # One yes is enough: Ultron asked "Should I...?" and the owner said yes.
+        self._turn_owner_yes = self._owner_said_yes(session_id, user_prompt)
 
         # Fix #9: restore persisted personality for this session if provided.
         if initial_personality and initial_personality in ("ultron", "zora"):

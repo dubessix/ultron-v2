@@ -196,3 +196,49 @@ async def process_chat_message(
         "memory_provenance": result.get("memory_provenance") or [],
         "arrival": arrival_briefing,
     }
+
+
+def record_followup(
+    session_id: Optional[str],
+    owner_text: str,
+    ai_text: str,
+    *,
+    tools_used: Optional[list] = None,
+    intent: str = "APPROVAL",
+    personality: str = "ultron",
+    orchestrator=None,
+) -> None:
+    """Save an approval outcome (done / failed / cancelled) as a real chat turn.
+
+    Without this Ultron's last memory stayed "Should I...?" and he asked again.
+    """
+    if not session_id or not str(ai_text or "").strip():
+        return
+    try:
+        with get_db_connection() as conn:
+            known = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if not known:
+                raise LookupError("not a chat session (widget/tool call)")
+            save_conversation(
+                conn=conn,
+                msg_id=str(uuid.uuid4()),
+                session_id=session_id,
+                user_message=owner_text,
+                ai_response=ai_text,
+                personality=personality,
+                tools_used=list(tools_used or []),
+                widget_shown=None,
+                intent=intent,
+                mode="developer",
+                path_used="fast",
+                response_ms=0,
+            )
+    except LookupError:
+        return  # widget / direct tool approvals have no chat to remember
+    except Exception as exc:
+        print(f"[APPROVAL_MEMORY] DB save skipped: {exc}")
+    try:
+        if orchestrator is not None:
+            orchestrator.memory.save_chat_turn(session_id, owner_text, ai_text)
+    except Exception as exc:
+        print(f"[APPROVAL_MEMORY] RAM save skipped: {exc}")

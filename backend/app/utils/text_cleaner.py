@@ -75,7 +75,10 @@ def clean_text(text: str) -> str:
     # 7. Trim stray punctuation/space at boundaries
     t = t.strip()
     t = re.sub(r"\s+([.,!?])", r"\1", t)          # "word ," -> "word,"
-    t = re.sub(r"([.,!?])([A-Za-z])", r"\1 \2", t)  # "done.Sir" -> "done. Sir"
+    # "done.Sir" -> "done. Sir", but never split file names or links
+    # ("notes.txt", "google.com", "v2.Final" stays readable enough).
+    t = re.sub(r"(?<=[a-z0-9)\]])([.!?])([A-Z][a-z])", r"\1 \2", t)
+    t = re.sub(r",(?=[A-Za-z])", ", ", t)
     t = re.sub(r"([a-zA-Z0-9])\s*-\s*$", r"\1", t)  # trailing " -" -> remove
 
     return t.strip()
