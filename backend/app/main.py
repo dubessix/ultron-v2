@@ -234,6 +234,10 @@ async def startup_event_handler():
         tasks.start_singleton("reminder_scheduler", run_reminder_scheduler)
         tasks.start_singleton("emergency_monitor", run_emergency_monitor)
         tasks.start_singleton("durability_scheduler", run_durability_scheduler)
+        # V2 Step 5: folder-name index, low priority, only when the PC is idle.
+        from backend.app.core.folder_index import start_background_indexer
+
+        start_background_indexer()
     except Exception as e:
         print(f"[ERROR] Core startup initialization failed: {e}")
         raise RuntimeError("Core startup initialization failure.") from e

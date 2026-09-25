@@ -28,7 +28,7 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
         "Files and folders (any folder in the owner's home; use locate_path when a folder name is not a full path)",
         (
-            ("locate_path", "name, ?kind=folder|file|any: find where a folder or file lives by name"),
+            ("locate_path", "name ('that folder'=last used), ?kind: find a folder/file anywhere; if choices come back, ask which"),
             ("list_contents", "folderpath: list files and subfolders"),
             ("find_files", "pattern, ?search_root: find files by glob or name, e.g. *.pdf"),
             ("search_inside_documents", "search_query, ?file_extensions: find files containing text"),
@@ -52,7 +52,7 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("terminal_run", "command, ?cwd: run a shell command (open apps, files, anything the OS can do)"),
             ("system_metrics", "(none): CPU, RAM, disk, battery, uptime"),
-            ("show_widget", "widget_id, ?action=open|close|close_all, ?refresh: screen panel (todo, calendar, reminder, file_explorer, system, weather, music, terminal, memory, notification, daily_briefing, universal_search, deep_research, world_monitor, market, git, coding, security_guardian)"),
+            ("show_widget", "widget_id, ?action=open|close|close_all, ?refresh: screen panel: todo, calendar, reminder, file_explorer, system, weather, music, terminal, memory, market, world_monitor"),
             ("set_volume", "?level 0-100: system volume"),
             ("open_calculator", "(none): open the calculator"),
             ("open_chrome", "(none): open the browser"),

@@ -9,6 +9,7 @@ import time
 import sys
 import uuid
 import json
+import os
 import re
 import datetime
 import asyncio
@@ -570,6 +571,37 @@ class CognitiveOrchestrator:
             "expires_in_seconds": result.get("expires_in_seconds"),
         }
 
+    def _answers_last_question(self, session_id: str, user_prompt: str) -> bool:
+        if not str(user_prompt or "").strip():
+            return False
+        try:
+            history = self.memory.get_session_context(session_id) or []
+        except Exception:
+            return False
+        if not history or not isinstance(history[-1], dict):
+            return False
+        last = history[-1]
+        reply = last.get("ai") if "ai" in last else (last.get("content") if last.get("role") == "assistant" else "")
+        return "?" in str(reply or "")[-240:]
+
+    _FOLDER_ARG_FIELDS = ("folderpath", "path", "directory", "destination_path", "source_path",
+                          "extract_to", "cwd", "filepath", "zippath", "save_path")
+
+    def _remember_folders(self, tool_id: str, arguments: dict) -> None:
+        """V2 Step 5: remember the folder a successful tool worked in ("that folder again")."""
+        if tool_id in {"locate_path", "show_widget", "use_tool"} or not isinstance(arguments, dict):
+            return
+        try:
+            from backend.app.core import recent_folders
+
+            for field in self._FOLDER_ARG_FIELDS:
+                value = arguments.get(field)
+                if isinstance(value, str) and value and os.path.isabs(value):
+                    recent_folders.remember(value)
+                    return
+        except Exception:
+            pass
+
     @staticmethod
     def _agent_result_item(tool_id: str, arguments: dict, result: dict) -> dict:
         item = {
@@ -690,6 +722,13 @@ class CognitiveOrchestrator:
         resolved = resolve_agent_tool_arguments(
             tool_id, arguments, project_root, confine_to_project=coding_turn
         )
+        if not resolved["safe"] and resolved.get("reason") == "ambiguous":
+            # V2 Step 5: two folders share the name -> the AI asks the owner.
+            return resolved["arguments"], {
+                "success": False,
+                "data": {"choices": resolved.get("choices") or []},
+                "error": resolved.get("message") or "Several folders match; ask the owner which one.",
+            }
         if not resolved["safe"]:
             return resolved["arguments"], {
                 "success": False,
@@ -850,6 +889,8 @@ class CognitiveOrchestrator:
                     tools = self._attach_tool_schema(tools, tool_id, registry)
                 item = self._agent_result_item(tool_id, arguments, result)
                 results.append(item)
+                if item["success"]:
+                    self._remember_folders(tool_id, arguments)
                 if result.get("status") == "PENDING_CONFIRMATION":
                     self._dispatch_log("info", f"Waiting for exact confirmation: {tool_id}")
                     return {
@@ -1261,6 +1302,10 @@ class CognitiveOrchestrator:
         structured_action = self._resolve_structured_action(user_prompt)
 
         # Step 8: HANDLE LOW CONFIDENCE (VAGUE INPUTS)
+        # V2 Step 5: a short answer ("2", "the second one", "D drive") to a question
+        # Jarvis just asked is NOT vague - it goes to the brain with the history.
+        if confidence < 0.60 and self._answers_last_question(session_id, user_prompt):
+            confidence = 0.60
         if confidence < 0.60:
             clarification_response = (
                 "I'm not entirely sure I follow, Sir. Your request lacks context. "

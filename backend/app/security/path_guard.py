@@ -292,8 +292,11 @@ def _personal_candidate(value: str, root: Path, *, tool_id: str = "", field: str
     ("Projects" -> D:\\Work\\Projects). New targets keep their name but get an
     auto-found parent ("Projects/NewApp" -> D:\\Work\\Projects\\NewApp).
     """
+    from backend.app.core import recent_folders
     from backend.app.security.path_locator import auto_resolve, home_folder
 
+    if recent_folders.is_reference(str(value)) and recent_folders.last():
+        return Path(recent_folders.last())  # "that folder" / "wahi folder" = last used
     raw = Path(os.path.expandvars(str(value))).expanduser()
     if raw.is_absolute():
         candidate = raw
@@ -359,7 +362,20 @@ def resolve_agent_tool_arguments(
             if not candidate.is_absolute():
                 candidate = root / candidate
         else:
-            candidate = _personal_candidate(str(value), root, tool_id=tool_id, field=field)
+            from backend.app.security.path_locator import AmbiguousPath
+
+            try:
+                candidate = _personal_candidate(str(value), root, tool_id=tool_id, field=field)
+            except AmbiguousPath as clash:
+                return {
+                    "safe": False,
+                    "reason": "ambiguous",
+                    "field": field,
+                    "path": None,
+                    "choices": clash.choices,
+                    "message": str(clash),
+                    "arguments": resolved_arguments,
+                }
         candidate = candidate.resolve(strict=False)
         if confine_to_project and not _inside(candidate, root) and candidate != root:
             return {

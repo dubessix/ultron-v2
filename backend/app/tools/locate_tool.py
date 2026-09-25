@@ -31,8 +31,9 @@ class LocatePathTool(BaseTool):
             name="Path Locator",
             description=(
                 "Finds where a folder or file lives on this PC by name (Desktop, Documents, "
-                "Downloads, OneDrive, every drive). Use it when the owner names a folder "
-                "without a full path, then pass the returned path to other tools."
+                "Downloads, OneDrive, every drive, any depth; forgives spelling). Use it when the owner "
+                "names a folder without a full path; name='that folder' = the folder used last. If it "
+                "returns choices, ask the owner which one."
             ),
             category="filesystem",
             tags=["locate", "where", "find folder", "directory", "path", "auto find"],
@@ -42,22 +43,42 @@ class LocatePathTool(BaseTool):
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
+        from backend.app.core import recent_folders
         from backend.app.security.path_guard import check_path
-        from backend.app.security.path_locator import locate
+        from backend.app.security.path_locator import locate_detailed
 
         name = str(kwargs.get("name") or "").strip()
         kind = str(kwargs.get("kind") or "folder")
         if not name:
             return {"success": False, "data": {}, "error": "Name is required."}
-        matches = await asyncio.to_thread(locate, name, kind=kind, limit=15)
-        allowed = [path for path in matches if check_path(path)["safe"]][:8]
-        hidden = len(matches) - len(allowed) if len(matches) <= 15 else None
+        found = await asyncio.to_thread(locate_detailed, name, kind=kind, limit=15)
+        allowed = [path for path in found["matches"] if check_path(path)["safe"]][:8]
+        hidden = len(found["matches"]) - len(allowed)
         if not allowed:
             return {
                 "success": False,
                 "data": {"name": name, "kind": kind, "matches": []},
                 "error": f"No accessible {kind} named '{name}' was found on this PC.",
             }
+        exact = [path for path in found["exact"] if path in allowed]
+        if found["ambiguous"] and len(exact) > 1:
+            listed = "; ".join(f"{i}) {path}" for i, path in enumerate(exact[:5], 1))
+            return {
+                "success": True,
+                "data": {
+                    "name": name,
+                    "kind": kind,
+                    "ambiguous": True,
+                    "choices": exact[:5],
+                    "message": (
+                        f"{len(exact)} places are named '{name}': {listed}. Do not guess: ask the owner "
+                        "which one (say where each is, e.g. 'the one on Desktop or the one on D drive?')."
+                    ),
+                },
+                "error": None,
+            }
+        if kind in ("folder", "any"):
+            recent_folders.remember(allowed[0])
         return {
             "success": True,
             "data": {
@@ -65,9 +86,10 @@ class LocatePathTool(BaseTool):
                 "kind": kind,
                 "best": allowed[0],
                 "matches": allowed,
+                "found_by": found["how"],
                 "message": (
-                    f"Found {len(allowed)} match(es). Best: {allowed[0]}"
-                    + (" — ask the owner which one if unsure." if len(allowed) > 1 else "")
+                    f"Found: {allowed[0]}"
+                    + (" (closest spelling match - confirm with the owner)" if found["how"] == "fuzzy" else "")
                 ),
                 **({"blocked_matches": hidden} if hidden else {}),
             },
