@@ -267,8 +267,54 @@ async def confirm_pending_action(request: ConfirmActionRequest) -> Dict[str, Any
             "metadata": result.get("metadata") or {},
             "pending_confirmation": resumed.get("pending_confirmation"),
             "tools_used": resumed.get("called_tool_ids") or [],
+            **({"trust_offer": result["trust_offer"]} if result.get("trust_offer") else {}),
         }
     return result
+
+
+class CancelActionRequest(BaseModel):
+    confirmation_token: str
+    session_id: Optional[str] = None
+
+
+@api_router.post("/actions/cancel", status_code=status.HTTP_200_OK)
+async def cancel_pending_action(request: CancelActionRequest) -> Dict[str, Any]:
+    """Owner said no (button or voice): the stored action is dropped for good."""
+    dropped = ToolRegistry().discard_pending_action(request.confirmation_token, request.session_id)
+    return {"success": True, "data": {"cancelled": dropped}, "error": None}
+
+
+class TrustRuleRequest(BaseModel):
+    tool_id: str
+    kind: str
+    value: str
+    label: Optional[str] = None
+
+
+@api_router.post("/trust", status_code=status.HTTP_200_OK)
+async def accept_trust_rule(request: TrustRuleRequest) -> Dict[str, Any]:
+    """Owner accepted "always allow?" - the ONLY way a trust rule is created."""
+    from backend.app.core import trust_rules
+
+    try:
+        rule = trust_rules.allow(request.model_dump())
+    except ValueError as exc:
+        return {"success": False, "data": {}, "error": str(exc)}
+    return {"success": True, "data": {"rule": rule}, "error": None}
+
+
+@api_router.get("/trust", status_code=status.HTTP_200_OK)
+async def list_trust_rules() -> Dict[str, Any]:
+    from backend.app.core import trust_rules
+
+    return {"success": True, "data": {"rules": trust_rules.rules()}, "error": None}
+
+
+@api_router.delete("/trust/{rule_id}", status_code=status.HTTP_200_OK)
+async def revoke_trust_rule(rule_id: str) -> Dict[str, Any]:
+    from backend.app.core import trust_rules
+
+    return {"success": True, "data": {"revoked": trust_rules.revoke(rule_id)}, "error": None}
 
 
 @api_router.get("/history", response_model=List[ConversationHistoryItem], status_code=status.HTTP_200_OK)

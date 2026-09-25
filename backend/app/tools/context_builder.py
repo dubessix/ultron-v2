@@ -127,6 +127,7 @@ class ToolContextBuilder:
         "file_actions": ("open file", "show in folder", "biggest files", "large files", "recent files", "last week", "space"),
         "clipboard": ("clipboard", "copy this", "what did i copy", "paste"),
         "screenshot": ("screenshot", "screen shot", "capture screen", "screen capture"),
+        "jarvis_actions": ("what did you do", "undo", "undo that", "wapas karo", "action log", "always allow", "trust rules", "aaj kya kiya"),
         "notify": ("notify", "pop up", "popup", "notification"),
         "show_widget": ("widget", "panel", "on screen", "on my screen", "close all", "clear the screen", "show my", "pull up", "bring up"),
         "manage_task": ("task", "todo", "backlog", "subtask", "task priority"),

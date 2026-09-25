@@ -50,12 +50,13 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
         "PC and apps",
         (
-            ("apps", "action=open|close|running, ?name, ?pid: open/close any app, what slows the PC"),
+            ("apps", "action=open|close|running, ?name, ?pid"),
             ("pc_control", "action=lock|sleep|restart|shutdown|cancel_shutdown|volume|mute|unmute|brightness|status, ?level"),
             ("file_actions", "action=open|reveal|biggest|recent, ?path, ?ext, ?days"),
             ("clipboard", "action=read|write|save, ?text"),
             ("screenshot", "(none): save the screen to Pictures/Ultron"),
             ("notify", "message, ?title: desktop pop-up"),
+            ("jarvis_actions", "action=log|undo|undo_list|trusted|revoke, ?day, ?id"),
             ("terminal_run", "command, ?cwd: run a shell command (anything the OS can do)"),
             ("system_metrics", "(none): CPU, RAM, disk, uptime"),
             ("set_volume", "?level"),

@@ -176,20 +176,12 @@ class TestPhase13V2ToolsArchitecture(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn((vol_res.get("data") or {}).get("status"), ("verified", "unavailable", "failed"))
         
-        # Test Spotify Song Player (Requires level 2 confirmation)
+        # Tony mode (V2 Step 7): playing a song is a safe action - it runs at once.
         spotify_args = {"query": "Starboy"}
-        spot_res_1 = await registry.execute_tool(
+        spot_res_2 = await registry.execute_tool(
             "spotify_play", spotify_args, session_id="phase13_spotify"
         )
-        self.assertEqual(spot_res_1["status"], "PENDING_CONFIRMATION")
-
-        spot_res_2 = await registry.execute_tool(
-            "spotify_play",
-            spotify_args,
-            has_confirmed=True,
-            confirmation_token=spot_res_1["confirmation_token"],
-            session_id="phase13_spotify",
-        )
+        self.assertNotEqual(spot_res_2.get("status"), "PENDING_CONFIRMATION")
         self.assertTrue(spot_res_2["success"])
         self.assertIn("status", spot_res_2["data"])
 

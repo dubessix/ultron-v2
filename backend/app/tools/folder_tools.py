@@ -65,7 +65,7 @@ class CreateFolderTool(BaseTool):
             description="Creates a local directory recursively.",
             category="filesystem",
             tags=["folder", "directory", "create", "mkdir"],
-            permission_level=2,
+            permission_level=1,
             args_model=CreateFolderArgs,
             usage_examples=["create_folder(folderpath='D:\\backups')"]
         )
@@ -77,7 +77,12 @@ class CreateFolderTool(BaseTool):
         if blocked:
             return blocked
         try:
+            existed = path.exists()
             path.mkdir(parents=True, exist_ok=True)
+            if not existed:
+                from backend.app.core import action_journal
+
+                action_journal.record("create", f"created folder {path.name}", path=str(path))
             return {"success": True, "data": {"message": f"Successfully created directory: {folderpath}"}, "error": None}
         except Exception as e:
             return {"success": False, "error": f"Failed to create directory: {e}", "data": {}}
@@ -103,6 +108,9 @@ class RenameFolderTool(BaseTool):
             return blocked
         try:
             os.rename(old, new)
+            from backend.app.core import action_journal
+
+            action_journal.record("rename", f"renamed {old.name} to {new.name}", **{"from": str(old), "to": str(new)})
             return {"success": True, "data": {"message": f"Successfully renamed {old.name} to {new.name}"}, "error": None}
         except Exception as e:
             return {"success": False, "error": f"Failed to rename folder: {e}", "data": {}}
@@ -112,7 +120,7 @@ class DeleteFolderTool(BaseTool):
         super().__init__(
             tool_id="delete_folder",
             name="Folder Deleter",
-            description="Deletes a folder and all its contents recursively. Dangerous.",
+            description="Moves a folder and everything in it to the Trash / Recycle Bin (undo can restore it).",
             category="filesystem",
             tags=["folder", "delete", "remove", "rmdir"],
             permission_level=3, # Level 3: Dangerous/Destructive (Requires confirmation)
@@ -129,8 +137,19 @@ class DeleteFolderTool(BaseTool):
         if not path.exists():
             return {"success": False, "error": f"Directory does not exist: {folderpath}", "data": {}}
         try:
-            shutil.rmtree(path)
-            return {"success": True, "data": {"message": f"Successfully deleted directory recursively: {folderpath}"}, "error": None}
+            from backend.app.core import action_journal, trash
+
+            record = trash.send_to_trash(path)
+            action_journal.record("trash", f"deleted {path.name}", trash=record)
+            return {
+                "success": True,
+                "data": {
+                    "message": f"Moved {path.name} to the Trash. Say 'undo that' to bring it back.",
+                    "trash": record.get("method"),
+                    "undo": True,
+                },
+                "error": None,
+            }
         except Exception as e:
             return {"success": False, "error": f"Failed to delete directory: {e}", "data": {}}
 
@@ -142,7 +161,7 @@ class CopyFolderTool(BaseTool):
             description="Copies a folder and all its contents recursively to a new target directory.",
             category="filesystem",
             tags=["folder", "copy", "duplicate"],
-            permission_level=2,
+            permission_level=1,
             args_model=CopyMoveFolderArgs,
             usage_examples=["copy_folder(source_path='src', destination_path='backup_src')"]
         )
@@ -154,7 +173,12 @@ class CopyFolderTool(BaseTool):
         if blocked:
             return blocked
         try:
+            existed = dest.exists()
             shutil.copytree(src, dest, dirs_exist_ok=True)
+            if not existed:
+                from backend.app.core import action_journal
+
+                action_journal.record("copy", f"copied {src.name} to {dest}", path=str(dest))
             return {"success": True, "data": {"message": f"Successfully copied directory from {src.name} to {dest.name}"}, "error": None}
         except Exception as e:
             return {"success": False, "error": f"Failed to copy directory: {e}", "data": {}}
@@ -179,8 +203,12 @@ class MoveFolderTool(BaseTool):
         if blocked:
             return blocked
         try:
+            final = dest / src.name if dest.is_dir() else dest
             shutil.move(str(src), str(dest))
-            return {"success": True, "data": {"message": f"Successfully moved directory to {dest}"}, "error": None}
+            from backend.app.core import action_journal
+
+            action_journal.record("move", f"moved {src.name} to {dest}", **{"from": str(src), "to": str(final)})
+            return {"success": True, "data": {"message": f"Successfully moved directory to {dest}", "undo": True}, "error": None}
         except Exception as e:
             return {"success": False, "error": f"Failed to move directory: {e}", "data": {}}
 
@@ -234,7 +262,7 @@ class CompressFolderTool(BaseTool):
             description="Compresses a folder recursively into a ZIP or TAR archive file.",
             category="filesystem",
             tags=["folder", "compress", "zip", "archive", "tar"],
-            permission_level=2,
+            permission_level=1,
             args_model=CompressFolderArgs,
             usage_examples=["compress_folder(folderpath='src', archive_format='zip')"]
         )
@@ -326,6 +354,8 @@ class OrganizeFolderTool(BaseTool):
         }
 
         moved_count = 0
+        moves: list[list[str]] = []
+        created_dirs: list[str] = []
         try:
             for item in os.listdir(path):
                 item_path = path / item
@@ -339,13 +369,22 @@ class OrganizeFolderTool(BaseTool):
 
                     # Create subfolder recursively
                     subfolder = path / target_category
+                    if not subfolder.exists():
+                        created_dirs.append(str(subfolder))
                     subfolder.mkdir(exist_ok=True)
 
                     # Move file safely
                     dest_path = subfolder / item
                     if not dest_path.exists():
                         shutil.move(str(item_path), str(dest_path))
+                        moves.append([str(item_path), str(dest_path)])
                         moved_count += 1
+
+            if moves:
+                from backend.app.core import action_journal
+
+                action_journal.record("organize", f"sorted {moved_count} files in {path.name}",
+                                      moves=moves, created_dirs=created_dirs)
 
             return {"success": True, "data": {"moved_count": moved_count, "message": f"Successfully organized {moved_count} files into sorted subfolders."}, "error": None}
         except Exception as e:

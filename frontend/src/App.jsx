@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { applyWidgetAction } from './widgetActions';
+import { routeApproval } from './voiceApproval';
 import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
 import { api, apiBase, executeTool, websocketBase } from './api';
@@ -32,6 +33,7 @@ export default function App() {
   const [codingLog, setCodingLog] = useState([]);
   // Exact one-time action returned by the backend; never regenerate on confirm.
   const [pendingAction, setPendingAction] = useState(null);
+  const [trustOffer, setTrustOffer] = useState(null);
   const [confirmingAction, setConfirmingAction] = useState(false);
   // Present only when the backend explicitly says a voice transcript has more
   // than one safe meaning. Normal clear requests never show this card.
@@ -326,7 +328,8 @@ export default function App() {
   };
 
   // Execute the exact stored action. No prompt replay and no second LLM decision.
-  const handleConfirmRun = async () => {
+  const handleConfirmRun = async (options) => {
+    const spoken = Boolean(options && options.spoken === true);
     if (!pendingAction?.confirmation_token || confirmingAction) return;
     setConfirmingAction(true);
     setActivityText(`Running confirmed action: ${pendingAction.tool_id}…`);
@@ -339,7 +342,12 @@ export default function App() {
         }),
       });
       if (result.success) {
-        const message = result.data?.message || `Confirmed action ${pendingAction.tool_id} completed.`;
+        const offer = result.trust_offer || null;
+        const done = result.data?.message || `Confirmed action ${pendingAction.tool_id} completed.`;
+        // Tony mode: after a few OKs for the same thing, offer "always allow?"
+        const message = offer?.question ? `${done} ${offer.question}` : done;
+        setTrustOffer(offer);
+        if (spoken || offer) void speakResponse(message, activePersonality);
         setMessages(prev => [...prev, {
           id: `confirmed_${Date.now()}`,
           sender: 'ai',
@@ -369,6 +377,57 @@ export default function App() {
     } finally {
       setConfirmingAction(false);
     }
+  };
+
+  // Owner said no (voice/chat): drop the stored action for good.
+  const cancelPendingAction = async () => {
+    const action = pendingAction;
+    setPendingAction(null);
+    if (!action?.confirmation_token) return;
+    try {
+      await api('/api/actions/cancel', {
+        method: 'POST',
+        body: JSON.stringify({ confirmation_token: action.confirmation_token, session_id: sessionId }),
+      });
+    } catch { /* token expires by itself */ }
+    const text = 'Cancelled, Sir. Nothing was changed.';
+    setMessages(prev => [...prev, { id: `cancel_${Date.now()}`, sender: 'ai', text, personality: activePersonality }]);
+    setActivityText(`Cancelled: ${action.tool_id}.`);
+    void speakResponse(text, activePersonality);
+  };
+
+  // Owner accepted "always allow?" - the only way a trust rule is created.
+  const acceptTrustOffer = async (accept) => {
+    const offer = trustOffer;
+    setTrustOffer(null);
+    if (!offer) return;
+    let text = 'Understood, Sir. I will keep asking for that.';
+    if (accept) {
+      try {
+        const result = await api('/api/trust', {
+          method: 'POST',
+          body: JSON.stringify({ tool_id: offer.tool_id, kind: offer.kind, value: offer.value, label: offer.label }),
+        });
+        text = result.success
+          ? `Done, Sir. From now on I will ${offer.label} without asking.`
+          : `I cannot always-allow that, Sir: ${result.error || 'not permitted'}.`;
+      } catch (err) {
+        text = `I could not save that rule, Sir: ${err.message || 'backend unavailable'}.`;
+      }
+    }
+    setMessages(prev => [...prev, { id: `trust_${Date.now()}`, sender: 'ai', text, personality: activePersonality }]);
+    void speakResponse(text, activePersonality);
+  };
+
+  // Returns true when the reply was an approval answer (handled locally, not sent to the brain).
+  const handleApprovalReply = (userText) => {
+    const route = routeApproval(userText, { pendingAction, trustOffer });
+    if (!route) return false;
+    setMessages(prev => [...prev, { id: `user_${Date.now()}`, sender: 'user', text: userText }]);
+    if (route === 'confirm') void handleConfirmRun({ spoken: true });
+    else if (route === 'cancel') void cancelPendingAction();
+    else void acceptTrustOffer(route === 'accept_trust');
+    return true;
   };
 
   // Existing Edge-TTS lifecycle. Stop Voice aborts both the browser fetch and
@@ -655,6 +714,7 @@ export default function App() {
   const handleVoiceCommand = async (text) => {
     const userText = String(text || "").trim();
     if (!userText || isProcessing || voiceRequestInFlightRef.current) return;
+    if (handleApprovalReply(userText)) { stopSpeaking(); return; }
     voiceRequestInFlightRef.current = true;
     // Barge-in: the user is speaking — stop any in-progress TTS immediately.
     stopSpeaking();
@@ -874,6 +934,7 @@ export default function App() {
 
     const userText = inputValue.trim();
     setInputValue("");
+    if (handleApprovalReply(userText)) return;
     setIsProcessing(true);
     setAiState("thinking");
     setActivityText("Connecting to chat stream…");

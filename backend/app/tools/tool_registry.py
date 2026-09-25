@@ -216,6 +216,7 @@ class ToolRegistry:
             "clipboard": ("backend.app.tools.pc_tools", "ClipboardTool"),
             "screenshot": ("backend.app.tools.pc_tools", "ScreenshotTool"),
             "notify": ("backend.app.tools.pc_tools", "NotifyTool"),
+            "jarvis_actions": ("backend.app.tools.jarvis_actions_tool", "JarvisActionsTool"),
             "manage_task": ("backend.app.tools.task_tool", "TaskTool"),
             "manage_calendar": ("backend.app.tools.calendar_tool", "CalendarTool"),
             "security_scan": ("backend.app.tools.security_guardian_tool", "SecurityGuardianTool"),
@@ -343,6 +344,16 @@ class ToolRegistry:
             self.gate.manager.requires_manual_confirmation(permission_level)
         )
         confirmation_level = max(permission_level, 2) if require_confirmation else permission_level
+        # V2 Step 7 (Tony mode): an owner-created trust rule pre-approves this exact
+        # kind of action. Hard path blocks above already ran; forced confirmations
+        # (require_confirmation=True, e.g. coding egress) are never skipped.
+        trusted_rule = None
+        if requires_confirmation and not require_confirmation and not _confirmation_prevalidated:
+            from backend.app.core import trust_rules
+
+            trusted_rule = trust_rules.allows(tool_id, args_payload)
+            if trusted_rule:
+                requires_confirmation = False
         if requires_confirmation and not _confirmation_prevalidated:
             pending = get_pending_action_registry()
             if has_confirmed and confirmation_token:
@@ -457,7 +468,15 @@ class ToolRegistry:
             error=result_model.error
         )
 
-        return result_model.model_dump()
+        dumped = result_model.model_dump()
+        if trusted_rule:
+            dumped["trusted_by_rule"] = {"id": trusted_rule["id"], "label": trusted_rule["label"]}
+        return dumped
+
+    def discard_pending_action(self, confirmation_token: str, session_id: Optional[str]) -> bool:
+        """Owner said no: drop the stored action so it can never run."""
+        claimed = get_pending_action_registry().claim(confirmation_token, session_id)
+        return bool(claimed.get("valid"))
 
     async def execute_pending_action(
         self,
@@ -485,6 +504,13 @@ class ToolRegistry:
             max_retries=0,
             _confirmation_prevalidated=True,
         )
+        if result.get("success"):
+            # Tony mode: count the owner's approval; after a few, offer "always allow?"
+            from backend.app.core import trust_rules
+
+            offer = trust_rules.note_approval(action["tool_id"], action["arguments"])
+            if offer:
+                result["trust_offer"] = offer
         if include_resume_context:
             result["_resume_context"] = action.get("resume_context")
             result["_confirmed_action"] = {

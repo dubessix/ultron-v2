@@ -142,7 +142,7 @@ _player_controller = LocalMusicPlayerController()
 
 class PlayMusicTool(BaseTool):
     def __init__(self) -> None:
-        super().__init__("play_music", "Music Player", "Plays a local audio file through an owned controllable player.", "music", ["music", "play", "audio", "song", "mp3"], 2, PlayMusicArgs, ["play_music(filepath='music/song.mp3')"])
+        super().__init__("play_music", "Music Player", "Plays a local audio file through an owned controllable player.", "music", ["music", "play", "audio", "song", "mp3"], 1, PlayMusicArgs, ["play_music(filepath='music/song.mp3')"])
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         filepath = kwargs.get("filepath", "")
@@ -216,7 +216,7 @@ class CurrentTrackTool(BaseTool):
 
 class SetVolumeTool(BaseTool):
     def __init__(self) -> None:
-        super().__init__("set_volume", "System Volume Controller", "Sets system volume when a verified mixer is available.", "music", ["music", "volume", "sound"], 2, VolumeArgs, ["set_volume(level=80)"])
+        super().__init__("set_volume", "System Volume Controller", "Sets system volume when a verified mixer is available.", "music", ["music", "volume", "sound"], 1, VolumeArgs, ["set_volume(level=80)"])
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         level = max(0, min(100, int(kwargs.get("level", 50))))

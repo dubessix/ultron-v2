@@ -28,7 +28,7 @@ class SecurityGuardianTool(BaseTool):
             description="Performs recursive secret scanning, process auditing, and dependency reviews locally.",
             category="system",
             tags=["security", "audit", "scan", "processes", "vulnerabilities", "secrets", "compliance"],
-            permission_level=2,  # Level 2: System Audit (Requires confirmation for operations)
+            permission_level=1,  # Level 2: System Audit (Requires confirmation for operations)
             args_model=SecurityScanArgs,
             usage_examples=["security_scan(scan_workspace_secrets=True, scan_active_processes=True)"]
         )

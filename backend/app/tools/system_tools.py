@@ -159,6 +159,41 @@ class TerminalRunTool(BaseTool):
             usage_examples=["terminal_run(command='npm run build')"]
         )
 
+    # V2 Step 7 (Tony mode): plain look-only commands run without asking.
+    _READ_ONLY = {
+        "ls", "dir", "pwd", "whoami", "date", "uptime", "df", "du", "free", "uname", "hostname", "ps",
+        "tasklist", "systeminfo", "ipconfig", "ifconfig", "ip", "ping", "nvidia-smi", "lscpu", "lsblk",
+        "lsusb", "which", "where", "wc", "tree",
+        "python", "python3", "node", "npm", "pip", "java", "git",
+    }
+    _READ_ONLY_SUBCOMMANDS = {
+        "git": {"status", "log", "diff", "branch", "show", "remote", "rev-parse"},
+        "python": {"--version", "-V"}, "python3": {"--version", "-V"}, "node": {"--version", "-v"},
+        "npm": {"--version", "-v", "ls", "list", "outdated"}, "pip": {"--version", "list", "show", "freeze"},
+        "java": {"-version", "--version"}, "ip": {"a", "addr", "address", "route", "link"},
+    }
+
+    def permission_for_arguments(self, arguments):
+        import re as _re
+        import shlex as _shlex
+
+        command = str((arguments or {}).get("command") or "").strip()
+        if not command or _re.search(r"[;&|<>`$\n]|\bsudo\b", command):
+            return self.permission_level
+        try:
+            parts = _shlex.split(command, posix=os.name != "nt")
+        except ValueError:
+            return self.permission_level
+        word = os.path.basename(parts[0]).lower().removesuffix(".exe") if parts else ""
+        if word not in self._READ_ONLY:
+            return self.permission_level
+        allowed_sub = self._READ_ONLY_SUBCOMMANDS.get(word)
+        if allowed_sub is not None and (len(parts) < 2 or parts[1] not in allowed_sub):
+            return self.permission_level
+        if word == "ping" and not any(p in {"-c", "-n"} for p in parts):
+            return self.permission_level  # endless ping would hang the turn
+        return 1
+
     @staticmethod
     async def _read_limited(stream, limit: int):
         """Drain a pipe fully while retaining at most limit bytes."""
@@ -510,7 +545,7 @@ class CalculatorTool(BaseTool):
             description="Launches the local hardware calculator application.",
             category="system",
             tags=["open", "launch", "calculate", "calculator", "math"],
-            permission_level=2,
+            permission_level=1,
             args_model=AppLaunchArgs,
             usage_examples=["open_calculator()"]
         )
@@ -527,7 +562,7 @@ class ChromeLauncherTool(BaseTool):
             description="Launches the Google Chrome web browser application.",
             category="system",
             tags=["open", "launch", "chrome", "browser", "web", "internet"],
-            permission_level=2,
+            permission_level=1,
             args_model=AppLaunchArgs,
             usage_examples=["open_chrome()"]
         )
@@ -548,7 +583,7 @@ class VSCodeLauncherTool(BaseTool):
             description="Launches the Visual Studio Code editor workspace.",
             category="system",
             tags=["open", "launch", "code", "vscode", "editor", "ide"],
-            permission_level=2,
+            permission_level=1,
             args_model=VSCodeLaunchArgs,
             usage_examples=["open_vscode(path='.')"]
         )

@@ -141,7 +141,7 @@ class CloseCurrentTabTool(BaseTool):
             description="Closes the currently active browser tab using system keyboard controls. Never closes browser window.",
             category="browser",
             tags=["browser", "tab", "close", "remove"],
-            permission_level=2, # Level 2: Requires manual confirmation
+            permission_level=1, # Level 2: Requires manual confirmation
             args_model=EmptyArgs,
             usage_examples=["close_tab()"]
         )

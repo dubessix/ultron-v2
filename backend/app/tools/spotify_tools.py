@@ -112,7 +112,7 @@ class OpenSpotifyTool(BaseTool):
             description="Launches your local desktop Spotify application. Verifies installation state first.",
             category="spotify",
             tags=["spotify", "music", "open", "launch", "desktop"],
-            permission_level=2, # Level 2: Requires confirmation
+            permission_level=1, # Level 2: Requires confirmation
             args_model=EmptyArgs,
             usage_examples=["open_spotify()"]
         )
@@ -139,7 +139,7 @@ class SpotifyPlaySongTool(BaseTool):
             description="Launches and plays a requested song query directly inside your local Spotify application.",
             category="spotify",
             tags=["spotify", "music", "song", "play", "track"],
-            permission_level=2, # Level 2: System command requiring confirmation
+            permission_level=1, # Level 2: System command requiring confirmation
             args_model=SpotifySearchArgs,
             usage_examples=["spotify_play(query='Starboy The Weeknd')"]
         )
@@ -170,7 +170,7 @@ class SpotifySearchArtistTool(BaseTool):
             description="Launches a specific artist profile search on Spotify.",
             category="spotify",
             tags=["spotify", "artist", "search", "music"],
-            permission_level=2,
+            permission_level=1,
             args_model=SpotifySearchArgs,
             usage_examples=["spotify_search_artist(query='A.R. Rahman')"]
         )
@@ -199,7 +199,7 @@ class SpotifyPlayPlaylistTool(BaseTool):
             description="Launches and plays a specific public playlist query on Spotify.",
             category="spotify",
             tags=["spotify", "playlist", "play", "music"],
-            permission_level=2,
+            permission_level=1,
             args_model=SpotifyPlaylistArgs,
             usage_examples=["spotify_playlist(playlist_name='Chill Lofi Beats')"]
         )
@@ -228,7 +228,7 @@ class SpotifyPauseTool(BaseTool):
             description="Sends pause media keystroke commands to pause the active Spotify client.",
             category="spotify",
             tags=["spotify", "pause", "music", "hold"],
-            permission_level=2, # Level 2
+            permission_level=1, # Level 2
             args_model=EmptyArgs,
             usage_examples=["spotify_pause()"]
         )
@@ -250,7 +250,7 @@ class SpotifyResumeTool(BaseTool):
             description="Sends resume media keystroke commands to play the active Spotify client.",
             category="spotify",
             tags=["spotify", "resume", "music", "play"],
-            permission_level=2,
+            permission_level=1,
             args_model=EmptyArgs,
             usage_examples=["spotify_resume()"]
         )
@@ -272,7 +272,7 @@ class SpotifyNextTool(BaseTool):
             description="Sends next media keystroke commands to skip to the next track on Spotify.",
             category="spotify",
             tags=["spotify", "next", "music", "skip"],
-            permission_level=2,
+            permission_level=1,
             args_model=EmptyArgs,
             usage_examples=["spotify_next()"]
         )
@@ -294,7 +294,7 @@ class SpotifyPreviousTool(BaseTool):
             description="Sends previous media keystroke commands to skip to the previous track on Spotify.",
             category="spotify",
             tags=["spotify", "previous", "music", "back"],
-            permission_level=2,
+            permission_level=1,
             args_model=EmptyArgs,
             usage_examples=["spotify_prev()"]
         )
@@ -316,7 +316,7 @@ class SpotifyVolumeTool(BaseTool):
             description="Sets the Spotify client volume level natively.",
             category="spotify",
             tags=["spotify", "volume", "sound"],
-            permission_level=2,
+            permission_level=1,
             args_model=SpotifyVolumeArgs,
             usage_examples=["spotify_set_volume(level=75)"]
         )
