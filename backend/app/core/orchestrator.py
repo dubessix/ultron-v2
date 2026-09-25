@@ -220,13 +220,20 @@ class CognitiveOrchestrator:
         user_prompt: str,
         *,
         coding_turn: bool = False,
+        allow_defaults: bool = False,
     ) -> str:
-        """Compile schemas for at most eight prompt-relevant JIT tools."""
+        """Compile schemas for at most twelve prompt-relevant JIT tools.
+
+        allow_defaults=True (action-style turns only) guarantees the LLM is
+        never disarmed: if keyword scoring selects nothing, the bounded default
+        utility belt is attached and the model decides what to call.
+        """
         registry = ToolRegistry()
         tools = self.tool_context_builder.load_relevant_tools(
             user_prompt,
             registry,
             coding_turn=coding_turn,
+            allow_defaults=allow_defaults,
         )
         metadata = []
         for tool in tools:
@@ -604,7 +611,11 @@ class CognitiveOrchestrator:
             }
 
         from backend.app.security.path_guard import resolve_agent_tool_arguments
-        resolved = resolve_agent_tool_arguments(tool_id, arguments, project_root)
+        # Coding turns stay confined to the project; personal Jarvis turns may reach
+        # allowlisted personal folders (still fully path-guarded + confirmation-gated).
+        resolved = resolve_agent_tool_arguments(
+            tool_id, arguments, project_root, confine_to_project=coding_turn
+        )
         if not resolved["safe"]:
             return resolved["arguments"], {
                 "success": False,
@@ -911,6 +922,26 @@ class CognitiveOrchestrator:
             }
 
     @staticmethod
+    def _action_mandate_block() -> str:
+        """System-prompt clause that makes the model act like Jarvis, not a chatbot."""
+        return (
+            "\n\n[ACTION MANDATE]\n"
+            "You are a local assistant with REAL tools, supplied through provider-native "
+            "function calling. You decide which tool to use.\n"
+            "- If the user asks you to DO something (open, play, search, check, read, find, "
+            "create, move, delete, remind, schedule, measure), call the matching declared "
+            "tool. Do not describe what you would do, and do not tell the user to do it "
+            "themselves.\n"
+            "- For live facts (weather, news, prices, system status, current events, "
+            "anything after your training), call a tool instead of guessing.\n"
+            "- Never claim an action happened unless a tool result in this turn confirms "
+            "it. If a tool fails, say so honestly and offer the next step.\n"
+            "- Pure knowledge questions may be answered directly without tools.\n"
+            "- Use only declared tools, keep calls sequential, inspect existing files "
+            "before changes, and stop when confirmation or a failure is returned.\n"
+        )
+
+    @staticmethod
     def _voice_input_policy(alias_suggestions: Optional[List[Dict[str, str]]] = None) -> str:
         """Bounded instruction block for browser STT text; no raw audio is used."""
         hints = list(alias_suggestions or [])[:3]
@@ -919,9 +950,13 @@ class CognitiveOrchestrator:
             "\n\n[VOICE_INPUT_POLICY]\n"
             "This request came from browser speech-to-text and may contain transcription mistakes. "
             "Use conversation context only for clear, safe meaning. Do not invent file paths, dates, "
-            "times, names, commands, URLs, or destructive targets. If two meanings are plausible, ask "
-            "one short Jarvis-style clarification question and do not emit a tool call. For a clear safe "
-            "request, respond normally. Approved non-executing transcript hints: "
+            "times, names, commands, URLs, or destructive targets. Only when a DESTRUCTIVE or "
+            "irreversible request has two plausible meanings, ask one short Jarvis-style "
+            "clarification question and do not emit a tool call. For a clear safe request, act "
+            "immediately with the matching tool. Your reply will be SPOKEN aloud like Jarvis: answer in "
+            "one to three short natural sentences, lead with the result, no markdown, lists, tables, "
+            "emoji, code, URLs or full file paths (say 'the Projects folder'), round numbers sensibly. "
+            "Approved non-executing transcript hints: "
             f"{hint_text}\n"
         )
 
@@ -1223,27 +1258,27 @@ class CognitiveOrchestrator:
             except Exception as e:
                 print(f"[COGNITIVE_ORCHESTRATOR] Warning: skill loading skipped: {e}")
 
-        # Fast conversational turns need no tools. Other turns select at most
-        # eight prompt-relevant schemas, then pass them through provider-native
-        # function calling. The old sentinel parser remains only as a compatibility
-        # fallback for mocked/offline adapters and is not the primary protocol.
+        # Phase 0.B — Jarvis rule: the LLM is the decision-maker. Only pure social
+        # turns (greetings/thanks/small talk) go out without tools. Every other
+        # turn — including "fast" EXPLANATION turns — is armed with up to twelve
+        # prompt-relevant schemas via provider-native function calling; if the
+        # keyword hints find nothing, the default utility belt is attached so the
+        # model is never disarmed. Intent/track remain hints only.
         tool_definitions: list[dict] = []
-        if speed_track == "fast" and not coding_turn:
+        pure_conversation = intent == "CONVERSATION" and not coding_turn
+        if pure_conversation:
             system_prompt += (
-                "\n\nNote: this is a simple conversational turn. No tool execution is needed."
+                "\n\nThis turn is social small talk. Reply briefly and warmly in character."
             )
         else:
             tools_metadata_str = await asyncio.to_thread(
                 self._compile_tools_metadata,
                 user_prompt,
                 coding_turn=coding_turn,
+                allow_defaults=True,
             )
             tool_definitions = json.loads(tools_metadata_str)
-            system_prompt += (
-                "\n\nLocal tools are supplied through provider-native function calling. "
-                "Use only declared tools, keep calls sequential, inspect existing files "
-                "before changes, and stop when confirmation or a failure is returned."
-            )
+            system_prompt += self._action_mandate_block()
             if not project_root:
                 system_prompt += (
                     " The requested project ID has no allowlisted canonical root, so local "

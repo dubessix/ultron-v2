@@ -19,9 +19,11 @@ from backend.app.install_paths import CONFIG_PATH
 
 # Current defaults verified against provider documentation on 2026-08-23.
 # Groq shut down llama-3.1-8b-instant on 2026-08-16 and names
-# openai/gpt-oss-20b as its direct replacement.
+# openai/gpt-oss-20b as its direct replacement. Jarvis Phase 1 upgrades the
+# default to openai/gpt-oss-120b for markedly more reliable native tool choice
+# (still overridable via GROQ_CHAT_MODEL).
 _DEFAULTS = {
-    "groq": "openai/gpt-oss-20b",
+    "groq": "openai/gpt-oss-120b",
     "gemini": "gemini-3.5-flash",
     "nvidia": "nvidia/nemotron-3-ultra-550b-a55b",
     "embedding": "gemini-embedding-001",

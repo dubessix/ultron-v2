@@ -292,3 +292,94 @@ describe('Voice Option A — resilience and honest lifecycle', () => {
     expect(hook.result.current.isListening).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Real-browser behaviour: Chrome/Edge rarely spell "Ultron" right and a
+// browser without a speech service fails with endless network errors.
+// ---------------------------------------------------------------------------
+function emitAlternatives(recognizer, index, transcripts, isFinal = true) {
+  const alternatives = transcripts.map((transcript) => ({ transcript, confidence: 0.6 }));
+  alternatives.isFinal = isFinal;
+  act(() => {
+    recognizer.results[index] = alternatives;
+    recognizer.onresult?.({ resultIndex: index, results: recognizer.results });
+  });
+}
+
+describe('Listening fix — misheard wake words (real Chrome output)', () => {
+  it.each([
+    ['Hey Altron, open the calendar'],
+    ['ultran open the calendar'],
+    ['Ultra open the calendar'],
+    ['alton, open the calendar'],
+    ['all tron open the calendar'],
+    ['OK Ultron open the calendar'],
+  ])('wakes on "%s" and sends only the command', (heard) => {
+    const onCommand = vi.fn();
+    renderVoice(onCommand);
+    emit(latestRecognizer(), 0, heard);
+    advance(2000);
+    expect(onCommand).toHaveBeenCalledOnce();
+    expect(onCommand).toHaveBeenCalledWith('open the calendar');
+  });
+
+  it('checks every browser alternative, not only the first guess', () => {
+    const onCommand = vi.fn();
+    renderVoice(onCommand);
+    emitAlternatives(latestRecognizer(), 0, ['old run open the calendar', 'Ultron open the calendar']);
+    advance(2000);
+    expect(onCommand).toHaveBeenCalledWith('open the calendar');
+  });
+
+  it('never wakes on "ultra" in the middle of normal speech', () => {
+    const onCommand = vi.fn();
+    const hook = renderVoice(onCommand);
+    emit(latestRecognizer(), 0, 'I bought an ultra wide monitor');
+    advance(5000);
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(hook.result.current.wakeDetected).toBe(false);
+  });
+});
+
+describe('Listening fix — no endless "reconnecting" loop', () => {
+  it('stops with a clear browser message after repeated network errors', () => {
+    const hook = renderVoice();
+    const recognition = latestRecognizer();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      act(() => recognition.emitError('network'));
+      advance(5000);
+    }
+    expect(hook.result.current.isListening).toBe(false);
+    expect(hook.result.current.voiceError).toMatch(/Chrome or Microsoft Edge/);
+    const starts = recognition.startAttempts;
+    advance(20000);
+    expect(recognition.startAttempts).toBe(starts);
+  });
+
+  it('one network blip still recovers, and heard speech resets the counter', () => {
+    const onCommand = vi.fn();
+    const hook = renderVoice(onCommand);
+    const recognition = latestRecognizer();
+    act(() => recognition.emitError('network'));
+    advance(5000);
+    act(() => recognition.emitError('network'));
+    advance(5000);
+    emit(recognition, 0, 'Ultron open settings');
+    advance(2000);
+    expect(onCommand).toHaveBeenCalledWith('open settings');
+    act(() => recognition.emitError('network'));
+    advance(5000);
+    expect(hook.result.current.voiceError).not.toMatch(/Chrome or Microsoft Edge/);
+  });
+
+  it('explains https/localhost when opened on a plain-http network address', () => {
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: false });
+    try {
+      const hook = renderVoice();
+      expect(hook.result.current.voiceError).toMatch(/https or localhost/);
+      expect(FakeSpeechRecognition.instances.length).toBe(0);
+    } finally {
+      delete window.isSecureContext;
+    }
+  });
+});

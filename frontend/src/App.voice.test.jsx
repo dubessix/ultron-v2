@@ -289,3 +289,41 @@ describe('Voice C6 — canonical transport and response preservation', () => {
     expect(JSON.parse(chatCalls[0][1].body).content).toBe('first same-tick turn');
   });
 });
+
+describe('Listening fix — speech watchdog never leaves the mic paused forever', () => {
+  it('un-pauses listening when the speech audio never finishes', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await renderConnectedApp(async (url, options = {}) => {
+        if (String(url).endsWith('/api/health')) {
+          return jsonResponse({ status: 'healthy', system_metrics: {} });
+        }
+        if (String(url).endsWith('/api/chat')) {
+          return jsonResponse(voiceResponse('x', {
+            content: 'Calendar is open.',
+            pending_confirmation: null,
+            voice_clarification: null,
+            structured_action: null,
+          }));
+        }
+        if (String(url).endsWith('/api/speak')) {
+          // A stalled stream: never resolves unless aborted.
+          return new Promise((_resolve, reject) => {
+            options.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      });
+
+      await act(async () => {
+        await shellCapture.props.handleVoiceCommand('open calendar');
+      });
+      await waitFor(() => expect(shellCapture.props.voicePaused).toBe(true));
+
+      await act(async () => { vi.advanceTimersByTime(30000); });
+      await waitFor(() => expect(shellCapture.props.voicePaused).toBe(false));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

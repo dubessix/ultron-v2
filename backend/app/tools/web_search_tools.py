@@ -22,44 +22,103 @@ def _open_verified(url: str) -> None:
 
 # --- Tool Implementations ---
 
+class WebSearchArgs(BaseModel):
+    query: str = Field(..., description="Target search query keywords.")
+    open_in_browser: bool = Field(
+        False,
+        description="Also open the top result in the browser. Only when the owner asks to see/open it.",
+    )
+
+
 class GoogleSearchTool(BaseTool):
+    """Jarvis web search: returns real results to the brain so it can answer.
+
+    The old version only launched a browser, leaving the model blind. Now the
+    top results (title, url, snippet) come back as data; opening the browser is
+    optional and a browser failure never fails the search.
+    """
+
+    MAX_RESULTS = 5
+
     def __init__(self) -> None:
         super().__init__(
             tool_id="google_search",
-            name="Google Search Engine",
-            description="Launches a Google search query inside your default browser.",
+            name="Web Search",
+            description=(
+                "Searches the live web and returns the top results (title, url, snippet) "
+                "so you can answer with current facts. Set open_in_browser only when the "
+                "owner wants the page opened."
+            ),
             category="search",
-            tags=["search", "google", "web", "find"],
+            tags=["search", "google", "web", "find", "lookup", "latest", "internet"],
             permission_level=1, # Level 1: Automatically allowed (Requirement: Phase 5)
-            args_model=SearchArgs,
-            usage_examples=["google_search(query='Vite React 19 config')"]
+            args_model=WebSearchArgs,
+            usage_examples=[
+                "google_search(query='latest AI news')",
+                "google_search(query='Vite React 19 config', open_in_browser=True)",
+            ],
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        query = kwargs.get("query", "")
+        query = str(kwargs.get("query", "") or "").strip()
+        open_in_browser = bool(kwargs.get("open_in_browser", False))
         escaped = urllib.parse.quote_plus(query)
-        # Try to fetch real results and open the top ANSWER page (not a search page).
+        search_page = f"https://www.google.com/search?q={escaped}"
+
+        results: list = []
+        search_error = None
         try:
             from backend.app.tools._realsearch import real_web_search
-            results = await real_web_search(query, limit=1)
-            if results:
-                url = results[0]["url"]
-                _open_verified(url)
-                return {"success": True, "data": {
-                    "url": url,
-                    "title": results[0]["title"],
-                    "snippet": results[0]["snippet"],
-                    "message": "Opened the top search result in your browser."
-                }, "error": None}
-        except Exception:
-            pass
-        # Fallback: open the Google search page.
-        url = f"https://www.google.com/search?q={escaped}"
-        try:
-            _open_verified(url)
-            return {"success": True, "data": {"url": url, "message": "Google search page successfully launched."}, "error": None}
-        except Exception as e:
-            return {"success": False, "error": f"Failed to run Google search: {e}", "data": {}}
+            results = await real_web_search(query, limit=self.MAX_RESULTS) or []
+        except Exception as exc:  # network/provider failure is reported, not hidden
+            search_error = str(exc)
+
+        top_url = results[0]["url"] if results else search_page
+        browser_note = None
+        # With no results the only useful fallback is showing the search page.
+        if open_in_browser or not results:
+            try:
+                _open_verified(top_url)
+                browser_note = "Opened in your browser."
+            except Exception as exc:
+                browser_note = f"Browser could not be opened: {exc}"
+
+        if results:
+            data = {
+                "query": query,
+                "url": top_url,
+                "title": results[0].get("title", ""),
+                "snippet": results[0].get("snippet", ""),
+                "results": [
+                    {
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "snippet": item.get("snippet", ""),
+                    }
+                    for item in results[: self.MAX_RESULTS]
+                ],
+                "message": f"Found {len(results[: self.MAX_RESULTS])} live results.",
+            }
+            if browser_note:
+                data["browser"] = browser_note
+            return {"success": True, "data": data, "error": None}
+
+        if browser_note == "Opened in your browser.":
+            return {"success": True, "data": {
+                "query": query,
+                "url": search_page,
+                "results": [],
+                "message": "No results could be read directly; the Google search page was opened.",
+            }, "error": None}
+        return {
+            "success": False,
+            "data": {"query": query, "url": search_page, "results": []},
+            "error": (
+                "Live web search returned no readable results"
+                + (f" ({search_error})" if search_error else "")
+                + (f"; {browser_note}" if browser_note else "")
+            ),
+        }
 
 class GitHubSearchTool(BaseTool):
     def __init__(self) -> None:
@@ -153,28 +212,74 @@ class ImageSearchTool(BaseTool):
         except Exception as e:
             return {"success": False, "error": f"Failed to run Image search: {e}", "data": {}}
 
+class NewsArgs(BaseModel):
+    query: str = Field(
+        "top news today",
+        description="News topic, e.g. 'India', 'AI startups', 'cricket'. Omit for top headlines.",
+    )
+    open_in_browser: bool = Field(False, description="Also open Google News in the browser.")
+
+
 class NewsSearchTool(BaseTool):
+    """Returns real, current headlines to the brain (browser is optional)."""
+
+    MAX_RESULTS = 5
+
     def __init__(self) -> None:
         super().__init__(
             tool_id="news_search",
-            name="Google News Search",
-            description="Launches a real-time world event news query on Google News.",
+            name="Live News",
+            description=(
+                "Fetches current news headlines (title, url, snippet) for a topic so you can "
+                "read or summarise them. Omit query for today's top headlines."
+            ),
             category="search",
-            tags=["search", "news", "events", "latest", "world"],
+            tags=["search", "news", "events", "latest", "world", "headlines"],
             permission_level=1, # Level 1
-            args_model=SearchArgs,
-            usage_examples=["news_search(query='generative AI startup funding')"]
+            args_model=NewsArgs,
+            usage_examples=["news_search(query='generative AI startup funding')", "news_search()"],
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        query = kwargs.get("query", "")
+        query = str(kwargs.get("query") or "top news today").strip()
         escaped = urllib.parse.quote_plus(query)
         url = f"https://news.google.com/search?q={escaped}"
+        search_query = query if "news" in query.lower() else f"{query} latest news"
+
+        results: list = []
+        search_error = None
         try:
-            _open_verified(url)
-            return {"success": True, "data": {"url": url}, "error": None}
-        except Exception as e:
-            return {"success": False, "error": f"Failed to run News search: {e}", "data": {}}
+            from backend.app.tools._realsearch import real_web_search
+            results = await real_web_search(search_query, limit=self.MAX_RESULTS) or []
+        except Exception as exc:
+            search_error = str(exc)
+
+        browser_note = None
+        if kwargs.get("open_in_browser") or not results:
+            try:
+                _open_verified(url)
+                browser_note = "Opened Google News in your browser."
+            except Exception as exc:
+                browser_note = f"Browser could not be opened: {exc}"
+
+        headlines = [
+            {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("snippet", "")}
+            for r in results[: self.MAX_RESULTS]
+            if r.get("title")
+        ]
+        if headlines:
+            data = {"query": query, "url": url, "headlines": headlines,
+                    "message": f"Found {len(headlines)} current headlines."}
+            if browser_note:
+                data["browser"] = browser_note
+            return {"success": True, "data": data, "error": None}
+        if browser_note and browser_note.startswith("Opened"):
+            return {"success": True, "data": {"query": query, "url": url, "headlines": [],
+                    "message": "Headlines could not be read directly; Google News was opened."}, "error": None}
+        return {"success": False, "data": {"query": query, "url": url, "headlines": []},
+                "error": "No current headlines could be fetched"
+                + (f" ({search_error})" if search_error else "")
+                + (f"; {browser_note}" if browser_note else "")}
 
 class VideoSearchTool(BaseTool):
     def __init__(self) -> None:

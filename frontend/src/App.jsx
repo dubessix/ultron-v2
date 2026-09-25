@@ -388,10 +388,34 @@ export default function App() {
     return Boolean(current || fetchController);
   }, []);
 
+  // Watchdog: if a browser never fires "ended" (stalled MSE stream, blocked
+  // autoplay, sleeping tab), voice listening would stay paused forever with
+  // "Ultron is speaking". Force-finish after a generous, length-aware limit.
+  const speechWatchdogRef = useRef(null);
+  const speechExpectedMsRef = useRef(0);
+  useEffect(() => {
+    if (speechWatchdogRef.current) {
+      clearTimeout(speechWatchdogRef.current);
+      speechWatchdogRef.current = null;
+    }
+    if (!isSpeaking) return undefined;
+    const limit = Math.max(15000, speechExpectedMsRef.current || 0);
+    speechWatchdogRef.current = setTimeout(() => {
+      speechWatchdogRef.current = null;
+      stopSpeaking("watchdog_timeout");
+    }, limit);
+    return () => {
+      if (speechWatchdogRef.current) clearTimeout(speechWatchdogRef.current);
+      speechWatchdogRef.current = null;
+    };
+  }, [isSpeaking, stopSpeaking]);
+
   const speakResponse = useCallback(async (text, personality = "ultron") => {
     stopSpeaking("replaced");
     const requestId = speechRequestRef.current;
     if (!text || text.startsWith("[Offline]")) return { status: "skipped" };
+    // ~13 spoken characters per second, doubled, plus network/start-up slack.
+    speechExpectedMsRef.current = 10000 + Math.ceil(String(text).length / 13) * 2000;
 
     const fetchController = new AbortController();
     speechFetchControllerRef.current = fetchController;

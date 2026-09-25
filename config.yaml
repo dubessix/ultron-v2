@@ -23,7 +23,7 @@ ai:
   # NVIDIA_CHAT_MODEL / GEMINI_EMBEDDING_MODEL / GEMINI_EMBEDDING_DIMS).
   # Verified against provider documentation on 2026-08-23.
   models:
-    groq: "openai/gpt-oss-20b"
+    groq: "openai/gpt-oss-120b"
     gemini: "gemini-3.5-flash"
     nvidia: "nvidia/nemotron-3-ultra-550b-a55b"
     embedding: "gemini-embedding-001"
@@ -64,20 +64,27 @@ voice:
   wake_words:
     - "hey ultron"
     - "ultron"
+  # Jarvis voice: calm British butler, slightly slower and deeper.
   ultron:
-    voice_id: "en-US-GuyNeural"
-    rate: "+5%"
-    pitch: "+0Hz"
+    voice_id: "en-GB-RyanNeural"
+    rate: "-4%"
+    pitch: "-2Hz"
+  # Zora: warm expressive Indian-English voice.
   zora:
-    voice_id: "en-IN-NeerjaNeural"
-    rate: "-5%"
-    pitch: "+2Hz"
+    voice_id: "en-IN-NeerjaExpressiveNeural"
+    rate: "-2%"
+    pitch: "+1Hz"
 
 security:
   confirm_level_2: true
   confirm_level_3: true
-  # Secure default: tools may touch this project only. Add personal roots such as
-  # "~/Documents", "~/Downloads", or "D:/Projects" when you explicitly want them.
+  # JARVIS FULL ACCESS (owner request): Ultron may work in ANY folder on this PC
+  # (Desktop, Documents, Downloads, every drive) and auto-finds folders by name.
+  # Still always blocked: OS system folders (blocked_directories + built-ins)
+  # and secret files (.ssh, .env, keys, credentials).
+  # Delete / move / rename / overwrite / shell commands still show ONE Approve card.
+  # Set access_mode: allowlist to go back to only the folders listed below.
+  access_mode: full
   allowed_directories: ["."]
   empty_allowed_policy: "project_only"
   # Canonical project ID -> root used by the coding agent. Relative roots resolve
@@ -85,8 +92,10 @@ security:
   project_roots:
     personal: "."
   blocked_directories: ["/etc", "/var", "C:\\Windows", "C:\\System32"]
-  # Terminal commands are still exact-confirmation gated. This list is a second
-  # boundary: commands not listed here are rejected even if an LLM proposes them.
+  # JARVIS SHELL (owner request): any command may run after you approve it.
+  # Disk-wiping patterns (rm -rf /, format, fork bombs, shutdown...) stay blocked.
+  # Set terminal_policy: allowlist to allow only the commands listed below.
+  terminal_policy: any
   terminal_allowed_commands:
     - git
     - python

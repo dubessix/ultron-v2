@@ -46,8 +46,10 @@ class TestFinalVoiceReleaseContract(unittest.TestCase):
         testing = (ROOT / "docs" / "testing_strategy.md").read_text(encoding="utf-8")
         combined = "\n".join((readme, manual, testing))
 
-        self.assertIn("says `Ultron` or `Hey Ultron` once", readme)
-        self.assertIn("until pressing Stop Voice", readme)
+        # Real hook contract (useVoice tests): wake word before EVERY command,
+        # a follow-up without "Ultron" is ignored. The README must say so.
+        self.assertIn("Say the wake word before every command", readme)
+        self.assertIn("Click the Mic button again to stop listening", readme)
         self.assertIn("Voice conversation active", manual)
         self.assertIn("controlled `SpeechRecognition`", testing)
         self.assertIn("not acoustic or audible proof", testing)

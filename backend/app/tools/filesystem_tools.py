@@ -50,7 +50,7 @@ class FileWriteArgs(BaseModel):
 
 class FindFilesArgs(BaseModel):
     pattern: str = Field(..., description="Glob pattern or substring to search for (e.g. '*.pdf', 'resume').")
-    search_root: Optional[str] = Field(".", description="The relative or absolute folder path to start searching from.")
+    search_root: Optional[str] = Field(".", description="Folder to search in: full path, '~', 'Desktop', 'Documents', 'Downloads', a drive like 'D:/', or just a folder name (auto-found).")
 
 # --- Tool Implementations ---
 

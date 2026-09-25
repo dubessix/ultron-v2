@@ -144,6 +144,7 @@ class ToolRegistry:
             "file_read": ("backend.app.tools.filesystem_tools", "FileReadTool"),
             "file_write": ("backend.app.tools.filesystem_tools", "FileWriteTool"),
             "find_files": ("backend.app.tools.filesystem_tools", "FindFilesTool"),
+            "locate_path": ("backend.app.tools.locate_tool", "LocatePathTool"),
             "terminal_run": ("backend.app.tools.system_tools", "TerminalRunTool"),
             "open_calculator": ("backend.app.tools.system_tools", "CalculatorTool"),
             "open_chrome": ("backend.app.tools.system_tools", "ChromeLauncherTool"),
