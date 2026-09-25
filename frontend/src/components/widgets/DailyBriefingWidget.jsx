@@ -57,7 +57,7 @@ export default function DailyBriefingWidget() {
               <span className="text-white/40 block text-[7px]">LIVE WEATHER</span>
               <span className="font-bold text-[#7DD3FC]">
                 {briefing.weather?.available
-                  ? `${briefing.weather.temperature} (${briefing.weather.windspeed || 'wind not reported'})`
+                  ? `${briefing.weather.condition ? `${briefing.weather.condition[0].toUpperCase()}${briefing.weather.condition.slice(1)}, ` : ''}${briefing.weather.temperature}${briefing.weather.rain ? ' · rain later' : ''}`
                   : 'Unavailable — no estimate'}
               </span>
             </div>

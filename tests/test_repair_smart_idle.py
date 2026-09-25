@@ -117,8 +117,11 @@ class TestFrontendSmartIdleContract(unittest.TestCase):
         self.assertIn("ultron_daily_briefing_date", source)
         self.assertIn("briefingAttemptedRef", source)
         self.assertIn("executeTool('daily_briefing'", source)
-        self.assertIn("Daily briefing ready", source)
-        self.assertIn("speakResponse(text", source)
+        # Speaks the short natural version; waits for the first click when
+        # the browser blocks sound, instead of a "ready" popup over the chat.
+        self.assertIn("result.data?.speech || text", source)
+        self.assertIn("speakResponse(spoken", source)
+        self.assertIn("isPlaybackBlocked(outcome)", source)
 
     def test_hidden_tab_health_poll_is_throttled_and_return_refreshes(self):
         source = (ROOT / "frontend" / "src" / "App.jsx").read_text(encoding="utf-8")

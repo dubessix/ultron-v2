@@ -6,6 +6,7 @@ import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
 import { api, apiBase, executeTool, websocketBase } from './api';
 import { connectEvents, planForEvent, planForReturn } from './reminderAlerts';
+import { isPlaybackBlocked, playbackProblem } from './speechPlayback';
 
 /**
  * Ultron Web Client Root App
@@ -246,12 +247,30 @@ export default function App() {
           personality: activePersonality,
           response_ms: 0,
         }]);
-        addNotification('Daily briefing ready', 'Jarvis briefing loaded from current local and live sources.', 'low');
-        setAiState('speaking');
-        setActivityText("Daily briefing ready — speaking…");
-        await speakResponse(text, activePersonality);
-        setAiState('idle');
-        setActivityText("Ready — ask Ultron anything.");
+        // Speak the short natural version; the chat shows the full text.
+        const spoken = result.data?.speech || text;
+        const speakBriefing = async () => {
+          setAiState('speaking');
+          setActivityText("Daily briefing — speaking…");
+          const outcome = await speakResponse(spoken, activePersonality, { quietBlocked: true });
+          setAiState('idle');
+          setActivityText("Ready — ask Ultron anything.");
+          return outcome;
+        };
+        const outcome = await speakBriefing();
+        if (isPlaybackBlocked(outcome)) {
+          // Browsers block sound until the owner touches the page once. Wait
+          // for that first click/key and then speak — the briefing is not lost.
+          addNotification('Your briefing is ready', 'Click anywhere or press any key and I will read it.', 'low');
+          setActivityText("Briefing ready — click anywhere to hear it.");
+          const replay = () => {
+            window.removeEventListener('pointerdown', replay, true);
+            window.removeEventListener('keydown', replay, true);
+            speakBriefing();
+          };
+          window.addEventListener('pointerdown', replay, true);
+          window.addEventListener('keydown', replay, true);
+        }
       } catch (error) {
         setActivityText(`Daily briefing unavailable: ${error.message || 'no sourced data'}`);
         addNotification('Daily briefing unavailable', error.message || 'No values were substituted.', 'medium');
@@ -478,7 +497,7 @@ export default function App() {
     };
   }, [isSpeaking, stopSpeaking]);
 
-  const speakResponse = useCallback(async (text, personality = "ultron") => {
+  const speakResponse = useCallback(async (text, personality = "ultron", options = {}) => {
     stopSpeaking("replaced");
     const requestId = speechRequestRef.current;
     if (!text || text.startsWith("[Offline]")) return { status: "skipped" };
@@ -550,8 +569,10 @@ export default function App() {
             try {
               const playResult = audio.play();
               Promise.resolve(playResult).catch((error) => {
-                addNotification('Voice unavailable', error?.message || 'TTS playback was blocked.', 'medium');
-                controller.finish("error", error?.message || "playback_blocked");
+                if (!(options.quietBlocked && isPlaybackBlocked({ error: error?.name || error?.message }))) {
+                  addNotification(...playbackProblem(error));
+                }
+                controller.finish("error", error?.name === 'NotAllowedError' ? 'playback_blocked' : (error?.message || "playback_blocked"));
               });
             } catch (error) {
               controller.finish("error", error?.message || "playback_failed");
@@ -627,8 +648,10 @@ export default function App() {
         try {
           const playResult = audio.play();
           Promise.resolve(playResult).catch((error) => {
-            addNotification('Voice unavailable', error?.message || 'TTS playback was blocked.', 'medium');
-            controller.finish("error", error?.message || "playback_blocked");
+            if (!(options.quietBlocked && isPlaybackBlocked({ error: error?.name || error?.message }))) {
+                  addNotification(...playbackProblem(error));
+                }
+            controller.finish("error", error?.name === 'NotAllowedError' ? 'playback_blocked' : (error?.message || "playback_blocked"));
           });
         } catch (error) {
           controller.finish("error", error?.message || "playback_failed");

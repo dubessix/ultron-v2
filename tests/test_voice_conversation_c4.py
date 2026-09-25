@@ -45,7 +45,7 @@ class TestRealPlaybackLifecycleContract(unittest.TestCase):
         self.assertIn('audio.onended = () => controller.finish("ended")', app)
         self.assertIn("audio.onerror = () =>", app)
         self.assertIn("URL.revokeObjectURL(url)", app)
-        self.assertIn("await speakResponse(text, activePersonality)", app)
+        self.assertIn("await speakResponse(spoken, activePersonality", app)
         self.assertNotIn("audio.play().catch(() => {})", app)
         self.assertNotIn("}, 1200);", app)
 
