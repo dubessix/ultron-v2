@@ -22,7 +22,9 @@ class FullAccessCase(unittest.TestCase):
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.home = Path(self._tmp.name) / "owner"
+        # resolve(): Windows temp dirs use 8.3 short names (RUNNER~1) while
+        # the guard returns the real long path (runneradmin).
+        self.home = Path(self._tmp.name).resolve() / "owner"
         for rel in (
             "Desktop/old_screens",
             "Documents/College/Projects/Ultron-App",
@@ -76,7 +78,11 @@ class TestAnyFolder(FullAccessCase):
         self.assertEqual(r["arguments"]["cwd"], str(self.home / "Documents/College/Projects/Ultron-App"))
 
     def test_system_and_secret_paths_still_blocked(self):
-        for bad in ("/etc", "/usr/bin", "~/.ssh", "~/.env"):
+        system = (
+            (r"C:\Windows", r"c:\windows\system32", r"C:\Program Files")
+            if os.name == "nt" else ("/etc", "/usr/bin")
+        )
+        for bad in (*system, "~/.ssh", "~/.env"):
             with self.subTest(path=bad):
                 self.assertFalse(self.resolve("delete_folder", {"folderpath": bad})["safe"])
 

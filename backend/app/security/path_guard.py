@@ -54,6 +54,12 @@ def _inside(target: Path, root: Path) -> bool:
 def get_blocked_paths() -> list[str]:
     configured = _load_security_config().get("blocked_directories", []) or []
     values = list(configured) + _DEFAULT_BLOCKED_ROOTS
+    if os.name == "nt":
+        # Windows may live on any drive (D:\Windows): read the real locations.
+        for name in ("SystemRoot", "windir", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"):
+            value = os.environ.get(name)
+            if value:
+                values.append(value)
     resolved = []
     for value in values:
         if not value:
