@@ -256,6 +256,12 @@ export default function App() {
     runFirstOpenBriefing();
   }, [backendStatus]);
 
+  // The backend decides who answered ("Hey Zora", "back to work", stress
+  // handoff). Mirror it so the screen, theme and next toggle stay truthful.
+  const followPersonality = useCallback((personality) => {
+    if (personality === 'ultron' || personality === 'zora') setActivePersonality(personality);
+  }, []);
+
   // Persist UI personality selection; never claim a switch that the backend rejected.
   const togglePersonality = async () => {
     if (personalitySaving) return;
@@ -680,6 +686,7 @@ export default function App() {
           sessionIdRef.current = data.session_id;
           setSessionId(data.session_id);
         }
+        followPersonality(data.personality);
         setMessages(prev => [...prev, {
           id: data.id,
           sender: "ai",
@@ -899,6 +906,7 @@ export default function App() {
       if (data) {
         // Reconcile session with the backend's resolved session id (if any).
         if (data.session_id) setSessionId(data.session_id);
+        followPersonality(data.personality);
 
         setMessages(prev => [...prev, {
           id: data.id || ("ai_" + Date.now()),

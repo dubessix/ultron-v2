@@ -22,6 +22,28 @@ const HEARD_AS_WAKE = [
   'hi ultron', 'hi ultra', 'ok ultron', 'okay ultron', 'ok ultra', 'okay ultra',
   'altron', 'ultran', 'ultrons', "ultron's", 'all tron', 'ul tron', 'oltron', 'alltron', 'ultraan',
 ];
+// Zora answers to her own name ("Hey Zora", "Zora, ..."). Chrome often hears
+// "Zorah", "Zohra" or "Jora". Bare "sora"/"zara" are real words, so those only
+// count after "hey"/"hi"/"ok".
+const ZORA_WAKE = [
+  'hey zora', 'hi zora', 'ok zora', 'okay zora', 'hello zora',
+  'hey zorah', 'hey zohra', 'hey jora', 'hey sora', 'hey zara', 'hi sora', 'ok sora',
+  'zora', 'zorah', 'zohra',
+];
+
+export function wakeNameOf(phrase) {
+  const value = String(phrase || '').toLowerCase();
+  if (!value) return null;
+  if (/(zora|zorah|zohra|jora|sora|zara)/.test(value)) return 'zora';
+  if (/(ultron|altron|ultran|ultra|alton|all tron|ul tron|oltron|alltron|ultraan)/.test(value)) return 'ultron';
+  return null;
+}
+
+function addressFor(name, activePersonality) {
+  if (!name || name === (activePersonality || 'ultron')) return '';
+  return name === 'zora' ? 'Zora' : 'Ultron';
+}
+
 // Bare "ultra"/"alton" only wake when they are the FIRST word Chrome heard
 // (so "an ultra wide monitor" never triggers).
 const LEADING_ONLY_WAKE = ['ultra', 'alton', 'alton,', 'ultra,'];
@@ -54,7 +76,7 @@ function cleanText(value) {
 function matchesWakeWord(transcript) {
   const original = String(transcript || '');
   const lower = original.toLowerCase();
-  for (const phrase of [...WAKE_WORDS, ...HEARD_AS_WAKE]) {
+  for (const phrase of [...ZORA_WAKE, ...WAKE_WORDS, ...HEARD_AS_WAKE]) {
     let fromIndex = 0;
     while (fromIndex < lower.length) {
       const index = lower.indexOf(phrase, fromIndex);
@@ -121,7 +143,7 @@ function silenceDelay(command) {
   return SILENCE_BASE_MS;
 }
 
-export default function useVoice({ onCommand, enabled, paused = false }) {
+export default function useVoice({ onCommand, enabled, paused = false, activePersonality = 'ultron' }) {
   const [isListening, setIsListening] = useState(false);
   const [wakeDetected, setWakeDetected] = useState(false);
   // In Option A this means a wake/command turn is currently open. It is reset
@@ -136,6 +158,7 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
   const enabledRef = useRef(enabled);
   const pausedRef = useRef(paused);
   const onCommandRef = useRef(onCommand);
+  const activePersonalityRef = useRef(activePersonality);
   const fatalRef = useRef(false);
   const sessionIdRef = useRef(0);
 
@@ -164,6 +187,7 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
   enabledRef.current = enabled;
   pausedRef.current = paused;
   onCommandRef.current = onCommand;
+  activePersonalityRef.current = activePersonality;
 
   const clearTimer = useCallback((ref) => {
     if (ref.current) {
@@ -287,11 +311,15 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
 
   const dispatch = useCallback((rawCommand) => {
     if (dispatchingRef.current) return false;
-    const command = cleanText(rawCommand);
+    let command = cleanText(rawCommand);
     if (!command) {
       resetTurn(false);
       return false;
     }
+    // Calling the OTHER personality by name hands the command to her/him:
+    // "Hey Zora, I'm tired" while Ultron is active -> "Zora, I'm tired".
+    const address = addressFor(wakeNameOf(captureWakePhraseRef.current), activePersonalityRef.current);
+    if (address) command = `${address}, ${command}`;
 
     dispatchingRef.current = true;
     resetTurn(false, true);
@@ -321,7 +349,18 @@ export default function useVoice({ onCommand, enabled, paused = false }) {
   const armWakeWait = useCallback(() => {
     clearTimer(wakeTimerRef);
     wakeTimerRef.current = setTimeout(() => {
-      if (capturingRef.current && !commandTextRef.current.trim()) resetTurn(false);
+      if (capturingRef.current && !commandTextRef.current.trim()) {
+        // Just "Hey Zora" (nothing after it): still switch, and she greets him.
+        const address = addressFor(wakeNameOf(captureWakePhraseRef.current), activePersonalityRef.current);
+        if (address && !dispatchingRef.current) {
+          dispatchingRef.current = true;
+          resetTurn(false, true);
+          setHeardText(`Hey ${address}`);
+          onCommandRef.current?.(`Hey ${address}`);
+          return;
+        }
+        resetTurn(false);
+      }
     }, WAKE_WAIT_MS);
   }, [clearTimer, resetTurn]);
 

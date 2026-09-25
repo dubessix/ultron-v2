@@ -41,12 +41,32 @@ class PersonalityEngine:
             "zora": ZoraPersonality()
         }
 
-        # Regular expressions for manual triggers
-        self._to_zora_triggers = [
-            re.compile(r"\b(switch to zora|i need zora|zora come here|where is zora)\b", re.IGNORECASE)
+        # Manual triggers. Rule: CALLING a name switches ("Hey Zora", "Zora, ...",
+        # "switch to Zora"); merely MENTIONING it ("what can zora do?") does not.
+        # Heard-as spellings from browser speech-to-text are included.
+        zora = r"(?:zora|zorah|zohra|jora)"
+        ultron = r"(?:ultron|altron|ultran|ultra)"
+        self._to_zora_triggers = self._name_triggers(zora) + [
+            re.compile(r"\b(where is zora|zora come here|i need zora)\b", re.IGNORECASE),
         ]
-        self._to_ultron_triggers = [
-            re.compile(r"\b(switch to ultron|back to work|ultron|let's get back to it)\b", re.IGNORECASE)
+        self._to_ultron_triggers = self._name_triggers(ultron) + [
+            re.compile(r"\b(back to work|let'?s get back to it|work mode)\b", re.IGNORECASE),
+        ]
+
+    @staticmethod
+    def _name_triggers(name: str) -> list:
+        call = r"(?:hey|hi|hello|ok|okay|oi|yo|arre|are|o)"
+        verbs = r"(?:switch|change|swap|go|come|bring|call|get|give|put)"
+        return [
+            # Addressed at the start: "Zora, ...", "Hey Zora ...", "ok zora".
+            re.compile(rf"^\s*(?:{call}[\s,]+)?{name}\b(?:\s*[,.!?:-]|\s|$)", re.IGNORECASE),
+            # "switch to zora", "bring zora back", "switch me back to zora", "go back to ultron"
+            re.compile(rf"\b{verbs}\b(?:\s+(?:me|us|it|back|over|now))*\s+(?:to\s+|with\s+)?{name}\b", re.IGNORECASE),
+            re.compile(rf"\b(?:talk|speak|chat)\s+(?:to|with)\s+{name}\b", re.IGNORECASE),
+            re.compile(rf"\b(?:i\s+)?(?:want|need)\s+{name}\b", re.IGNORECASE),
+            # "zora mode", "zora please", Hinglish/Bengali "zora aao", "zora kahan ho", "zora kothay"
+            re.compile(rf"\b{name}\s+(?:mode|please|come|aao|aaja|kahan|kaha|kothay|bolo)\b", re.IGNORECASE),
+            re.compile(rf"\bback\s+to\s+{name}\b", re.IGNORECASE),
         ]
 
     @staticmethod
@@ -89,6 +109,11 @@ class PersonalityEngine:
         If turns exceed self.cooldown_turns, automatically transitions state back to Ultron (Auto Return).
         """
         if self.state.active_personality != "zora":
+            return None
+        # The owner chose Zora himself (button, voice, "switch to Zora", or a
+        # restored session): she stays until he switches back. Only a stress-
+        # triggered automatic handoff returns to Ultron by itself.
+        if self.state.switch_type != "automatic":
             return None
 
         self._zora_active_turns += 1

@@ -83,6 +83,7 @@ export default function AppShell({
   const voice = useVoice({
     enabled: voiceEnabled,
     paused: Boolean(voicePaused),
+    activePersonality,
     onCommand: (cmd) => {
       if (handleVoiceCommand) handleVoiceCommand(cmd);
     }
