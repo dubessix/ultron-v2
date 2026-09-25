@@ -27,6 +27,7 @@ from backend.app.personalities.personality_engine import PersonalityEngine
 from backend.app.emotion.zora_trigger import ZoraTrigger
 from backend.app.tools.context_builder import ToolContextBuilder
 from backend.app.tools.tool_registry import ToolRegistry
+from backend.app.core import widgets as widget_choice
 
 # Shared module-level coding-mode flag. New CognitiveOrchestrator instances read
 # this as their default, so a manual toggle in one request persists across all
@@ -1114,44 +1115,7 @@ class CognitiveOrchestrator:
         CONSTITUTIONAL DESIGN (Rule 8):
         Provides standard keyword matching fallback in case no tool calling is resolved by the LLM.
         """
-        clean = user_prompt.lower()
-        
-        if "todo" in clean or "task" in clean:
-            return {"action": "open_widget", "widget_id": "todo"}
-        if "reminder" in clean or "alarm" in clean or "timer" in clean or "remind" in clean:
-            return {"action": "open_widget", "widget_id": "reminder"}
-        if "schedule" in clean or "calendar" in clean or "plan" in clean:
-            return {"action": "open_widget", "widget_id": "calendar"}
-        if "git" in clean or "branch" in clean:
-            return {"action": "open_widget", "widget_id": "git"}
-        if "drive" in clean or "downloads" in clean or "explorer" in clean or "folder" in clean or "find" in clean:
-            return {"action": "open_widget", "widget_id": "file_explorer"}
-        if "research" in clean:
-            return {"action": "open_widget", "widget_id": "deep_research"}
-        if "search" in clean:
-            return {"action": "open_widget", "widget_id": "universal_search"}
-        if "weather" in clean:
-            return {"action": "open_widget", "widget_id": "weather"}
-        if "stock" in clean or "bitcoin" in clean or "price" in clean or "market" in clean or "tesla" in clean:
-            return {"action": "open_widget", "widget_id": "market"}
-        if "terminal" in clean or "run" in clean or "process" in clean:
-            return {"action": "open_widget", "widget_id": "terminal"}
-        if "memory" in clean or "remember" in clean:
-            return {"action": "open_widget", "widget_id": "memory"}
-        if "notification" in clean or "alert" in clean:
-            return {"action": "open_widget", "widget_id": "notification"}
-        if "system" in clean or "cpu" in clean or "ram" in clean or "hardware" in clean:
-            return {"action": "open_widget", "widget_id": "system"}
-        if "optimize" in clean or "refactor" in clean or "quality" in clean:
-            return {"action": "open_widget", "widget_id": "code_optimizer"}
-        if "graph" in clean or "dependency" in clean or "caller" in clean or "semantic" in clean:
-            return {"action": "open_widget", "widget_id": "semantic_code_graph"}
-        if "security" in clean or "scan" in clean or "audit" in clean or "vulnerability" in clean:
-            return {"action": "open_widget", "widget_id": "security_guardian"}
-        if "morning" in clean or "briefing" in clean or "greeting" in clean:
-            return {"action": "open_widget", "widget_id": "daily_briefing"}
-            
-        return {"action": "none"}
+        return widget_choice.explicit_request(user_prompt)
 
     async def process_request(
         self,
@@ -1713,35 +1677,14 @@ class CognitiveOrchestrator:
                 except Exception as e:
                     print(f"[COGNITIVE_ORCHESTRATOR] Warning: Tool-result synthesis failed: {e}")
 
-        # Step 12: DYNAMIC WIDGET ROUTING based on actual called tools
-        widget_mappings = {
-            "find_files": "file_explorer",
-            "create_folder": "file_explorer",
-            "rename_folder": "file_explorer",
-            "delete_folder": "file_explorer",
-            "copy_folder": "file_explorer",
-            "move_folder": "file_explorer",
-            "list_contents": "file_explorer",
-            "compress_folder": "file_explorer",
-            "extract_zip": "file_explorer",
-            "organize_folder": "file_explorer",
-            "manage_task": "todo",
-            "manage_calendar": "calendar",
-            "manage_reminder": "reminder",
-            "security_scan": "security_guardian",
-            "daily_briefing": "daily_briefing",
-            "optimize_code": "code_optimizer",
-            "semantic_code_graph": "semantic_code_graph",
-            "git_status": "git",
-            "system_metrics": "system",
-            "weather_tool": "weather",
-            "github_integration": "git"
-        }
-        
-        for t_id in called_tool_ids:
-            if t_id in widget_mappings:
-                structured_action = {"action": "open_widget", "widget_id": widget_mappings[t_id]}
-                break
+        # Step 12: WIDGET ROUTING (V2 Step 4) - the AI's show_widget choice, else
+        # the panel of the tool that actually ran. When tools ran, the no-tool
+        # keyword fallback is dropped: the AI already decided what to do.
+        chosen_widget = widget_choice.from_tool_results(tool_results) or widget_choice.from_tool_ids(called_tool_ids)
+        if chosen_widget:
+            structured_action = chosen_widget
+        elif called_tool_ids:
+            structured_action = {"action": "none"}
 
         # Sync transaction back to short term memory (session-scoped)
         self.memory.save_chat_turn(session_id, user_prompt, ai_response)

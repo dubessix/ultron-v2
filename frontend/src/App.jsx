@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { applyWidgetAction } from './widgetActions';
 import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
 import { api, apiBase, executeTool, websocketBase } from './api';
@@ -712,12 +713,8 @@ export default function App() {
           }
         });
         const structured = data.structured_action;
-        if (structured && structured.action === "open_widget") {
-          const targetWidgetId = structured.widget_id;
-          setWidgetState(prev => ({
-            ...prev,
-            [targetWidgetId]: { ...prev[targetWidgetId], visible: true }
-          }));
+        if (structured && structured.action && structured.action !== "none") {
+          setWidgetState(prev => applyWidgetAction(prev, structured));
         }
         handleCodingResponse(data);
         if (data.events?.length) {
@@ -926,12 +923,10 @@ export default function App() {
           addNotification('Confirmation required', data.pending_confirmation.message, 'high');
         }
         // Open widgets driven ONLY by the backend structured action (never keyword guesses).
+        // (open_widget / close_widget / close_all_widgets, refresh reloads an open panel).
         const structured = data.structured_action;
-        if (structured && structured.action === "open_widget" && structured.widget_id) {
-          setWidgetState(prev => ({
-            ...prev,
-            [structured.widget_id]: { ...prev[structured.widget_id], visible: true }
-          }));
+        if (structured && structured.action && structured.action !== "none") {
+          setWidgetState(prev => applyWidgetAction(prev, structured));
         }
         // Log tab: collect real-time tool/activity events
         if (data.events && data.events.length) {

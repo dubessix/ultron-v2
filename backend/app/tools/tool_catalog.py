@@ -52,6 +52,7 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("terminal_run", "command, ?cwd: run a shell command (open apps, files, anything the OS can do)"),
             ("system_metrics", "(none): CPU, RAM, disk, battery, uptime"),
+            ("show_widget", "widget_id, ?action=open|close|close_all, ?refresh: screen panel (todo, calendar, reminder, file_explorer, system, weather, music, terminal, memory, notification, daily_briefing, universal_search, deep_research, world_monitor, market, git, coding, security_guardian)"),
             ("set_volume", "?level 0-100: system volume"),
             ("open_calculator", "(none): open the calculator"),
             ("open_chrome", "(none): open the browser"),

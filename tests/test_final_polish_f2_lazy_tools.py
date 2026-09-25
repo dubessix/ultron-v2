@@ -121,10 +121,11 @@ class TestLazyRegistryPreservation(unittest.TestCase):
             registry = ToolRegistry()
             ids = registry.get_registered_ids()
 
-        self.assertEqual(len(ids), 70)
+        self.assertEqual(len(ids), 71)  # +show_widget (V2 Step 4)
         self.assertEqual(len(ids), len(set(ids)))
         self.assertIn("database_restore", ids)
         self.assertIn("spotify_current_track", ids)
+        self.assertIn("show_widget", ids)
         module_import.assert_not_called()
 
     def test_every_registered_tool_remains_selectable_by_explicit_name(self):

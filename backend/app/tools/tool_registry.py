@@ -209,6 +209,7 @@ class ToolRegistry:
             "optimize_code": ("backend.app.tools.code_optimizer_tool", "CodeOptimizerTool"),
             "semantic_code_graph": ("backend.app.tools.semantic_graph_tool", "SemanticGraphTool"),
             "manage_reminder": ("backend.app.tools.reminder_tool", "ReminderTool"),
+            "show_widget": ("backend.app.tools.widget_tool", "ShowWidgetTool"),
             "manage_task": ("backend.app.tools.task_tool", "TaskTool"),
             "manage_calendar": ("backend.app.tools.calendar_tool", "CalendarTool"),
             "security_scan": ("backend.app.tools.security_guardian_tool", "SecurityGuardianTool"),

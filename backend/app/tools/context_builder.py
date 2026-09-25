@@ -122,6 +122,7 @@ class ToolContextBuilder:
         "optimize_code": ("optimize code", "optimise code", "refactor code", "code quality"),
         "semantic_code_graph": ("semantic graph", "code graph", "callers", "dependencies", "ast graph"),
         "manage_reminder": ("reminder", "alarm", "remind me", "snooze reminder"),
+        "show_widget": ("widget", "panel", "on screen", "on my screen", "close all", "clear the screen", "show my", "pull up", "bring up"),
         "manage_task": ("task", "todo", "backlog", "subtask", "task priority"),
         "manage_calendar": ("calendar", "meeting", "time slot", "day planner", "schedule event"),
         "security_scan": ("security scan", "secret scan", "dependency audit", "vulnerability scan"),
