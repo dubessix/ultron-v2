@@ -105,7 +105,9 @@ class TestPromptScopedLazyToolMetadata(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response["speed_track"], "medium")
         metadata = capture.await_args.args[2]
-        self.assertEqual([item["tool_id"] for item in metadata], ["git_status"])
+        # Jarvis Core: the prompt-relevant schema plus the universal use_tool
+        # (whose menu is static text) - and still only git_tool was imported.
+        self.assertEqual([item["tool_id"] for item in metadata], ["git_status", "use_tool"])
         self.assertNotIn("AVAILABLE_TOOLS_METADATA", capture.await_args.args[0])
 
 

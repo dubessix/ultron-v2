@@ -37,6 +37,15 @@ _SENSITIVE_ARGUMENT_MARKERS = (
 )
 
 
+def _validation_hint(error: ValidationError, limit: int = 4) -> str:
+    """Short 'field: problem' list so the model can repair its own tool call."""
+    parts = []
+    for item in error.errors()[:limit]:
+        field = ".".join(str(piece) for piece in item.get("loc", ())) or "arguments"
+        parts.append(f"{field}: {str(item.get('msg', 'invalid'))[:80]}")
+    return "Problems: " + "; ".join(parts) if parts else ""
+
+
 def _redact_audit_arguments(value: Any, key: str = "") -> Any:
     """Bound audit size and replace secret/file-content values with metadata."""
     lowered = key.lower()
@@ -291,7 +300,7 @@ class ToolRegistry:
             err_payload = {
                 "success": False,
                 "data": {},
-                "error": "Input validation schema match failed.",
+                "error": "Input validation schema match failed. " + _validation_hint(val_err),
                 "metadata": {"execution_time_ms": 0, "tool_name": tool.name}
             }
             # Log failure to audit table

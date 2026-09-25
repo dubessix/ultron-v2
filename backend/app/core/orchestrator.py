@@ -59,6 +59,9 @@ class CognitiveOrchestrator:
         # False = Auto (CODING intents use NVIDIA); True = force NVIDIA for all turns.
         self.coding_mode: bool = _SHARED_CODING_MODE
         self.max_coding_steps: int = 8  # bound multi-file tasks to prevent runaway loops
+        # Everyday Jarvis jobs (find -> organize -> zip -> report) need more room
+        # than one tool; still bounded so a confused model cannot loop forever.
+        self.max_agent_steps: int = 15
         
         # Local event tracking array
         self.dispatched_events: List[Dict[str, Any]] = []
@@ -222,30 +225,30 @@ class CognitiveOrchestrator:
         coding_turn: bool = False,
         allow_defaults: bool = False,
     ) -> str:
-        """Compile schemas for at most twelve prompt-relevant JIT tools.
+        """Compile native tool schemas for this turn.
 
-        allow_defaults=True (action-style turns only) guarantees the LLM is
-        never disarmed: if keyword scoring selects nothing, the bounded default
-        utility belt is attached and the model decides what to call.
+        allow_defaults=True on a non-coding turn = Jarvis Core: at most
+        JARVIS_NATIVE_LIMIT keyword-relevant schemas plus the universal
+        use_tool; the static TOOL MENU (system prompt) exposes every other
+        tool. Coding turns keep the bounded project tool slice (max twelve).
         """
         registry = ToolRegistry()
+        jarvis_core = allow_defaults and not coding_turn
         tools = self.tool_context_builder.load_relevant_tools(
             user_prompt,
             registry,
             coding_turn=coding_turn,
-            allow_defaults=allow_defaults,
+            # Jarvis Core: keyword hits only pre-load a few full schemas; every
+            # other tool stays reachable through the menu + use_tool, so no
+            # random default belt is needed.
+            limit=self.JARVIS_NATIVE_LIMIT if jarvis_core else ToolContextBuilder.MAX_RELEVANT_TOOLS,
+            allow_defaults=allow_defaults and not jarvis_core,
         )
-        metadata = []
-        for tool in tools:
-            item = tool.get_metadata()
-            metadata.append(
-                {
-                    "tool_id": item["id"],
-                    "description": item["description"],
-                    "permission_level": item["permission_level"],
-                    "input_schema": item["input_schema"],
-                }
-            )
+        metadata = [self._tool_metadata_item(tool) for tool in tools]
+        if jarvis_core:
+            from backend.app.tools.tool_catalog import use_tool_metadata
+
+            metadata.append(use_tool_metadata(registry.get_registered_ids()))
         return json.dumps(metadata, separators=(",", ":"), ensure_ascii=True)
 
     def _scan_project_context(self, project_root: str, max_depth: int = 3) -> str:
@@ -584,6 +587,76 @@ class CognitiveOrchestrator:
             )
         return item
 
+    # ------------------------------------------------------------------
+    # Jarvis Core: universal use_tool meta-call
+    # ------------------------------------------------------------------
+    _MAX_NATIVE_TOOLS: int = 10
+
+    @staticmethod
+    def _tool_metadata_item(tool: Any) -> dict:
+        item = tool.get_metadata()
+        return {
+            "tool_id": item["id"],
+            "description": item["description"],
+            "permission_level": item["permission_level"],
+            "input_schema": item["input_schema"],
+        }
+
+    @staticmethod
+    def _unwrap_meta_call(call: dict, registry: ToolRegistry) -> tuple[dict, Optional[str]]:
+        """use_tool(tool, arguments_json) -> the real call, or (call, error text).
+
+        The unwrapped call keeps the provider call id and remembers the wire
+        name, so confirmation resume can answer the provider correctly.
+        """
+        from backend.app.tools.tool_catalog import USE_TOOL_ID, parse_use_tool_call
+
+        if str(call.get("name") or "") != USE_TOOL_ID:
+            return call, None
+        if call.get("arguments_error"):
+            return call, f"Invalid use_tool arguments: {call.get('arguments_error')}"
+        real_id, real_args, error = parse_use_tool_call(call.get("arguments") or {})
+        if error:
+            return {**call, "name": real_id or USE_TOOL_ID}, error
+        registered = registry.get_registered_ids()
+        if real_id not in registered:
+            import difflib
+
+            close = difflib.get_close_matches(real_id, registered, n=3, cutoff=0.5)
+            hint = f" Did you mean: {', '.join(close)}?" if close else " Pick an id from the TOOL MENU."
+            return {**call, "name": real_id}, f"Unknown tool '{real_id}'.{hint}"
+        return {
+            "id": call.get("id"),
+            "name": real_id,
+            "arguments": real_args,
+            "wire_name": USE_TOOL_ID,
+        }, None
+
+    def _repair_hint_for_meta_call(self, tool_id: str, result: dict, registry: ToolRegistry) -> dict:
+        """On a bad-argument failure, show the model the tool's real schema once."""
+        error = str(result.get("error") or "")
+        if result.get("success") or "validation" not in error.lower():
+            return result
+        tool = registry.get_tool(tool_id)
+        if tool is None:
+            return result
+        from backend.app.brain.llm_router import LLMRouter
+
+        schema = LLMRouter._clean_native_schema(tool.get_metadata()["input_schema"])
+        compact = json.dumps(schema, separators=(",", ":"))[:1200]
+        return {**result, "error": f"{error} Correct schema for {tool_id}: {compact}"}
+
+    def _attach_tool_schema(self, tools: list[dict], tool_id: str, registry: ToolRegistry) -> list[dict]:
+        """After first use via use_tool, declare the real tool natively (bounded)."""
+        if any(item.get("tool_id") == tool_id for item in tools):
+            return tools
+        if len(tools) >= self._MAX_NATIVE_TOOLS:
+            return tools
+        tool = registry.get_tool(tool_id)
+        if tool is None:
+            return tools
+        return [*tools, self._tool_metadata_item(tool)]
+
     async def _execute_native_agent_call(
         self,
         call: dict,
@@ -718,12 +791,15 @@ class CognitiveOrchestrator:
                     "provider_state": response.get("provider_state"),
                 }
             )
-            for index, call in enumerate(calls):
+            step_limit = self.max_coding_steps if coding_turn else self.max_agent_steps
+            for index, wire_call in enumerate(calls):
+                call, meta_error = self._unwrap_meta_call(wire_call, registry)
                 tool_id = str(call.get("name") or "")
-                if steps_used >= self.max_coding_steps:
+                wire_name = str(wire_call.get("name") or tool_id)
+                if steps_used >= step_limit:
                     return {
                         "content": (
-                            f"Stopped safely after {self.max_coding_steps} tool steps. "
+                            f"Stopped safely after {step_limit} tool steps. "
                             "Ask me to continue the remaining work."
                         ),
                         "called_tool_ids": called,
@@ -753,14 +829,24 @@ class CognitiveOrchestrator:
                     "pending_call": call,
                     "skipped_calls": skipped_calls,
                 }
-                arguments, result = await self._execute_native_agent_call(
-                    call,
-                    registry=registry,
-                    coding_turn=coding_turn,
-                    session_id=session_id,
-                    project_root=project_root,
-                    resume_context=resume_context,
-                )
+                if meta_error:
+                    arguments, result = call.get("arguments") or {}, {
+                        "success": False,
+                        "data": {},
+                        "error": meta_error,
+                    }
+                else:
+                    arguments, result = await self._execute_native_agent_call(
+                        call,
+                        registry=registry,
+                        coding_turn=coding_turn,
+                        session_id=session_id,
+                        project_root=project_root,
+                        resume_context=resume_context,
+                    )
+                if wire_name != tool_id and not meta_error:
+                    result = self._repair_hint_for_meta_call(tool_id, result, registry)
+                    tools = self._attach_tool_schema(tools, tool_id, registry)
                 item = self._agent_result_item(tool_id, arguments, result)
                 results.append(item)
                 if result.get("status") == "PENDING_CONFIRMATION":
@@ -783,7 +869,9 @@ class CognitiveOrchestrator:
                     {
                         "role": "tool",
                         "tool_call_id": str(call.get("id") or f"call-{steps_used}"),
-                        "name": tool_id,
+                        # Providers match responses to the function name they
+                        # emitted (use_tool), not to the unwrapped real tool.
+                        "name": wire_name,
                         "content": self._agent_result_content(tool_id, result),
                     }
                 )
@@ -855,7 +943,7 @@ class CognitiveOrchestrator:
             {
                 "role": "tool",
                 "tool_call_id": str(call.get("id") or "confirmed-call"),
-                "name": tool_id,
+                "name": str(call.get("wire_name") or tool_id),
                 "content": self._agent_result_content(tool_id, confirmed_result),
             }
         )
@@ -926,20 +1014,81 @@ class CognitiveOrchestrator:
         """System-prompt clause that makes the model act like Jarvis, not a chatbot."""
         return (
             "\n\n[ACTION MANDATE]\n"
-            "You are a local assistant with REAL tools, supplied through provider-native "
-            "function calling. You decide which tool to use.\n"
-            "- If the user asks you to DO something (open, play, search, check, read, find, "
-            "create, move, delete, remind, schedule, measure), call the matching declared "
-            "tool. Do not describe what you would do, and do not tell the user to do it "
-            "themselves.\n"
-            "- For live facts (weather, news, prices, system status, current events, "
-            "anything after your training), call a tool instead of guessing.\n"
-            "- Never claim an action happened unless a tool result in this turn confirms "
-            "it. If a tool fails, say so honestly and offer the next step.\n"
-            "- Pure knowledge questions may be answered directly without tools.\n"
-            "- Use only declared tools, keep calls sequential, inspect existing files "
-            "before changes, and stop when confirmation or a failure is returned.\n"
+            "You are Jarvis for your owner: you have REAL tools via native function calling "
+            "and YOU decide what to do. The owner commands; you carry it out.\n"
+            "- A request to DO something (open, play, find, organize, zip, remind, check...) "
+            "means call tools now. Never describe what you would do or tell the owner to do it.\n"
+            "- Multi-part jobs: plan the steps silently, then run them one after another, "
+            "feeding each result into the next (find the folder, then list it, then act). "
+            "Finish the whole job before replying.\n"
+            "- Live facts (weather, news, prices, PC status, anything recent): use a tool, never guess.\n"
+            "- If a step fails, try another route once (other tool, other path) before giving up.\n"
+            "- Ask a question only when the target is truly unclear or the action is "
+            "destructive; risky tools already ask the owner for approval.\n"
+            "- Never claim something happened unless a tool result this turn confirms it.\n"
+            "- Pure knowledge questions: answer directly, no tools.\n"
+            "- Final reply: one to three short sentences, result first.\n"
         )
+
+    JARVIS_NATIVE_LIMIT: int = 5
+    _PC_PROFILE_CACHE: Optional[str] = None
+
+    @classmethod
+    def _pc_profile(cls) -> str:
+        """One short line about the owner's machine (cached; names only)."""
+        if cls._PC_PROFILE_CACHE is not None:
+            return cls._PC_PROFILE_CACHE
+        import platform
+        from pathlib import Path
+
+        system = platform.system() or "Unknown"
+        home = Path.home()
+        try:
+            folders = sorted(
+                entry.name
+                for entry in home.iterdir()
+                if entry.is_dir() and not entry.name.startswith(".")
+            )[:16]
+        except OSError:
+            folders = []
+        if system == "Linux":
+            how = (
+                "open a file, folder or URL: xdg-open <path>; start an app: gtk-launch <app> "
+                "or its command; screenshot: gnome-screenshot -f <file.png>; volume: pactl"
+            )
+        elif system == "Windows":
+            how = "open a file, folder, app or URL: start \"\" <target>; screenshot: snippingtool"
+        elif system == "Darwin":
+            how = "open a file, folder, app or URL: open <target>; screenshot: screencapture <file.png>"
+        else:
+            how = "use the OS shell"
+        cls._PC_PROFILE_CACHE = (
+            f"[OWNER PC] {system}. Home: {home}. Home folders: {', '.join(folders) or 'unknown'}. "
+            f"Use full paths. Via terminal_run: {how}."
+        )
+        return cls._PC_PROFILE_CACHE
+
+    _STATIC_PREFIX_CACHE: Optional[str] = None
+
+    @classmethod
+    def _jarvis_static_prefix(cls) -> str:
+        """Rules + PC profile + menu of ALL tools. Built once, byte-identical after.
+
+        Menu text is static data (tool_catalog) - no tool module is imported.
+        """
+        if cls._STATIC_PREFIX_CACHE is not None:
+            return cls._STATIC_PREFIX_CACHE
+        from backend.app.tools.tool_catalog import build_tool_menu
+
+        registered = ToolRegistry().get_registered_ids()
+        cls._STATIC_PREFIX_CACHE = (
+            cls._action_mandate_block().strip() + "\n"
+            + cls._pc_profile() + "\n"
+            "[TOOL MENU] Every tool below can be run with use_tool(tool, arguments_json); "
+            "tools also declared as functions may be called directly.\n"
+            + build_tool_menu(registered)
+        )
+        return cls._STATIC_PREFIX_CACHE
 
     @staticmethod
     def _voice_input_policy(alias_suggestions: Optional[List[Dict[str, str]]] = None) -> str:
@@ -1260,10 +1409,9 @@ class CognitiveOrchestrator:
 
         # Phase 0.B — Jarvis rule: the LLM is the decision-maker. Only pure social
         # turns (greetings/thanks/small talk) go out without tools. Every other
-        # turn — including "fast" EXPLANATION turns — is armed with up to twelve
-        # prompt-relevant schemas via provider-native function calling; if the
-        # keyword hints find nothing, the default utility belt is attached so the
-        # model is never disarmed. Intent/track remain hints only.
+        # turn — including "fast" EXPLANATION turns — gets Jarvis Core: a few
+        # prompt-relevant native schemas + use_tool + the cached menu of ALL
+        # tools, so the model itself decides. Intent/track remain hints only.
         tool_definitions: list[dict] = []
         pure_conversation = intent == "CONVERSATION" and not coding_turn
         if pure_conversation:
@@ -1278,7 +1426,14 @@ class CognitiveOrchestrator:
                 allow_defaults=True,
             )
             tool_definitions = json.loads(tools_metadata_str)
-            system_prompt += self._action_mandate_block()
+            native_ids = [item.get("tool_id") for item in tool_definitions]
+            if "use_tool" in native_ids:
+                # Static block FIRST: identical bytes every turn, so Groq's
+                # prefix cache serves it and cached tokens do not count toward
+                # the free-tier per-minute limit. Variable parts come after.
+                system_prompt = self._jarvis_static_prefix() + "\n\n" + system_prompt
+            else:
+                system_prompt += self._action_mandate_block()
             if not project_root:
                 system_prompt += (
                     " The requested project ID has no allowlisted canonical root, so local "

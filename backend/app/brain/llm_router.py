@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import hashlib
 import json
@@ -14,6 +15,7 @@ from backend.app.brain.api_key_manager import APIKeyManager
 from backend.app.brain.cache_policy import BaseCachePolicy, HeuristicKeywordCachePolicy
 from backend.app.brain.model_config import get_ai_runtime_settings, get_model
 from backend.app.brain.smart_cache import SmartCache
+from backend.app.brain.token_budget import TokenBudget
 
 
 class LLMRouter:
@@ -37,6 +39,8 @@ class LLMRouter:
         self.provider_attempts = settings["max_attempts"]
         self.backoff_base_seconds = settings["backoff_base_seconds"]
         self._rejected_models: dict[tuple[str, str], str] = {}
+        # Free-tier guard (Groq limits are per account, not per key).
+        self.token_budget = TokenBudget()
         # Rejections expire so one transient 400/404 (bad payload, provider blip,
         # temporary model outage) does not disable a provider for the process life.
         self._rejected_at: dict[tuple[str, str], float] = {}
@@ -208,14 +212,56 @@ class LLMRouter:
             return result
 
         cleaned = clean(schema)
-        return cleaned if isinstance(cleaned, dict) else {"type": "object", "properties": {}}
+        if not isinstance(cleaned, dict):
+            return {"type": "object", "properties": {}}
+        return cls._slim_schema(cleaned)
+
+    # Token budget: long per-field prose is the biggest schema cost (manage_task
+    # alone was ~450 tokens). Field names, types, enums and required stay intact.
+    _MAX_FIELD_DESCRIPTION = 110
+    _MAX_TOOL_DESCRIPTION = 320
+
+    @classmethod
+    def _slim_text(cls, text: Any, limit: int) -> Any:
+        if not isinstance(text, str) or len(text) <= limit:
+            return text
+        cut = text[:limit].rsplit(" ", 1)[0].rstrip(",;:")
+        return cut + "..."
+
+    @classmethod
+    def _slim_schema(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            return [cls._slim_schema(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result = {}
+        for key, item in value.items():
+            if key == "description":
+                result[key] = cls._slim_text(item, cls._MAX_FIELD_DESCRIPTION)
+            elif key == "properties" and isinstance(item, dict):
+                result[key] = {name: cls._slim_schema(prop) for name, prop in item.items()}
+            elif key == "anyOf" and isinstance(item, list):
+                # Optional[str] -> {"type":"string"}: drop the null branch the
+                # model never needs to produce (it can simply omit the field).
+                branches = [b for b in item if not (isinstance(b, dict) and b.get("type") == "null")]
+                if len(branches) == 1 and isinstance(branches[0], dict):
+                    for sub_key, sub_value in cls._slim_schema(branches[0]).items():
+                        result.setdefault(sub_key, sub_value)
+                else:
+                    result[key] = cls._slim_schema(branches or item)
+            else:
+                result[key] = cls._slim_schema(item)
+        return result
 
     @classmethod
     def _native_tool_schema(cls, tool: dict, *, openai_style: bool) -> dict:
         name = str(tool.get("tool_id") or tool.get("name") or "").strip()
         declaration = {
             "name": name,
-            "description": str(tool.get("description") or "Local Ultron tool."),
+            "description": cls._slim_text(
+                str(tool.get("description") or "Local Ultron tool."),
+                cls._MAX_TOOL_DESCRIPTION,
+            ),
             "parameters": cls._clean_native_schema(
                 tool.get("input_schema") or {
                     "type": "object",
@@ -273,6 +319,22 @@ class LLMRouter:
         return messages
 
     REJECTION_TTL_SECONDS: ClassVar[float] = 600.0
+
+    # Longest pause for the per-minute window before sending anyway.
+    _MAX_BUDGET_WAIT_SECONDS: ClassVar[float] = 20.0
+
+    async def _respect_budget(self, provider: str, payload: dict[str, Any]) -> None:
+        """Pause briefly when this request would exceed the per-minute window."""
+        estimate = self.token_budget.estimate(
+            provider,
+            len(json.dumps(payload, default=str)),
+            max_output=min(int(payload.get("max_tokens") or 600), 600),
+        )
+        wait = self.token_budget.room(provider, estimate)
+        if wait > 0:
+            wait = min(wait, self._MAX_BUDGET_WAIT_SECONDS)
+            print(f"[LLM_ROUTER] Pausing {wait:.1f}s to stay inside the {provider} per-minute limit.")
+            await asyncio.sleep(wait)
 
     @staticmethod
     def _apply_groq_reasoning(payload: dict[str, Any]) -> None:
@@ -450,10 +512,24 @@ class LLMRouter:
         )
         configured_provider_seen = False
         last_error = None
-        for provider in provider_order:
+        configured = [p for p in provider_order if self.key_manager.has_real_key(p)]
+        request_chars = len(system_prompt) + len(user_prompt) + len(
+            json.dumps(history, default=str)
+        ) + len(json.dumps(tools, default=str))
+        for position, provider in enumerate(provider_order):
             if not self.key_manager.has_real_key(provider):
                 continue
             configured_provider_seen = True
+            if not provider_lock and any(p in configured for p in provider_order[position + 1 :]):
+                wait = self.token_budget.room(
+                    provider, self.token_budget.estimate(provider, request_chars)
+                )
+                if wait > 0:
+                    print(
+                        f"[LLM_ROUTER] {provider} per-minute budget nearly used "
+                        f"(free in ~{wait:.0f}s); starting this job on the next provider."
+                    )
+                    continue
             model = get_model(provider)
             try:
                 if provider == "gemini":
@@ -538,6 +614,7 @@ class LLMRouter:
                 # loop is sequential by design, so request exactly that.
                 payload["parallel_tool_calls"] = False
                 self._apply_groq_reasoning(payload)
+            await self._respect_budget(provider, payload)
             if provider == "nvidia":
                 payload["chat_template_kwargs"] = {
                     "enable_thinking": True,
@@ -567,7 +644,9 @@ class LLMRouter:
             if response.status_code != 200:
                 self._classify_http_failure(provider, key, response)
                 continue
-            return self._parse_openai_native_message(response.json())
+            body = response.json()
+            self.token_budget.record_usage(provider, body.get("usage") if isinstance(body, dict) else None)
+            return self._parse_openai_native_message(body)
         raise RuntimeError(f"{provider} native-tool key pool is unavailable")
 
     async def _execute_gemini_native_tools(
@@ -670,6 +749,7 @@ class LLMRouter:
                 "max_tokens": 2048,
             }
             self._apply_groq_reasoning(payload)
+            await self._respect_budget(provider, payload)
             try:
                 response = await self.client.post(
                     url,
@@ -688,8 +768,10 @@ class LLMRouter:
                 self._classify_http_failure(provider, key, response)
                 continue
             try:
-                return response.json()["choices"][0]["message"]["content"]
-            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                body = response.json()
+                self.token_budget.record_usage(provider, body.get("usage"))
+                return body["choices"][0]["message"]["content"]
+            except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
                 raise RuntimeError("Groq returned an invalid response schema") from exc
         raise RuntimeError("Groq key pool is unavailable")
 
