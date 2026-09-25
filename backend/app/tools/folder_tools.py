@@ -227,14 +227,11 @@ class ListContentsTool(BaseTool):
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         folderpath = kwargs.get("folderpath", "")
-        # Explicit ~ resolves to home; ordinary relative paths resolve from the
-        # project workspace so registry preflight and execution use one target.
-        raw = folderpath.strip()
-        expanded = os.path.expanduser(raw)
-        if not os.path.isabs(expanded):
-            workspace = Path(__file__).resolve().parent.parent.parent.parent
-            expanded = str(workspace / expanded)
-        path = Path(expanded).resolve()
+        # Whole-disk Jarvis: ~ = home, "" / "." = where Ultron last worked (else
+        # home), relative names = last folder -> home -> app folder (old behaviour).
+        from backend.app.core import recent_folders
+
+        path = recent_folders.personal_resolve(folderpath).resolve()
         blocked = _guard_paths(path)
         if blocked:
             return blocked
@@ -250,7 +247,9 @@ class ListContentsTool(BaseTool):
                     "type": "folder" if item_path.is_dir() else "file",
                     "size": f"{item_path.stat().st_size / 1024:.1f} KB" if item_path.is_file() else None
                 })
-            return {"success": True, "data": {"contents": details, "raw_names": contents, "path": str(path)}, "error": None}
+            recent_folders.remember(path)  # File Explorer + "that folder" follow this
+            parent = str(path.parent) if path.parent != path else None
+            return {"success": True, "data": {"contents": details, "raw_names": contents, "path": str(path), "parent": parent}, "error": None}
         except Exception as e:
             return {"success": False, "error": f"Failed to list directory contents: {e}", "data": {}}
 

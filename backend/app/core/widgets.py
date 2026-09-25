@@ -65,7 +65,8 @@ TOOL_WIDGETS: dict[str, str] = {
 _CHANGING_ACTIONS = {"create", "update", "update_status", "update_priority", "delete",
                      "snooze", "dismiss", "remember", "forget", "correct", "smart_schedule"}
 _ALWAYS_REFRESH = {"create_folder", "rename_folder", "delete_folder", "copy_folder", "move_folder",
-                   "compress_folder", "extract_zip", "organize_folder", "git_clone", "github_integration"}
+                   "compress_folder", "extract_zip", "organize_folder", "git_clone", "github_integration",
+                   "list_contents", "locate_path"}  # File Explorer follows where Ultron works
 
 # Fallback words (whole words only) -> widget
 _WORDS: tuple[tuple[str, str], ...] = (

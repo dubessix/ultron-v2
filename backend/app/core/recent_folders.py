@@ -98,3 +98,33 @@ def clear() -> None:
             _store().unlink()
         except OSError:
             pass
+
+
+def personal_base() -> Path:
+    """Where Jarvis "is" right now: the last folder used, else the owner's home.
+
+    Personal (non-coding) paths like "." or "notes" start here instead of the
+    assistant's own source folder, so Ultron and the File Explorer move around
+    the whole disk with the owner.
+    """
+    last_used = last()
+    if last_used:
+        return Path(last_used)
+    return Path.home()
+
+
+def personal_resolve(value: str) -> Path:
+    """Resolve a personal path: absolute/~ stay as typed; "" or "." = personal_base();
+    a relative name is tried in the last folder, then home, then the old app folder."""
+    raw_text = os.path.expandvars(str(value or "").strip())
+    raw = Path(raw_text).expanduser() if raw_text else Path(".")
+    if raw.is_absolute():
+        return raw
+    if raw_text in ("", "."):
+        return personal_base()
+    bases = [personal_base(), Path.home()]
+    app_root = Path(__file__).resolve().parents[3]
+    for base in bases + [app_root]:
+        if (base / raw).exists():
+            return base / raw
+    return Path.home() / raw

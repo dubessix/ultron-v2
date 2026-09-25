@@ -306,8 +306,12 @@ def _personal_candidate(value: str, root: Path, *, tool_id: str = "", field: str
         if parts and parts[0].lower() in _PERSONAL_FOLDER_NAMES:
             base = home_folder(parts[0]) or (Path.home() / _PERSONAL_FOLDER_NAMES[parts[0].lower()])
             candidate = base / Path(*parts[1:])
+        elif str(value).strip() in ("", "."):
+            candidate = recent_folders.personal_base()  # "here" = where Ultron last worked
         else:
-            candidate = root / raw
+            # Whole-disk Jarvis: last folder used -> home -> project root, first hit wins.
+            bases = [recent_folders.personal_base(), Path.home(), root]
+            candidate = next((base / raw for base in bases if (base / raw).exists()), Path.home() / raw)
     if candidate.exists() or not tool_id:
         return candidate
 
@@ -354,7 +358,14 @@ def resolve_agent_tool_arguments(
     resolved_arguments = dict(arguments or {})
     for field in _AGENT_PROJECT_DEFAULTS.get(tool_id, ()):
         if resolved_arguments.get(field) in (None, "", "."):
-            resolved_arguments[field] = str(root)
+            if confine_to_project:
+                resolved_arguments[field] = str(root)
+            else:
+                from backend.app.core import recent_folders
+
+                # search the whole home; shell / git start where Ultron last worked
+                base = Path.home() if tool_id == "find_files" else recent_folders.personal_base()
+                resolved_arguments[field] = str(base)
 
     for field in _TOOL_PATH_FIELDS.get(tool_id, ()):
         value = resolved_arguments.get(field)

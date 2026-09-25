@@ -111,4 +111,5 @@ class TestPersonalPathsStayGuarded(unittest.TestCase):
         from pathlib import Path
         from backend.app.security.path_guard import _personal_candidate
         self.assertEqual(_personal_candidate("Desktop/old", Path(self.root)), Path.home() / "Desktop" / "old")
-        self.assertEqual(_personal_candidate("notes", Path(self.root)), Path(self.root) / "notes")
+        # Whole-disk Jarvis: a new plain name lands in the owner's home, not the app folder.
+        self.assertEqual(_personal_candidate("notes", Path(self.root)), Path.home() / "notes")
