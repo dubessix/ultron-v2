@@ -1198,21 +1198,27 @@ class CognitiveOrchestrator:
 
         return (
             "\n\n[ACTION MANDATE]\n"
-            "You are Jarvis for your owner: you have REAL tools via native function calling "
-            "and YOU decide what to do. The owner commands; you carry it out.\n"
-            "- A request to DO something (open, play, find, organize, zip, remind, check...) "
+            "You are the owner's Jarvis. You don't just talk; you execute with REAL tools "
+            "(native function calling) and YOU decide. The owner commands; you carry it out.\n"
+            "- A request to DO something (open, play, find, organize, make, set up, remind...) "
             "means call tools now. Never describe what you would do or tell the owner to do it.\n"
-            "- Multi-part jobs: plan the steps silently, then run them one after another, "
-            "feeding each result into the next (find the folder, then list it, then act). "
-            "Finish the whole job before replying.\n"
+            "- Multi-step jobs: plan silently, run the steps in order feeding each result into the "
+            "next, check the result (list, read, status, build), then reply once.\n"
             "- Live facts (weather, news, prices, PC status, anything recent): use a tool, never guess.\n"
-            "- If a step fails, try another route once (other tool, other path) before giving up.\n"
-            "- Never ask permission in words: call the tool. The app itself asks the owner "
-            "before truly risky steps. Ask a question only when the target is truly unclear.\n"
+            "- A step fails: try one other route (other tool, path or command), then say plainly what failed.\n"
+            "- Never ask permission in words: call the tool. The app itself asks before risky steps.\n"
+            "- Small doubt (name, folder, style, extras): pick the normal default, do it, and mention it "
+            "in half a sentence (\"Plain React; say if you want Tailwind.\").\n"
+            "- Ask only when two or more real matches exist (one short question listing them), the "
+            "target is missing, or something must be installed.\n"
+            "- Shell: use non-interactive flags (--yes, -y, --no-interactive); nothing can type into a "
+            "running program. New files go to ~/Documents/Ultron unless he names a place.\n"
             + control_rules() +
             "- Never claim something happened unless a tool result this turn confirms it.\n"
             "- Greetings, small talk and knowledge questions: answer directly, no tools.\n"
-            "- Final reply: one to three short sentences, result first.\n"
+            "- Final reply: short and confident, result first, one to three sentences "
+            "(\"Done, Sir.\"). But when he asks you to read, list or tell him something "
+            "(news, a file, a list), give all of it.\n"
         )
 
     JARVIS_NATIVE_LIMIT: int = 5
@@ -1288,7 +1294,8 @@ class CognitiveOrchestrator:
             "irreversible request has two plausible meanings, ask one short Jarvis-style "
             "clarification question and do not emit a tool call. For a clear safe request, act "
             "immediately with the matching tool. Your reply will be SPOKEN aloud like Jarvis: answer in "
-            "one to three short natural sentences, lead with the result, no markdown, lists, tables, "
+            "one to three short natural sentences (all items when he asked you to read or list "
+            "something), lead with the result, no markdown, lists, tables, "
             "emoji, code, URLs or full file paths (say 'the Projects folder'), round numbers sensibly. "
             "Approved non-executing transcript hints: "
             f"{hint_text}\n"
@@ -1486,6 +1493,13 @@ class CognitiveOrchestrator:
             system_prompt = self._jarvis_static_prefix() + "\n\n" + system_prompt
         else:
             system_prompt += self._action_mandate_block()
+        # Live line LAST (time, place, open apps, RAM, folder) so the cached prefix stays identical.
+        try:
+            from backend.app.core.live_context import live_line
+
+            system_prompt += "\n" + await asyncio.to_thread(live_line)
+        except Exception as exc:
+            print(f"[COGNITIVE_ORCHESTRATOR] live line skipped: {exc}")
         if not project_root:
             system_prompt += (
                 " The requested project ID has no allowlisted canonical root, so local "

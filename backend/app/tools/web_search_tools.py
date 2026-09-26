@@ -7,7 +7,7 @@ Automatically allowed (Level 1 permissions) to ensure seamless, non-intrusive op
 import webbrowser
 import urllib.parse
 from typing import Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from backend.app.tools.tool_base import BaseTool
 
 # --- Validation Schemas ---
@@ -217,13 +217,24 @@ class NewsArgs(BaseModel):
         "top news today",
         description="News topic, e.g. 'India', 'AI startups', 'cricket'. Omit for top headlines.",
     )
+    count: int = Field(5, description="How many headlines, 1-10. Use the number the owner asks for (\"top 10\" = 10).")
     open_in_browser: bool = Field(False, description="Also open Google News in the browser.")
+
+    @field_validator("count", mode="before")
+    @classmethod
+    def _clamp_count(cls, value):
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return 5
+        return max(1, min(NewsSearchTool.MAX_RESULTS, number))
 
 
 class NewsSearchTool(BaseTool):
     """Returns real, current headlines to the brain (browser is optional)."""
 
-    MAX_RESULTS = 5
+    MAX_RESULTS = 10
+    DEFAULT_RESULTS = 5
 
     def __init__(self) -> None:
         super().__init__(
@@ -237,11 +248,15 @@ class NewsSearchTool(BaseTool):
             tags=["search", "news", "events", "latest", "world", "headlines"],
             permission_level=1, # Level 1
             args_model=NewsArgs,
-            usage_examples=["news_search(query='generative AI startup funding')", "news_search()"],
+            usage_examples=["news_search(query='generative AI startup funding')", "news_search(count=10)"],
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         query = str(kwargs.get("query") or "top news today").strip()
+        try:
+            count = max(1, min(self.MAX_RESULTS, int(kwargs.get("count") or self.DEFAULT_RESULTS)))
+        except (TypeError, ValueError):
+            count = self.DEFAULT_RESULTS
         escaped = urllib.parse.quote_plus(query)
         url = f"https://news.google.com/search?q={escaped}"
         search_query = query if "news" in query.lower() else f"{query} latest news"
@@ -250,7 +265,7 @@ class NewsSearchTool(BaseTool):
         search_error = None
         try:
             from backend.app.tools._realsearch import real_web_search
-            results = await real_web_search(search_query, limit=self.MAX_RESULTS) or []
+            results = await real_web_search(search_query, limit=count) or []
         except Exception as exc:
             search_error = str(exc)
 
@@ -264,9 +279,9 @@ class NewsSearchTool(BaseTool):
 
         headlines = [
             {"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("snippet", "")}
-            for r in results[: self.MAX_RESULTS]
+            for r in results
             if r.get("title")
-        ]
+        ][:count]
         if headlines:
             data = {"query": query, "url": url, "headlines": headlines,
                     "message": f"Found {len(headlines)} current headlines."}

@@ -4,13 +4,16 @@ Implements production-grade, validated FileRead, FileWrite, and FindFiles tools 
 Uses high-performance recursive globbing while safely ignoring cache/virtual environment structures.
 """
 
+import fnmatch
 import os
+import re
+import time
 import asyncio
 import datetime
 import hashlib
 from pathlib import Path
 from typing import Dict, Any, Optional
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from backend.app.tools.tool_base import BaseTool
 
 # --- Validation Schemas ---
@@ -48,9 +51,49 @@ class FileWriteArgs(BaseModel):
                 raise ValueError("Patch mode requires a 64-character SHA-256 fingerprint.")
         return self
 
+FILE_TYPES: Dict[str, frozenset] = {
+    "video": frozenset({".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".m4v", ".mpg", ".mpeg", ".3gp", ".ts"}),
+    "music": frozenset({".mp3", ".wav", ".flac", ".aac", ".ogg", ".m4a", ".opus", ".wma"}),
+    "image": frozenset({".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg", ".heic", ".tiff", ".ico"}),
+    "pdf": frozenset({".pdf"}),
+    "document": frozenset({".pdf", ".doc", ".docx", ".odt", ".txt", ".md", ".rtf", ".xls", ".xlsx", ".ods",
+                           ".csv", ".ppt", ".pptx", ".odp", ".epub"}),
+    "archive": frozenset({".zip", ".rar", ".7z", ".tar", ".gz", ".bz2", ".xz", ".tgz"}),
+    "code": frozenset({".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".c", ".cpp", ".h", ".cs", ".go", ".rs",
+                       ".php", ".rb", ".html", ".css", ".json", ".yaml", ".yml", ".sh", ".sql"}),
+    "installer": frozenset({".deb", ".rpm", ".appimage", ".exe", ".msi", ".snap", ".flatpak", ".dmg", ".apk"}),
+}
+FIND_FILES_LIMIT = 20
+FIND_FILES_MAX_VISITS = 400_000   # never walk forever on a huge disk
+FIND_FILES_MAX_SECONDS = 25.0
+
+
+def normalize_name(text: str) -> str:
+    """'Demon.Slayer_Mugen-Train' -> 'demon slayer mugen train' (spaces . _ - and capitals don't matter)."""
+    return " ".join(re.split(r"[\s._\-]+", str(text or "").lower())).strip()
+
+
 class FindFilesArgs(BaseModel):
-    pattern: str = Field(..., description="Glob pattern or substring to search for (e.g. '*.pdf', 'resume').")
+    pattern: str = Field(..., description="Name words or a glob (e.g. 'demon slayer', 'resume', '*.pdf'). Capitals, spaces, dots, _ and - don't matter.")
     search_root: Optional[str] = Field(".", description="Folder to search in: full path, '~', 'Desktop', 'Documents', 'Downloads', a drive like 'D:/', or just a folder name (auto-found).")
+    file_type: Optional[str] = Field(None, description="Only this kind: video, music, image, pdf, document, archive, code, installer.")
+    sort: Optional[str] = Field("newest", description="newest (default) or biggest.")
+
+    @field_validator("file_type", mode="before")
+    @classmethod
+    def _known_type(cls, value):
+        if value in (None, ""):
+            return None
+        key = str(value).strip().lower().rstrip("s")
+        aliases = {"movie": "video", "film": "video", "song": "music", "audio": "music", "photo": "image",
+                   "picture": "image", "doc": "document", "zip": "archive", "setup": "installer", "app": "installer"}
+        key = aliases.get(key, key)
+        return key if key in FILE_TYPES else None
+
+    @field_validator("sort", mode="before")
+    @classmethod
+    def _known_sort(cls, value):
+        return "biggest" if str(value or "").strip().lower() in ("biggest", "largest", "size", "big") else "newest"
 
 # --- Tool Implementations ---
 
@@ -165,12 +208,12 @@ class FindFilesTool(BaseTool):
         super().__init__(
             tool_id="find_files",
             name="File Finder",
-            description="Searches for files recursively inside the workspace using glob or text pattern checks.",
+            description="Find files by name words or glob anywhere under a folder (capitals, spaces, dots, _ and - don't matter), optional type (video/music/image/pdf/document/archive/code/installer). Max 20, newest or biggest first. Use when the owner names a file; use locate_path for folders.",
             category="filesystem",
             tags=["file", "find", "search", "glob", "locate"],
             permission_level=0, # Level 0: Read-Only (no confirmation)
             args_model=FindFilesArgs,
-            usage_examples=["find_files(pattern='*.pdf')"]
+            usage_examples=["find_files(pattern='demon slayer', search_root='~', file_type='video')", "find_files(pattern='resume', file_type='pdf')"]
         )
         self.workspace_root = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -194,50 +237,77 @@ class FindFilesTool(BaseTool):
 
         skip_dirs = {".git", ".venv", "venv", "env", ".arena", ".cache", ".pytest_cache", ".ruff_cache", "__pycache__", "node_modules", "build", "dist", "data", "coverage", "out", "target"}
         is_glob = "*" in pattern or "?" in pattern or "[" in pattern
+        glob_lower = pattern.lower()
+        words = normalize_name(pattern).split()
+        wanted_ext = FILE_TYPES.get(kwargs.get("file_type") or "")
+        sort_key = "biggest" if kwargs.get("sort") == "biggest" else "newest"
+        search_hidden = root_path.name.startswith(".")
 
-        # Phase 3/Point-22: recursive workspace walking is IO-heavy — run it in a
-        # worker thread so it can't block the event loop and freeze the assistant.
+        def _matches(name: str, path: Path) -> bool:
+            if wanted_ext is not None and path.suffix.lower() not in wanted_ext:
+                return False
+            if is_glob:
+                if "/" in pattern or "\\" in pattern:
+                    return Path(str(path).lower()).match(glob_lower)
+                return fnmatch.fnmatch(name.lower(), glob_lower)
+            normalized = normalize_name(name)
+            return all(word in normalized for word in words)
+
+        # Recursive walking is IO-heavy: run it in a worker thread so it can't
+        # block the event loop, and cap visits/time so a huge disk never hangs.
         def _run_search():
             found = []
+            visited = 0
+            deadline = time.monotonic() + FIND_FILES_MAX_SECONDS
+            stopped_early = False
             for root, dirs, files in os.walk(root_path):
-                # Prune cache/virtual environments recursively
-                dirs[:] = [d for d in dirs if d not in skip_dirs]
-
+                dirs[:] = [d for d in dirs if d not in skip_dirs and (search_hidden or not d.startswith("."))]
                 for file in files:
+                    visited += 1
+                    if visited > FIND_FILES_MAX_VISITS or (visited % 2000 == 0 and time.monotonic() > deadline):
+                        stopped_early = True
+                        break
                     file_path = Path(root) / file
-                    # Fix 20: relative_to raises ValueError for paths outside workspace;
-                    # fall back to absolute path so searching outside never crashes.
+                    if not _matches(file, file_path):
+                        continue
                     try:
                         file_rel = str(file_path.relative_to(self.workspace_root))
                     except ValueError:
                         file_rel = str(file_path)
-
-                    matched = file_path.match(pattern) if is_glob else (pattern.lower() in file.lower())
-
-                    if matched:
-                        try:
-                            stat = file_path.stat()
-                            mtime = datetime.datetime.fromtimestamp(stat.st_mtime, datetime.timezone.utc).isoformat()
-                            found.append({
-                                "name": file,
-                                "filepath": file_rel,
-                                "size_kb": f"{stat.st_size / 1024:.1f} KB",
-                                "modified_at": mtime,
-                            })
-                        except OSError:
-                            continue
-            return found
+                    try:
+                        stat = file_path.stat()
+                    except OSError:
+                        continue
+                    found.append({
+                        "name": file,
+                        "filepath": file_rel,
+                        "size_bytes": stat.st_size,
+                        "size_kb": f"{stat.st_size / 1024:.1f} KB",
+                        "modified_at": datetime.datetime.fromtimestamp(stat.st_mtime, datetime.timezone.utc).isoformat(),
+                    })
+                if stopped_early:
+                    break
+            return found, stopped_early
 
         try:
-            results = await asyncio.to_thread(_run_search)
-            return {
-                "success": True,
-                "data": {
-                    "pattern": pattern,
-                    "matches_count": len(results),
-                    "matches": results
-                },
-                "error": None
+            results, stopped_early = await asyncio.to_thread(_run_search)
+            if sort_key == "biggest":
+                results.sort(key=lambda item: item["size_bytes"], reverse=True)
+            else:
+                results.sort(key=lambda item: item["modified_at"], reverse=True)
+            shown = results[:FIND_FILES_LIMIT]
+            data = {
+                "pattern": pattern,
+                "matches_count": len(results),
+                "matches": shown,
+                "sorted_by": sort_key,
             }
+            if kwargs.get("file_type"):
+                data["file_type"] = kwargs.get("file_type")
+            if len(results) > len(shown):
+                data["more"] = f"{len(results) - len(shown)} more not shown; narrow the words, type or folder."
+            if stopped_early:
+                data["note"] = "Search stopped early on a very large folder; results may be partial."
+            return {"success": True, "data": data, "error": None}
         except Exception as e:
             return {"success": False, "error": f"File finder search aborted: {e}", "data": {}}

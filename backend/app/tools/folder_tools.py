@@ -326,7 +326,7 @@ class OrganizeFolderTool(BaseTool):
         super().__init__(
             tool_id="organize_folder",
             name="Folder Organizer",
-            description="Scans the target directory, groups files by extensions, creates subfolders, and moves files recursively. Protects duplicates.",
+            description="Sort the files at the top of a folder (e.g. Downloads) into images, videos, music, documents, archives, installers, code, others. Skips unfinished downloads and never overwrites. Undo can put them back.",
             category="filesystem",
             tags=["folder", "organize", "files", "clean"],
             permission_level=2, # Level 2: Requires manual confirmation
@@ -343,41 +343,49 @@ class OrganizeFolderTool(BaseTool):
         if not path.exists():
             return {"success": False, "error": f"Directory does not exist: {folderpath}", "data": {}}
 
-        # Define file categorization maps
-        categories = {
-            "images": [".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"],
-            "documents": [".pdf", ".docx", ".doc", ".xlsx", ".txt", ".pptx", ".csv"],
-            "archives": [".zip", ".tar", ".gz", ".rar", ".7z"],
-            "code": [".py", ".js", ".jsx", ".html", ".css", ".json", ".sh", ".bat"],
-            "executables": [".exe", ".msi", ".deb", ".dmg"]
-        }
+        from backend.app.tools.filesystem_tools import FILE_TYPES
+
+        # Order matters: the first matching group wins (pdf -> documents).
+        categories = (
+            ("images", FILE_TYPES["image"]),
+            ("videos", FILE_TYPES["video"]),
+            ("music", FILE_TYPES["music"]),
+            ("documents", FILE_TYPES["document"]),
+            ("archives", FILE_TYPES["archive"]),
+            ("installers", FILE_TYPES["installer"]),
+            ("code", FILE_TYPES["code"] | {".bat"}),
+        )
+        # Never touch downloads that are still running or temp/lock files.
+        unfinished = {".crdownload", ".part", ".partial", ".tmp", ".download", ".opdownload", ".!ut", ".aria2"}
 
         moved_count = 0
+        skipped_unfinished: list[str] = []
+        skipped_existing: list[str] = []
         moves: list[list[str]] = []
         created_dirs: list[str] = []
         try:
-            for item in os.listdir(path):
+            for item in sorted(os.listdir(path)):
                 item_path = path / item
-                if item_path.is_file():
-                    ext = item_path.suffix.lower()
-                    target_category = "others"
-                    for cat, ext_list in categories.items():
-                        if ext in ext_list:
-                            target_category = cat
-                            break
+                if not item_path.is_file() or item.startswith("."):
+                    continue
+                ext = item_path.suffix.lower()
+                if ext in unfinished or item.startswith(("~$", ".~lock")):
+                    skipped_unfinished.append(item)
+                    continue
+                target_category = next((cat for cat, exts in categories if ext in exts), "others")
 
-                    # Create subfolder recursively
-                    subfolder = path / target_category
-                    if not subfolder.exists():
-                        created_dirs.append(str(subfolder))
-                    subfolder.mkdir(exist_ok=True)
+                subfolder = path / target_category
+                if not subfolder.exists():
+                    created_dirs.append(str(subfolder))
+                subfolder.mkdir(exist_ok=True)
 
-                    # Move file safely
-                    dest_path = subfolder / item
-                    if not dest_path.exists():
-                        shutil.move(str(item_path), str(dest_path))
-                        moves.append([str(item_path), str(dest_path)])
-                        moved_count += 1
+                dest_path = subfolder / item
+                if dest_path.exists():
+                    skipped_existing.append(item)
+                    continue
+                shutil.move(str(item_path), str(dest_path))
+                moves.append([str(item_path), str(dest_path)])
+                moved_count += 1
 
             if moves:
                 from backend.app.core import action_journal
@@ -385,6 +393,18 @@ class OrganizeFolderTool(BaseTool):
                 action_journal.record("organize", f"sorted {moved_count} files in {path.name}",
                                       moves=moves, created_dirs=created_dirs)
 
-            return {"success": True, "data": {"moved_count": moved_count, "message": f"Successfully organized {moved_count} files into sorted subfolders."}, "error": None}
+            groups: Dict[str, int] = {}
+            for _src, dest in moves:
+                groups[Path(dest).parent.name] = groups.get(Path(dest).parent.name, 0) + 1
+            data: Dict[str, Any] = {
+                "moved_count": moved_count,
+                "groups": groups,
+                "message": f"Organized {moved_count} files into {len(groups)} folders.",
+            }
+            if skipped_unfinished:
+                data["left_alone_unfinished"] = skipped_unfinished[:20]
+            if skipped_existing:
+                data["left_alone_same_name_exists"] = skipped_existing[:20]
+            return {"success": True, "data": data, "error": None}
         except Exception as e:
             return {"success": False, "error": f"Failed to organize directory: {e}", "data": {}}
