@@ -35,12 +35,12 @@ def check_keys() -> list[Check]:
     total = sum(counts.values())
     if total == 0:
         return [("warn", "Ultron has no AI key, so he cannot think or use tools.",
-                 "Put GROQ_API_KEYS=your_key in the .env file (free at console.groq.com).")]
+                 "Put GROQ_API_KEY_1=your_key in the .env file (free at console.groq.com).")]
     names = ", ".join(f"{name} {count}" for name, count in counts.items() if count)
     working = [name for name, count in counts.items() if count]
     if len(working) == 1:
         return [("warn", f"AI keys: {names}. Only one provider, so a Groq outage stops him.",
-                 "Add a free Gemini key too (GEMINI_API_KEYS) as a backup brain.")]
+                 "Add a free Gemini key too (GEMINI_API_KEY_1) as a backup brain.")]
     return [("ok", f"AI keys: {names}.", "")]
 
 

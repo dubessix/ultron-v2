@@ -283,7 +283,7 @@ class TestPlainDoctor(TempFolder):
         with patch("backend.app.brain.api_key_manager.APIKeyManager", return_value=NoKeys()):
             result = health_checks.check_keys()
         self.assertEqual(result[0][0], "warn")
-        self.assertIn("GROQ_API_KEYS", result[0][2])
+        self.assertIn("GROQ_API_KEY_1", result[0][2])
 
     def test_retired_model_is_reported(self):
         from backend.app.brain import model_fallback
