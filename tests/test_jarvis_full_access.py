@@ -7,7 +7,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from backend.app.core.orchestrator import CognitiveOrchestrator
 from backend.app.security import path_locator

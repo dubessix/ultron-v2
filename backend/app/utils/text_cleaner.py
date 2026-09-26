@@ -182,15 +182,6 @@ def _say_posix_path(match: "re.Match[str]") -> str:
     return name if "." in name else f"the {name} folder"
 
 
-def _say_time(match: "re.Match[str]") -> str:
-    hour, minute, half = match.group(1), match.group(2), match.group(3).lower()
-    suffix = "A M" if half == "a" else "P M"
-    return f"{int(hour)} {suffix}" if minute == "00" else f"{int(hour)} {minute} {suffix}"
-
-
-def _say_time24(match: "re.Match[str]") -> str:
-    hour, minute = int(match.group(1)), match.group(2)
-    return f"{hour} o'clock" if minute == "00" else f"{hour} {minute}"
 
 
 def speakable(text: str) -> str:

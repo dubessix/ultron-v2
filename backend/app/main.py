@@ -100,85 +100,102 @@ async def run_heads_up_scheduler():
         await asyncio.sleep(60)
 
 
+def _next_future_target(current_target: datetime.datetime, step: datetime.timedelta,
+                        now: datetime.datetime) -> datetime.datetime:
+    """Next repeat strictly after now (PC off for days = one alert, not a burst)."""
+    if current_target.tzinfo is None:
+        current_target = current_target.replace(tzinfo=datetime.timezone.utc)
+    next_target = current_target + step
+    if next_target <= now:
+        missed = (now - next_target) // step + 1
+        next_target += step * missed
+    return next_target
+
+
+def collect_due_reminders() -> list[dict]:
+    """Blocking DB pass (run in a worker thread): mark due reminders fired.
+
+    Returns [{"payload": ..., "inbox_id": ...}] to broadcast. Never touches
+    the event loop, so a slow or locked database cannot freeze Ultron.
+    """
+    from backend.app.core import reminder_inbox
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    fired: list[dict] = []
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, type, title, description, target_time, recurrence, recurrence_details, snooze_count, status
+            FROM reminders_alarms
+            WHERE status IN ('pending', 'snoozed') AND target_time <= ?;
+            """,
+            (now.isoformat(),),
+        )
+        for row in cursor.fetchall():
+            item = dict(row)
+            item_id = item["id"]
+            rec = (item["recurrence"] or "one_time").lower()
+            print(f"[SCHEDULER] Triggering {item['type']} '{item['title']}' (ID: {item_id})")
+
+            # 0. Inbox row first: if nobody is at a screen, it waits for him.
+            inbox_entry = reminder_inbox.record_fired(cursor, item)
+
+            # 1. Update database status
+            if rec == "one_time":
+                cursor.execute("UPDATE reminders_alarms SET status = 'triggered' WHERE id = ?;", (item_id,))
+            elif rec in ("daily", "weekly"):
+                step = datetime.timedelta(days=1 if rec == "daily" else 7)
+                try:
+                    current_target = datetime.datetime.fromisoformat(item["target_time"])
+                except (TypeError, ValueError):
+                    current_target = now
+                next_target = _next_future_target(current_target, step, now)
+                cursor.execute(
+                    """
+                    UPDATE reminders_alarms
+                    SET target_time = ?, status = 'pending', snooze_count = 0
+                    WHERE id = ?;
+                    """,
+                    (next_target.isoformat(), item_id),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE reminders_alarms SET status = 'invalid_recurrence' WHERE id = ?;",
+                    (item_id,),
+                )
+                conn.commit()
+                print(f"[SCHEDULER] Reminder '{item_id}' disabled: unsupported recurrence '{rec}'.")
+                continue
+            conn.commit()
+
+            payload = reminder_inbox.event_payload(inbox_entry)
+            payload["reminder"].update({"recurrence": rec, "snooze_count": item["snooze_count"]})
+            fired.append({"payload": payload, "inbox_id": inbox_entry["id"]})
+    return fired
+
+
 async def run_reminder_scheduler():
     """
     Background scheduler loop that runs every 5 seconds to look for
     pending or snoozed reminders/alarms whose target_time is <= now.
     If triggered, broadcasts an event to /ws/events and updates their database status.
     """
+    from backend.app.core import reminder_inbox
+
     print("[SCHEDULER] Starting background reminders and alarms scheduler...")
     while True:
         try:
-            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            with get_db_connection() as conn:
-                cursor = conn.cursor()
-                # Find due reminders
-                cursor.execute(
-                    """
-                    SELECT id, type, title, description, target_time, recurrence, recurrence_details, snooze_count, status
-                    FROM reminders_alarms
-                    WHERE status IN ('pending', 'snoozed') AND target_time <= ?;
-                    """,
-                    (now_iso,)
-                )
-                due_rows = cursor.fetchall()
-                
-                for row in due_rows:
-                    item = dict(row)
-                    item_id = item["id"]
-                    title = item["title"]
-                    type_val = item["type"]
-                    rec = (item["recurrence"] or "one_time").lower()
-                    
-                    print(f"[SCHEDULER] Triggering {type_val} '{title}' (ID: {item_id})")
-                    
-                    # 0. Inbox row first: if nobody is at a screen, it waits for him.
-                    from backend.app.core import reminder_inbox
-                    inbox_entry = reminder_inbox.record_fired(cursor, item)
-
-                    # 1. Update database status
-                    if rec == "one_time":
-                        cursor.execute("UPDATE reminders_alarms SET status = 'triggered' WHERE id = ?;", (item_id,))
-                    else:
-                        # Auto-recurrence calculations: calculate the next target time
-                        current_target = datetime.datetime.fromisoformat(item["target_time"])
-                        if rec == "daily":
-                            next_target = current_target + datetime.timedelta(days=1)
-                        elif rec == "weekly":
-                            next_target = current_target + datetime.timedelta(days=7)
-                        else:
-                            cursor.execute(
-                                "UPDATE reminders_alarms SET status = 'invalid_recurrence' WHERE id = ?;",
-                                (item_id,),
-                            )
-                            conn.commit()
-                            print(
-                                f"[SCHEDULER] Reminder '{item_id}' disabled: unsupported recurrence '{rec}'."
-                            )
-                            continue
-
-                        cursor.execute(
-                            """
-                            UPDATE reminders_alarms 
-                            SET target_time = ?, status = 'pending', snooze_count = 0 
-                            WHERE id = ?;
-                            """,
-                            (next_target.isoformat(), item_id)
-                        )
-                    conn.commit()
-                    
-                    # 2. Broadcast WebSocket event on the 'events' channel
-                    event_payload = reminder_inbox.event_payload(inbox_entry)
-                    event_payload["reminder"].update(
-                        {"recurrence": rec, "snooze_count": item["snooze_count"]}
-                    )
-                    received = await ws_manager.broadcast("events", event_payload)
-                    if isinstance(received, int) and received > 0:
-                        reminder_inbox.mark_delivered([inbox_entry["id"]])
-                    
+            for fired in await asyncio.to_thread(collect_due_reminders):
+                # 2. Broadcast WebSocket event on the 'events' channel
+                received = await ws_manager.broadcast("events", fired["payload"])
+                if isinstance(received, int) and received > 0:
+                    await asyncio.to_thread(reminder_inbox.mark_delivered, [fired["inbox_id"]])
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             print(f"[SCHEDULER] Error in scheduler loop: {e}")
-            
+
         await asyncio.sleep(5.0)
 
 async def run_emergency_monitor():

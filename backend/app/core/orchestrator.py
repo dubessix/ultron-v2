@@ -6,7 +6,6 @@ Structured AI Actions, and Parallel LLM-driven Tool Calling.
 """
 
 import time
-import sys
 import uuid
 import json
 import os
@@ -42,8 +41,7 @@ class CognitiveOrchestrator:
         decision_engine: Optional[DecisionEngine] = None,
         memory_engine: Optional[MemoryEngine] = None,
         llm_router: Optional[LLMRouter] = None,
-        personality_engine: Optional[PersonalityEngine] = None,
-        zora_trigger: Any = None  # unused: the AI switches to Zora itself
+        personality_engine: Optional[PersonalityEngine] = None
     ) -> None:
         self.intent_analyzer = intent_analyzer or IntentAnalyzer()
         self.confidence_engine = confidence_engine or ConfidenceEngine()
@@ -462,53 +460,6 @@ class CognitiveOrchestrator:
             session_id=session_id,
             max_retries=0,
         )
-
-    async def _safe_verify_code(self, filepath: str) -> Dict[str, Any]:
-        """
-        Step C: safely verify a written file without risking the system.
-        Runs ONLY a syntax check (python -m py_compile / node --check) with a
-        hard timeout. Never executes arbitrary/destructive commands and never
-        touches the whole system. Returns pass/fail + reason.
-        """
-        import asyncio as _asyncio
-        from pathlib import Path
-        result = {"file": filepath, "verified": False, "lang": None, "detail": None}
-        path = Path(filepath)
-        if not path.exists():
-            result["detail"] = "file not found"
-            return result
-
-        if filepath.endswith(".py"):
-            result["lang"] = "python"
-            cmd = [sys.executable, "-m", "py_compile", filepath]
-        elif filepath.endswith((".js", ".jsx", ".ts", ".tsx")):
-            result["lang"] = "node"
-            cmd = ["node", "--check", filepath]
-        else:
-            result["detail"] = "no safe syntax check available for this file type"
-            return result
-
-        try:
-            proc = await _asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=_asyncio.subprocess.PIPE,
-                stderr=_asyncio.subprocess.PIPE,
-            )
-            try:
-                _stdout, stderr = await _asyncio.wait_for(proc.communicate(), timeout=8.0)
-            except _asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                result["detail"] = "verification timed out (cancelled to avoid hang)"
-                return result
-            result["verified"] = (proc.returncode == 0)
-            result["detail"] = (stderr.decode("utf-8", "ignore").strip()
-                                if proc.returncode != 0 else "syntax OK")
-        except Exception as e:
-            result["detail"] = f"verification failed to run: {e}"
-        return result
 
     @staticmethod
     def _redact_agent_egress(value: Any, key: str = "") -> Any:
@@ -1519,27 +1470,27 @@ class CognitiveOrchestrator:
         # prompt-relevant native schemas + use_tool + the cached menu of ALL
         # tools, so the model itself decides. Intent/track remain hints only.
         tool_definitions: list[dict] = []
-        if True:  # every turn: the AI itself decides whether a tool is needed
-            tools_metadata_str = await asyncio.to_thread(
-                self._compile_tools_metadata,
-                user_prompt,
-                coding_turn=coding_turn,
-                allow_defaults=True,
+        # Every turn: the AI itself decides whether a tool is needed.
+        tools_metadata_str = await asyncio.to_thread(
+            self._compile_tools_metadata,
+            user_prompt,
+            coding_turn=coding_turn,
+            allow_defaults=True,
+        )
+        tool_definitions = self._control_tool_definitions(session_id) + json.loads(tools_metadata_str)
+        native_ids = [item.get("tool_id") for item in tool_definitions]
+        if "use_tool" in native_ids:
+            # Static block FIRST: identical bytes every turn, so Groq's
+            # prefix cache serves it and cached tokens do not count toward
+            # the free-tier per-minute limit. Variable parts come after.
+            system_prompt = self._jarvis_static_prefix() + "\n\n" + system_prompt
+        else:
+            system_prompt += self._action_mandate_block()
+        if not project_root:
+            system_prompt += (
+                " The requested project ID has no allowlisted canonical root, so local "
+                "project tools must fail closed."
             )
-            tool_definitions = self._control_tool_definitions(session_id) + json.loads(tools_metadata_str)
-            native_ids = [item.get("tool_id") for item in tool_definitions]
-            if "use_tool" in native_ids:
-                # Static block FIRST: identical bytes every turn, so Groq's
-                # prefix cache serves it and cached tokens do not count toward
-                # the free-tier per-minute limit. Variable parts come after.
-                system_prompt = self._jarvis_static_prefix() + "\n\n" + system_prompt
-            else:
-                system_prompt += self._action_mandate_block()
-            if not project_root:
-                system_prompt += (
-                    " The requested project ID has no allowlisted canonical root, so local "
-                    "project tools must fail closed."
-                )
 
         # Step 10: ROUTE TO LLM CLIENT / NATIVE AGENT LOOP
         called_tool_ids: list[str] = []

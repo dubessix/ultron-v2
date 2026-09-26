@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from typing import ClassVar, Iterable, List, TYPE_CHECKING
 
@@ -189,7 +188,7 @@ class ToolContextBuilder:
         """
         words = normalized_prompt.split()
         tokens = set(words)
-        tokens.update(a + b for a, b in zip(words, words[1:]))
+        tokens.update(a + b for a, b in zip(words, words[1:], strict=False))
         return tokens
 
     @classmethod
@@ -300,21 +299,3 @@ class ToolContextBuilder:
         )
         by_id = {tool.id: tool for tool in registered_tools}
         return [by_id[tool_id] for tool_id in selected_ids if tool_id in by_id]
-
-    def build_system_prompt_fragment(self, relevant_tools: List[BaseTool]) -> str:
-        """Assemble a structured fragment from selected tools only."""
-        if not relevant_tools:
-            return "No local tools are required for this exchange."
-
-        metadata = []
-        for tool in relevant_tools:
-            item = tool.get_metadata()
-            metadata.append(
-                {
-                    "tool_id": item["id"],
-                    "description": item["description"],
-                    "permission_level": item["permission_level"],
-                    "input_schema": item["input_schema"],
-                }
-            )
-        return json.dumps(metadata, separators=(",", ":"), ensure_ascii=True)

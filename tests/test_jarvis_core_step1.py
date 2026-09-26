@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, patch
 from backend.app.brain.llm_router import LLMRouter
 from backend.app.brain.token_budget import TokenBudget
 from backend.app.core.orchestrator import CognitiveOrchestrator
-from backend.app.tools import tool_catalog
 from backend.app.tools.tool_catalog import (
     build_tool_menu,
     menu_tool_ids,

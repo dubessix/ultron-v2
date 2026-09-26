@@ -52,10 +52,6 @@ def _greeting_for_hour(hour: int) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # small helpers (plain words for the voice)
 # ---------------------------------------------------------------------------
-def _local_now() -> datetime.datetime:
-    return datetime.datetime.now().astimezone()
-
-
 def _as_local(value: Any) -> Optional[datetime.datetime]:
     """ISO text -> aware local datetime. Naive values are local; a plain date is end of day."""
     if not value:
@@ -207,7 +203,7 @@ class DailyBriefingTool(BaseTool):
         rain_at = None
         hourly = body.get("hourly") or {}
         now_text = str(current.get("time") or "")
-        for stamp, chance in zip(hourly.get("time") or [], hourly.get("precipitation_probability") or []):
+        for stamp, chance in zip(hourly.get("time") or [], hourly.get("precipitation_probability") or [], strict=False):
             if now_text and str(stamp) < now_text[:13]:
                 continue
             if isinstance(chance, (int, float)) and chance >= _RAIN_ALERT_PERCENT:

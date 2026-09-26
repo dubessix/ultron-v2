@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import os
 import unittest
 import uuid
 from unittest.mock import patch
@@ -212,3 +211,39 @@ class TestNeverLost(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSchedulerCatchUp(unittest.TestCase):
+    """PC off for days: a daily reminder fires ONCE, then waits for its next future time."""
+
+    def test_next_future_target_skips_missed_days(self):
+        from backend.app.main import _next_future_target
+
+        now = dt.datetime(2026, 9, 26, 9, 0, tzinfo=dt.timezone.utc)
+        three_days_ago = now - dt.timedelta(days=3, hours=1)
+        nxt = _next_future_target(three_days_ago, dt.timedelta(days=1), now)
+        self.assertGreater(nxt, now)
+        self.assertLessEqual(nxt - now, dt.timedelta(days=1))
+        self.assertEqual(nxt.hour, three_days_ago.hour)
+
+    def test_on_time_repeat_moves_one_step(self):
+        from backend.app.main import _next_future_target
+
+        now = dt.datetime(2026, 9, 26, 9, 0, 1, tzinfo=dt.timezone.utc)
+        target = dt.datetime(2026, 9, 26, 9, 0, tzinfo=dt.timezone.utc)
+        self.assertEqual(_next_future_target(target, dt.timedelta(days=7), now), target + dt.timedelta(days=7))
+
+    def test_naive_stored_time_is_safe(self):
+        from backend.app.main import _next_future_target
+
+        now = dt.datetime(2026, 9, 26, 9, 0, tzinfo=dt.timezone.utc)
+        nxt = _next_future_target(dt.datetime(2026, 9, 20, 8, 0), dt.timedelta(days=1), now)
+        self.assertGreater(nxt, now)
+
+    def test_db_pass_runs_off_the_event_loop(self):
+        import inspect
+
+        from backend.app import main
+
+        self.assertFalse(inspect.iscoroutinefunction(main.collect_due_reminders))
+        self.assertIn("asyncio.to_thread(collect_due_reminders)", inspect.getsource(main.run_reminder_scheduler))
