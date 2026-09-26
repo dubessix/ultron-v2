@@ -40,6 +40,8 @@ export default function AppShell({
   toggleWidget,
   handleVoiceCommand,
   voicePaused,
+  voiceStopListening,
+  onStopJob,
   onVoiceStop,
   voiceClarification,
   onVoiceClarificationChoice,
@@ -93,6 +95,8 @@ export default function AppShell({
     paused: Boolean(voicePaused),
     activePersonality,
     alwaysListen,
+    listenForStop: Boolean(voiceStopListening),
+    onStop: () => onStopJob?.(),
     onCommand: (cmd) => {
       if (handleVoiceCommand) handleVoiceCommand(cmd);
     }
@@ -124,7 +128,9 @@ export default function AppShell({
       : voicePaused
         ? aiState === "speaking"
           ? "Voice paused — Ultron is speaking."
-          : "Voice paused — Ultron is working."
+          : voiceStopListening
+            ? "Ultron is working — say stop to stop."
+            : "Voice paused — Ultron is working."
         : !voice.isListening
           ? "Voice reconnecting…"
           : voice.wakeDetected

@@ -46,6 +46,7 @@ def control_rules() -> str:
         "- The owner answers your question: call owner_reply first.\n"
         "- switch_mode via use_tool, arguments {\"to\": \"zora|ultron|coding\", \"why\": \"asked|mood\"}: "
         "zora when he asks for Zora or sounds sad, stressed or tired (why=mood); ultron when he asks "
-        "for Ultron or work; coding when he wants code written, fixed, reviewed or debugged.\n"
+        "for Ultron or work; coding when he wants code written, fixed, reviewed or debugged "
+        "(only \"coding mode\" or another mode name = the routine tool).\n"
         "- He mentions the past: manage_memory search. He tells a fact worth keeping: manage_memory remember.\n"
     )

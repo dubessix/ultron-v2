@@ -34,7 +34,7 @@ class TestMetricCardTypography(unittest.TestCase):
 class TestCentreCoreScale(unittest.TestCase):
     def test_core_uses_larger_but_still_bounded_canvas_geometry(self):
         source = CORE.read_text(encoding="utf-8")
-        self.assertIn("isFullHdViewport ? 640 : 520", source)
+        self.assertIn("CORE_SIZE_FULL_HD = 480", source)
         self.assertIn("const width = canvasSize", source)
         self.assertIn("const height = canvasSize", source)
         self.assertIn("const baseRadius = canvasSize * 0.385", source)

@@ -23,7 +23,10 @@ class TestRecognitionPauseContract(unittest.TestCase):
         self.assertIn("paused: Boolean(voicePaused)", shell)
         self.assertIn('onVoiceStop?.("voice_session_stopped")', shell)
         self.assertIn("paused = false", voice)
-        self.assertIn("pausedRef.current || !enabledRef.current", voice)
+        # V2 Step D: paused = mic off, unless Ultron is working and listens for "stop".
+        self.assertIn("pausedRef.current && !listenForStopRef.current", voice)
+        self.assertIn("micOff() || !enabledRef.current", voice)
+        self.assertIn("voiceStopListening={isProcessing && !isSpeaking}", app)
 
     def test_pause_aborts_buffered_audio_and_returns_option_a_to_wake_only(self):
         voice = VOICE.read_text(encoding="utf-8")

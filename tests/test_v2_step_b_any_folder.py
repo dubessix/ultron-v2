@@ -92,8 +92,9 @@ class TestCodingTurnsWorkInTheOwnersProject(AnyFolderCase):
         answer, _result = self.run_tool("file_read", {"filepath": str(self.home / "Projects/app/main.py")},
                                         coding=True)
         self.assertNotIn("outside_active_project", str(answer))
-        # coding reads still show one privacy question (file goes to the cloud coder)
-        self.assertEqual((answer.get("pending_confirmation") or {}).get("tool_id"), "file_read")
+        # V2 Step D: the owner asked for the coding job, so reading his project needs
+        # no extra question (secret files stay blocked by path_guard).
+        self.assertIsNone(answer.get("pending_confirmation"))
 
     def test_restricted_mode_still_confines_coding(self):
         with patch("backend.app.security.path_guard.full_access_enabled", return_value=False):

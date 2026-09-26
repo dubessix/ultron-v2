@@ -328,6 +328,16 @@ class CancelActionRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+@api_router.post("/stop", status_code=status.HTTP_200_OK)
+async def stop_current_job() -> Dict[str, Any]:
+    """The owner said stop / ruko (voice or chat) while Ultron works: the running job
+    ends at its next step and a command running in wait mode ends now."""
+    from backend.app.core import stop_signal
+
+    stop_signal.request()
+    return {"success": True, "data": {"stopping": True}, "error": None}
+
+
 @api_router.post("/actions/cancel", status_code=status.HTTP_200_OK)
 async def cancel_pending_action(request: CancelActionRequest) -> Dict[str, Any]:
     """Owner said no (button or voice): the stored action is dropped for good."""

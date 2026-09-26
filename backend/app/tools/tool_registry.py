@@ -226,6 +226,7 @@ class ToolRegistry:
             "clipboard": ("backend.app.tools.pc_tools", "ClipboardTool"),
             "screenshot": ("backend.app.tools.pc_tools", "ScreenshotTool"),
             "notify": ("backend.app.tools.pc_tools", "NotifyTool"),
+            "routine": ("backend.app.tools.routine_tool", "RoutineTool"),
             "jarvis_actions": ("backend.app.tools.jarvis_actions_tool", "JarvisActionsTool"),
             "manage_task": ("backend.app.tools.task_tool", "TaskTool"),
             "manage_calendar": ("backend.app.tools.calendar_tool", "CalendarTool"),

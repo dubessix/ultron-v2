@@ -123,7 +123,7 @@ console.log(JSON.stringify({{
 
     def test_canvas_is_accessible_and_keeps_existing_laptop_bounds(self):
         source = CORE.read_text(encoding="utf-8")
-        self.assertIn("isFullHdViewport ? 640 : 520", source)
+        self.assertIn("CORE_SIZE_FULL_HD = 480", source)
         self.assertIn('role="img"', source)
         self.assertIn("dense particle core", source)
         self.assertIn("ultron-core-canvas", source)

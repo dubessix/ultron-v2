@@ -78,6 +78,7 @@ class ToolContextBuilder:
             "organize folder", "organise folder", "sort files", "clean folder",
             "organize", "organise", "desktop", "tidy",
         ),
+        "routine": ("coding mode", "routine", "study mode", "normal mode", "night mode", "work mode"),
         "open_url": ("open url", "open website", "open web page"),
         "open_new_tab": ("new tab", "open tab"),
         "close_tab": ("close tab", "close the tab", "close this tab", "close that tab", "tab band", "close youtube"),

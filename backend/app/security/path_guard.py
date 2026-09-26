@@ -23,7 +23,10 @@ _DEFAULT_BLOCKED_ROOTS = [
 _SENSITIVE_NAMES = {
     ".ssh", ".gnupg", ".aws", ".env", ".git-credentials", ".netrc",
     "credentials", "secrets", "keystore", "id_rsa", "id_ed25519",
+    ".npmrc", ".pypirc", ".pgpass", ".docker", "id_ecdsa", "id_dsa",
 }
+# Key / certificate files hold secrets whatever folder they are in.
+_SENSITIVE_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".kdbx")
 
 
 def _load_security_config() -> dict:
@@ -146,7 +149,7 @@ def _contains_sensitive_component(path: Path) -> bool:
         lowered = part.lower()
         if lowered in _SENSITIVE_NAMES or lowered.startswith(".env"):
             return True
-    return False
+    return path.name.lower().endswith(_SENSITIVE_SUFFIXES)
 
 
 def check_path(path_str: str) -> dict:

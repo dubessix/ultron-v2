@@ -48,7 +48,7 @@ class TestFullHdPresentation(unittest.TestCase):
         self.assertIn("isFullHdViewport", source)
         self.assertIn("window.innerWidth >= 1700", source)
         self.assertIn("window.innerHeight >= 900", source)
-        self.assertIn("isFullHdViewport ? 640 : 520", source)
+        self.assertIn("CORE_SIZE_FULL_HD = 480", source)
         self.assertIn("isFullHdViewport ? 1.2 : 1", source)
 
     def test_full_hd_header_panels_and_controls_receive_larger_presentation_classes(self):

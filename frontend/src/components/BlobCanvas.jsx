@@ -57,6 +57,14 @@ function stateProfile(aiState, amplitude) {
   return profile;
 }
 
+// Orb size in CSS pixels (V2 Step D: ~25% smaller than before, 520/640, so the
+// core takes less room and the old PC paints fewer pixels; look unchanged).
+export const CORE_SIZE = 400;
+export const CORE_SIZE_FULL_HD = 480;
+export function coreSize(fullHd) {
+  return fullHd ? CORE_SIZE_FULL_HD : CORE_SIZE;
+}
+
 /** Deterministic dense 3D point sphere rendered with Canvas 2D. */
 export default function BlobCanvas({
   aiState = 'idle',
@@ -81,7 +89,7 @@ export default function BlobCanvas({
     const ctx = canvas.getContext('2d');
     if (!ctx) return undefined;
 
-    const canvasSize = isFullHdViewport ? 640 : 520;
+    const canvasSize = coreSize(isFullHdViewport);
     const presentationScale = isFullHdViewport ? 1.2 : 1;
     const deviceScale = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = canvasSize * deviceScale;
@@ -208,7 +216,7 @@ export default function BlobCanvas({
     };
   }, [aiState, personality, amplitude, isFullHdViewport, presentation]);
 
-  const displaySize = isFullHdViewport ? 640 : 520;
+  const displaySize = coreSize(isFullHdViewport);
   return (
     <canvas
       ref={canvasRef}

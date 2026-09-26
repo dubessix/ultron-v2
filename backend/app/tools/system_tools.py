@@ -430,11 +430,17 @@ class TerminalRunTool(BaseTool):
                     "error": None if code == 0 else (data["stderr"] or f"Exited with code {code}.")}
 
         seconds = max(1, min(int(kwargs.get("wait_seconds") or DEFAULT_WAIT_SECONDS), MAX_WAIT_SECONDS))
+        from backend.app.core import stop_signal
+
         try:
-            code = await terminal_jobs.wait(job["id"], seconds)
+            code = await terminal_jobs.wait(job["id"], seconds, should_stop=stop_signal.requested)
         except asyncio.CancelledError:
             await asyncio.to_thread(terminal_jobs.kill_now, job["id"])  # a cancelled turn leaves nothing behind
             raise
+        if code is None and stop_signal.requested():
+            await asyncio.to_thread(terminal_jobs.stop, job["id"])  # the owner said stop: end it now
+            return {"success": False, "error": "Stopped because you said stop.",
+                    "data": {"stopped": True, "job_id": job["id"], **terminal_jobs.output(job)}}
         out = terminal_jobs.output(job)
         if code is None:
             return {"success": True, "error": None, "data": {

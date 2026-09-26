@@ -141,13 +141,12 @@ export default function RightPanel({
             type="text"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            disabled={isProcessing}
-            placeholder={isProcessing ? "Processing..." : "Ask anything, Ultron is listening..."}
+            placeholder={isProcessing ? "Working… type stop to stop" : "Ask anything, Ultron is listening..."}
             className="min-w-0 flex-1 bg-transparent font-mono text-[11px] text-[#F5F5F7] placeholder-white/35 focus:outline-none 2xl:text-[12px]"
           />
           <button
             type="submit"
-            disabled={isProcessing || !inputValue.trim()}
+            disabled={!inputValue.trim()}
             className="text-xs ml-2 transition-all disabled:opacity-20"
             style={{ color: activeTheme.primary }}
             aria-label="Send message"

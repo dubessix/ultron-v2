@@ -5,6 +5,7 @@ import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
 import { api, apiBase, executeTool, websocketBase } from './api';
 import { progressAction } from './liveProgress';
+import { isStopCommand, requestStop } from './stopCommand';
 import { connectEvents, planForEvent, planForReturn } from './reminderAlerts';
 import { isPlaybackBlocked, playbackProblem } from './speechPlayback';
 
@@ -994,9 +995,26 @@ export default function App() {
     });
   };
 
+  // "stop" / "ruko" while Ultron works (voice or chat): the job ends at its next step.
+  const stopJob = useCallback(async () => {
+    if (!processingRef.current) return;
+    setActivityText("Stopping…");
+    await requestStop(apiBase);
+  }, []);
+
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    if (!inputValue.trim() || isProcessing) return;
+    if (!inputValue.trim()) return;
+    if (isProcessing) {
+      // While a job runs, the box accepts only a stop word; anything else waits.
+      if (isStopCommand(inputValue)) {
+        const said = inputValue.trim();
+        setInputValue("");
+        setMessages(prev => [...prev, { id: "user_" + Date.now(), sender: "user", text: said }]);
+        void stopJob();
+      }
+      return;
+    }
 
     const userText = inputValue.trim();
     setInputValue("");
@@ -1119,6 +1137,8 @@ export default function App() {
         toggleWidget={toggleWidget}
         handleVoiceCommand={handleVoiceCommand}
         voicePaused={isProcessing || isSpeaking}
+        voiceStopListening={isProcessing && !isSpeaking}
+        onStopJob={stopJob}
         onVoiceStop={stopSpeaking}
         voiceClarification={voiceClarification}
         onVoiceClarificationChoice={handleVoiceClarificationChoice}

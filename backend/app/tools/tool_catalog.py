@@ -56,6 +56,7 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("clipboard", "action=read|write|save, ?text"),
             ("screenshot", "(none): save the screen to Pictures/Ultron"),
             ("notify", "message, ?title: desktop pop-up"),
+            ("routine", "name ('coding mode'), ?action=list: saved steps"),
             ("jarvis_actions", "action=log|undo|undo_list|trusted|revoke, ?day, ?id"),
             ("terminal_run", "command, ?cwd, ?mode=wait|background|status|stop, ?job_id: shell"),
             ("system_metrics", "(none): CPU, RAM, disk, uptime"),

@@ -365,23 +365,20 @@ class TestNativeAgentConfirmationResume(unittest.IsolatedAsyncioTestCase):
         context = confirmed.pop("_resume_context")
         return await self.orchestrator.resume_agent_after_confirmation(context, confirmed)
 
-    async def test_file_content_egress_and_write_each_require_exact_resume(self):
+    async def test_coding_reads_freely_and_asks_once_before_replacing_a_file(self):
+        """Step D: reading project code needs no yes (secret files are blocked in code);
+        replacing a whole existing file asks once, then the job finishes."""
         first = await self.orchestrator.process_request(
             "Read and update the code file module",
             self.session,
             project_id="personal",
             force_coding=True,  # the AI chose switch_mode(coding) / the owner's toggle
         )
-        read_pending = first["pending_confirmation"]
-        self.assertEqual(read_pending["tool_id"], "file_read")
-        self.assertEqual(self.target.read_text(encoding="utf-8"), "VALUE = 1\n")
-        self.assertEqual(self.orchestrator.router.get_completions_with_tools.await_count, 1)
-
-        after_read = await self._confirm_and_resume(read_pending)
-        write_pending = after_read["pending_confirmation"]
-        self.assertIsNotNone(write_pending, after_read)
+        write_pending = first["pending_confirmation"]
+        self.assertIsNotNone(write_pending, first)
         self.assertEqual(write_pending["tool_id"], "file_write")
         self.assertEqual(self.target.read_text(encoding="utf-8"), "VALUE = 1\n")
+        self.assertEqual(self.orchestrator.router.get_completions_with_tools.await_count, 2)
 
         after_write = await self._confirm_and_resume(write_pending)
         self.assertIsNone(after_write["pending_confirmation"])

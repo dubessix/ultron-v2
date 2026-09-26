@@ -1,3 +1,4 @@
+import { isStopCommand } from '../stopCommand';
 import { useRef, useState, useCallback, useEffect } from 'react';
 
 /**
@@ -158,6 +159,10 @@ export default function useVoice({
   paused = false,
   activePersonality = 'ultron',
   alwaysListen = false,
+  // V2 Step D: while Ultron works (paused, not speaking) keep the mic on but act
+  // ONLY on a stop word ("stop", "ruko"...), which calls onStop once.
+  listenForStop = false,
+  onStop,
 }) {
   const [isListening, setIsListening] = useState(false);
   const [wakeDetected, setWakeDetected] = useState(false);
@@ -175,6 +180,9 @@ export default function useVoice({
   const onCommandRef = useRef(onCommand);
   const activePersonalityRef = useRef(activePersonality);
   const alwaysListenRef = useRef(alwaysListen);
+  const listenForStopRef = useRef(listenForStop);
+  const onStopRef = useRef(onStop);
+  const stopSentRef = useRef(false);
   const fatalRef = useRef(false);
   const sessionIdRef = useRef(0);
 
@@ -205,6 +213,11 @@ export default function useVoice({
   onCommandRef.current = onCommand;
   activePersonalityRef.current = activePersonality;
   alwaysListenRef.current = alwaysListen;
+  listenForStopRef.current = listenForStop;
+  onStopRef.current = onStop;
+  // The recognizer must be fully off (not even listening for "stop"). Reads refs
+  // only, so one stable function serves every callback.
+  const micOff = useCallback(() => pausedRef.current && !listenForStopRef.current, []);
 
   const clearTimer = useCallback((ref) => {
     if (ref.current) {
@@ -244,7 +257,7 @@ export default function useVoice({
       restartTimerRef.current
       || recRef.current !== recognizer
       || !enabledRef.current
-      || pausedRef.current
+      || micOff()
       || fatalRef.current
       || recognizerRunningRef.current
     ) {
@@ -264,7 +277,7 @@ export default function useVoice({
       if (
         recRef.current !== recognizer
         || !enabledRef.current
-        || pausedRef.current
+        || micOff()
         || fatalRef.current
         || recognizerRunningRef.current
       ) {
@@ -278,7 +291,7 @@ export default function useVoice({
         restartSchedulerRef.current?.(recognizer);
       }
     }, delay);
-  }, []);
+  }, [micOff]);
   restartSchedulerRef.current = scheduleRestart;
 
   const buildTurnText = useCallback(() => {
@@ -435,7 +448,7 @@ export default function useVoice({
     }
 
     if (recRef.current) {
-      if (!recognizerRunningRef.current && !pausedRef.current && !fatalRef.current) {
+      if (!recognizerRunningRef.current && !micOff() && !fatalRef.current) {
         try { recRef.current.start(); } catch (_error) { scheduleRestart(recRef.current); }
       }
       return;
@@ -448,7 +461,25 @@ export default function useVoice({
     recognizer.lang = RECOG_LANG;
 
     recognizer.onresult = (event) => {
-      if (recRef.current !== recognizer || pausedRef.current || !enabledRef.current) return;
+      if (recRef.current !== recognizer || !enabledRef.current) return;
+      if (pausedRef.current) {
+        // Ultron is working: only a stop word counts, everything else is ignored.
+        if (!listenForStopRef.current || stopSentRef.current) return;
+        for (let index = event.resultIndex; index < event.results.length; index += 1) {
+          const result = event.results[index];
+          const count = Math.min(result?.length || 0, 3);
+          for (let alt = 0; alt < count; alt += 1) {
+            const said = String(result[alt]?.transcript || '');
+            if (isStopCommand(said)) {
+              stopSentRef.current = true;
+              setHeardText(said.trim());
+              onStopRef.current?.();
+              return;
+            }
+          }
+        }
+        return;
+      }
       networkErrorsRef.current = 0;
 
       if (capturingRef.current) {
@@ -542,7 +573,7 @@ export default function useVoice({
       restartAttemptRef.current = 0;
       recognizerRunningRef.current = true;
       sessionIdRef.current += 1;
-      if (pausedRef.current || !enabledRef.current) {
+      if (micOff() || !enabledRef.current) {
         try { recognizer.abort(); } catch (_error) {}
         return;
       }
@@ -587,6 +618,7 @@ export default function useVoice({
     beginWakeTurn,
     clearRestartTimer,
     clearTimer,
+    micOff,
     resetTurn,
     scheduleRestart,
     updateTurnFromResult,
@@ -626,7 +658,7 @@ export default function useVoice({
     const recognizer = recRef.current;
     if (!enabled || !recognizer) return;
 
-    if (paused) {
+    if (paused && !listenForStop) {
       clearRestartTimer();
       restartAttemptRef.current = 0;
       resetTurn(false);
@@ -635,11 +667,16 @@ export default function useVoice({
       try { recognizer.abort(); } catch (_error) {}
       return;
     }
+    if (paused) {
+      // Working, not speaking: listen for "stop" only (one stop per job).
+      resetTurn(false);
+      stopSentRef.current = false;
+    }
 
     if (!fatalRef.current && !recognizerRunningRef.current) {
       try { recognizer.start(); } catch (_error) { scheduleRestart(recognizer); }
     }
-  }, [clearRestartTimer, enabled, paused, resetTurn, scheduleRestart]);
+  }, [clearRestartTimer, enabled, paused, listenForStop, resetTurn, scheduleRestart]);
 
   useEffect(() => () => {
     clearTurnTimers();

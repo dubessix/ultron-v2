@@ -24,7 +24,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 IS_WINDOWS = os.name == "nt"
 HEAD_CHARS = 1500
@@ -161,15 +161,16 @@ def _mark_ended(job_id: str, code: int) -> None:
         _procs.pop(job_id, None)
 
 
-async def wait(job_id: str, seconds: float) -> Optional[int]:
-    """Wait up to `seconds` for the job; exit code, or None if still running."""
+async def wait(job_id: str, seconds: float, should_stop: Optional[Callable[[], bool]] = None) -> Optional[int]:
+    """Wait up to `seconds` for the job; exit code, or None if still running
+    (also None at once when `should_stop()` turns true - the owner said stop)."""
     deadline = time.monotonic() + max(0.0, seconds)
     while True:
         code = _poll(job_id)
         if code is not None:
             _mark_ended(job_id, code)
             return code
-        if time.monotonic() >= deadline:
+        if time.monotonic() >= deadline or (should_stop is not None and should_stop()):
             return None
         await asyncio.sleep(0.25)
 

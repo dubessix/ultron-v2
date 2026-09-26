@@ -89,6 +89,7 @@ def line_for(tool_id: str, args: Optional[dict] = None) -> str:
         "manage_task": "Updating your tasks", "manage_calendar": "Checking your calendar",
         "pc_control": f"Setting {action}" if action else "Adjusting your PC",
         "screenshot": "Taking a screenshot",
+        "routine": f"Starting {_plain(a.get('name')) or 'the routine'}" if action != "list" else "Checking your routines",
         "create_folder": f"Creating {_plain(a.get('folderpath')) or 'the folder'}",
     }
     return lines.get(tool_id) or f"Working on it with {tool_id.replace('_', ' ')}"

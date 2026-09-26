@@ -34,6 +34,8 @@ from backend.app.core import widgets as widget_choice
 _SHARED_CODING_MODE = False
 
 class CognitiveOrchestrator:
+    MAX_FAILURES_IN_A_ROW = 3
+
     def __init__(
         self,
         intent_analyzer: Optional[IntentAnalyzer] = None,
@@ -56,7 +58,7 @@ class CognitiveOrchestrator:
         # - auto: a CODING intent triggers NVIDIA coding provider automatically
         # False = Auto (CODING intents use NVIDIA); True = force NVIDIA for all turns.
         self.coding_mode: bool = _SHARED_CODING_MODE
-        self.max_coding_steps: int = 8  # bound multi-file tasks to prevent runaway loops
+        self.max_coding_steps: int = 12  # read -> edit -> test -> fix fits; still bounded
         # Everyday Jarvis jobs (find -> organize -> zip -> report) need more room
         # than one tool; still bounded so a confused model cannot loop forever.
         self.max_agent_steps: int = 15
@@ -841,28 +843,24 @@ class CognitiveOrchestrator:
                     ),
                 }
 
-        owner_approved = False
-        if not coding_turn:
-            # Jarvis: the owner said it, Ultron does it. Ask only before truly risky
-            # steps, and never twice after the owner already said yes.
-            from backend.app.core import approval
+        # Jarvis (coding jobs too): the owner said it, Ultron does it. Ask only before
+        # truly risky steps (whole-file overwrite, delete, risky command...), and never
+        # twice after the owner already said yes. Secret files are blocked by path_guard.
+        from backend.app.core import approval
 
-            try:
-                level = int(tool.permission_for_arguments(arguments))
-            except Exception:
-                level = int(getattr(tool, "permission_level", 2))
-            owner_approved = level < 3 and (
-                getattr(self, "_turn_owner_yes", False)
-                or not approval.needs_ask(tool_id, arguments, level)
-            )
+        try:
+            level = int(tool.permission_for_arguments(arguments))
+        except Exception:
+            level = int(getattr(tool, "permission_level", 2))
+        owner_approved = level < 3 and (
+            getattr(self, "_turn_owner_yes", False)
+            or not approval.needs_ask(tool_id, arguments, level)
+        )
         result = await registry.execute_tool(
             tool_id=tool_id,
             args=arguments,
             session_id=session_id,
             max_retries=0,
-            # Coding turns: project file content needs an exact owner confirmation
-            # before a cloud agent reads it. Personal turns: the owner asked.
-            require_confirmation=(tool_id == "file_read" and coding_turn),
             resume_context=resume_context,
             owner_approved=owner_approved,
         )
@@ -925,6 +923,21 @@ class CognitiveOrchestrator:
                 call, meta_error = self._unwrap_meta_call(wire_call, registry)
                 tool_id = str(call.get("name") or "")
                 wire_name = str(wire_call.get("name") or tool_id)
+                from backend.app.core import stop_signal
+
+                if stop_signal.requested():
+                    # The owner said stop / ruko: nothing more runs. Say what was done.
+                    finished = [str(r.get("tool")) for r in results if isinstance(r, dict) and r.get("success")]
+                    self._dispatch_log("info", "Stopped by the owner.")
+                    return {
+                        "content": stop_signal.STOPPED_REPLY
+                        + (f" {len(finished)} step(s) were already done." if finished else " Nothing was changed."),
+                        "called_tool_ids": called,
+                        "tool_results": results,
+                        "pending_confirmation": None,
+                        "steps_used": steps_used,
+                        "stopped": True,
+                    }
                 if steps_used >= step_limit:
                     return {
                         "content": (
@@ -1034,9 +1047,21 @@ class CognitiveOrchestrator:
                 )
                 if not result.get("success"):
                     self._dispatch_log("error", f"Tool {tool_id} failed safely.")
-                    if coding_turn:
+                    # The error goes back to the brain so it can fix it (coding too:
+                    # a failed test or a wrong path is information, not the end).
+                    # Three failures in a row = stop and say so honestly, no loops.
+                    streak = 0
+                    for item in reversed(results):
+                        if not isinstance(item, dict) or item.get("success"):
+                            break
+                        if item.get("status") == "PENDING_CONFIRMATION" or str(
+                                item.get("error") or "").startswith("Skipped while waiting"):
+                            continue  # asked / skipped, not a failed try
+                        streak += 1
+                    if streak >= self.MAX_FAILURES_IN_A_ROW:
                         return {
-                            "content": f"Stopped safely because {tool_id} failed: {result.get('error')}",
+                            "content": (f"I stopped after {streak} failed tries in a row. "
+                                        f"Last problem: {str(result.get('error') or 'unknown')[:200]}"),
                             "called_tool_ids": called,
                             "tool_results": results,
                             "pending_confirmation": None,
@@ -1062,6 +1087,9 @@ class CognitiveOrchestrator:
     ) -> dict:
         """Serialize confirmation resume with normal shared-orchestrator turns."""
         async with self._request_lock:
+            from backend.app.core import stop_signal
+
+            stop_signal.begin()
             try:
                 return await self._resume_agent_after_confirmation_unlocked(
                     resume_context,
@@ -1124,20 +1152,10 @@ class CognitiveOrchestrator:
             )
             results.append(self._agent_result_item(skipped_id, skipped.get("arguments") or {}, skipped_result))
 
-        coding_resume = bool(resume_context.get("coding_turn"))
-        if not confirmed_result.get("success") and coding_resume:
-            return {
-                "content": f"Confirmed {tool_id} step failed: {confirmed_result.get('error')}",
-                "called_tool_ids": list(resume_context.get("called_tool_ids") or []),
-                "tool_results": results,
-                "pending_confirmation": None,
-                "success": False,
-            }
-
-        # Personal job: the owner approved it, so later steps of the same job run
-        # without asking again (level 3 still asks). A failed step goes back to the
-        # brain too: it tries another way once, then answers honestly.
-        self._turn_owner_yes = not coding_resume
+        # The owner approved this job, so later steps of the same job run without
+        # asking again (level 3 still asks) - coding jobs too. A failed step goes back
+        # to the brain: it tries another way, then answers honestly.
+        self._turn_owner_yes = True
         try:
             response = await self.router.get_completions_with_tools(
                 str(resume_context.get("system_prompt") or ""),
@@ -1330,6 +1348,9 @@ class CognitiveOrchestrator:
         force_coding: bool = False,
     ) -> Dict[str, Any]:
         async with self._request_lock:
+            from backend.app.core import stop_signal
+
+            stop_signal.begin()  # a "stop" from now on ends this job at its next step
             return await self._process_request_unlocked(
                 user_prompt=user_prompt,
                 session_id=session_id,
