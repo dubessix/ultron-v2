@@ -108,7 +108,7 @@ GITHUB_TOKEN_1=
 GITHUB_USERNAME_1=
 ```
 
-Empty values and documented placeholders are ignored. Slots may be non-contiguous, so a placeholder in slot 1 and real keys in slots 3/4 loads only the real keys. Active keys rotate and cooling/failed keys are skipped. Do not commit `.env`, paste credentials into source/config files, or place tokens in Git remote URLs.
+Empty values and documented placeholders are ignored. Slots may be non-contiguous, so a placeholder in slot 1 and real keys in slots 3/4 loads only the real keys. Ultron stays on one active key and moves to the next only on a real limit (429), a bad key, or a full minute; cooling/failed keys are skipped. Do not commit `.env`, paste credentials into source/config files, or place tokens in Git remote URLs.
 
 Without a provider key, chat returns an explicit offline/unprocessed response. Local non-LLM tools remain available through their widgets/API.
 

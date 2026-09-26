@@ -48,11 +48,76 @@ class KeyRoundRobinTests(unittest.IsolatedAsyncioTestCase):
         await self.router.close()
         self.env.stop()
 
-    async def test_keys_rotate_every_call_like_before(self):
+    async def test_same_key_is_kept_while_it_has_room(self):
+        # Owner's rule (V2): no jumping groq1 -> groq2 -> groq3 without a real
+        # limit. One key keeps Groq's per-account prompt cache warm.
         for _ in range(6):
             await self.router._execute_groq_pipeline("sys", "hi", 0.2)
-        expected = [KEYS[f"GROQ_API_KEY_{i}"] for i in (1, 2, 3, 1, 2, 3)]
-        self.assertEqual(self.used, expected)
+        self.assertEqual(self.used, [KEYS["GROQ_API_KEY_1"]] * 6)
+
+    async def test_moves_on_only_when_the_key_is_really_full_and_stays(self):
+        key1, key2 = KEYS["GROQ_API_KEY_1"], KEYS["GROQ_API_KEY_2"]
+        await self.router._execute_groq_pipeline("sys", "hi", 0.2)
+        self.router.token_budget.record_usage(self.router._bucket("groq", key1), {"prompt_tokens": 7900})
+        for _ in range(3):
+            await self.router._execute_groq_pipeline("sys", "hi", 0.2)
+        self.assertEqual(self.used, [key1, key2, key2, key2])  # no jump back
+
+    async def test_real_429_moves_to_next_key_and_stays(self):
+        key1, key2 = KEYS["GROQ_API_KEY_1"], KEYS["GROQ_API_KEY_2"]
+        answers = [httpx.Response(429, headers={"retry-after": "7"},
+                                  request=httpx.Request("POST", "https://api.groq.com")),
+                   _ok(), _ok()]
+        used = []
+
+        async def post(url, headers=None, json=None, timeout=None):
+            used.append(headers["Authorization"].split(" ", 1)[1])
+            return answers.pop(0)
+
+        self.router.client.post = post
+        await self.router._execute_groq_pipeline("sys", "hi", 0.2)
+        await self.router._execute_groq_pipeline("sys", "hi", 0.2)
+        self.assertEqual(used, [key1, key2, key2])
+
+    async def test_busy_provider_retries_the_same_key(self):
+        key1 = KEYS["GROQ_API_KEY_1"]
+        answers = [httpx.Response(503, request=httpx.Request("POST", "https://api.groq.com")), _ok()]
+        used = []
+
+        async def post(url, headers=None, json=None, timeout=None):
+            used.append(headers["Authorization"].split(" ", 1)[1])
+            return answers.pop(0)
+
+        self.router.client.post = post
+        with patch("backend.app.brain.llm_router.asyncio.sleep", new=AsyncMock()) as sleep:
+            await self.router._execute_groq_pipeline("sys", "hi", 0.2)
+        self.assertEqual(used, [key1, key1])
+        sleep.assert_awaited()  # short pause, not a jump
+        self.assertEqual(self.router.key_manager.active_keys("groq")[0], key1)  # not cooled
+
+    async def test_network_blip_retries_the_same_key(self):
+        key1 = KEYS["GROQ_API_KEY_1"]
+        used = []
+
+        async def post(url, headers=None, json=None, timeout=None):
+            used.append(headers["Authorization"].split(" ", 1)[1])
+            if len(used) == 1:
+                raise httpx.ConnectError("blip")
+            return _ok()
+
+        self.router.client.post = post
+        with patch("backend.app.brain.llm_router.asyncio.sleep", new=AsyncMock()):
+            await self.router._execute_groq_pipeline("sys", "hi", 0.2)
+        self.assertEqual(used, [key1, key1])
+
+    async def test_daily_limit_rests_the_key_for_hours(self):
+        key1 = KEYS["GROQ_API_KEY_1"]
+        response = httpx.Response(429, headers={"retry-after": "7200"},
+                                  request=httpx.Request("POST", "https://api.groq.com"))
+        self.router._classify_http_failure("groq", key1, response)
+        self.assertNotIn(key1, self.router.key_manager.active_keys("groq"))
+        remaining = self.router.key_manager._cooldowns[key1] - __import__("time").time()
+        self.assertGreater(remaining, 7000)
 
     async def test_full_key_is_skipped_not_waited_on(self):
         key1 = KEYS["GROQ_API_KEY_1"]

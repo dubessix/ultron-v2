@@ -109,14 +109,15 @@ class TestKeyStateSafety(unittest.TestCase):
             request=httpx.Request("POST", "https://provider.invalid/test"),
         )
 
-    def test_temporary_http_failure_cools_but_does_not_fail_key(self):
+    def test_temporary_http_failure_pauses_and_keeps_the_same_key(self):
+        # Busy provider (5xx) is not a key problem: pause and retry the same key.
         router = LLMRouter(key_manager=self.manager, cache=SmartCache(max_items=2))
         try:
             self.assertEqual(
                 router._classify_http_failure("groq", "only-key", self._response(503)),
-                "retry",
+                "pause",
             )
-            self.assertEqual(self.manager._keys["groq"][0]["state"], "COOLING")
+            self.assertEqual(self.manager._keys["groq"][0]["state"], "ACTIVE")
         finally:
             asyncio.run(router.close())
 

@@ -65,7 +65,7 @@ class TestPhase2BrainArchitecture(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(new_cache.get("persist_key"), "persist_value")
 
     def test_key_manager_state_transitions(self):
-        """Test 3: Test round-robin key selection and cooling/failed transitions."""
+        """Test 3: sticky key selection (no per-call jumping) and cooling/failed transitions."""
         manager = APIKeyManager()
         
         # Override key structures with test mocks
@@ -75,14 +75,8 @@ class TestPhase2BrainArchitecture(unittest.IsolatedAsyncioTestCase):
             {"key": "mock_groq_3", "state": "ACTIVE"}
         ]
         
-        # First round-robin pass
-        k1 = manager.get_active_key("groq")
-        k2 = manager.get_active_key("groq")
-        k3 = manager.get_active_key("groq")
-        
-        self.assertEqual(k1, "mock_groq_1")
-        self.assertEqual(k2, "mock_groq_2")
-        self.assertEqual(k3, "mock_groq_3")
+        # The same key is used while it is ACTIVE (no jumping).
+        self.assertEqual([manager.get_active_key("groq") for _ in range(3)], ["mock_groq_1"] * 3)
         
         # Mark key 1 as cooling
         manager.mark_key_cooling("groq", "mock_groq_1", duration_sec=5)
@@ -115,15 +109,12 @@ class TestPhase2BrainArchitecture(unittest.IsolatedAsyncioTestCase):
         router = LLMRouter(key_manager=manager, cache=cache)
         
         # Define mock responses
-        # Attempt 1 (Groq Key 1): 429 -> temporary cooling.
-        # Attempt 2 (Groq Key 2): 500 -> temporary cooling.
-        # Both keys are then cooling, so Groq is not force-reused and the router
-        # cascades to Gemini, which succeeds.
+        # Attempt 1 (Groq Key 1): 429 -> real limit, key rests.
+        # Attempt 2 (Groq Key 2): 429 -> real limit, key rests.
+        # Every Groq key is really limited, so (and only then) the router
+        # cascades to Gemini, which succeeds. (A 5xx keeps the same key.)
         mock_response_429 = MagicMock(spec=httpx.Response)
         mock_response_429.status_code = 429
-        
-        mock_response_500 = MagicMock(spec=httpx.Response)
-        mock_response_500.status_code = 500
         
         mock_response_success = MagicMock(spec=httpx.Response)
         mock_response_success.status_code = 200
@@ -138,7 +129,7 @@ class TestPhase2BrainArchitecture(unittest.IsolatedAsyncioTestCase):
         # Set mock side effects
         mock_post.side_effect = [
             mock_response_429,
-            mock_response_500,
+            mock_response_429,
             mock_response_success,
         ]
         

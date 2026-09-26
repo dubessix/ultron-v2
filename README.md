@@ -104,7 +104,7 @@ Copy `.env.example` to `.env` (setup does this for you) and paste real keys. **N
 | `GITHUB_USERNAME_n` + `GITHUB_TOKEN_n` | GitHub → Settings → Developer settings → Tokens | GitHub tools (optional) |
 
 - You can fill any slots — empty values and placeholders (like `your_groq_api_key_1_here`) are ignored. Slots may be non-contiguous: a real key only in `GROQ_API_KEY_3` and `GROQ_API_KEY_4` works fine.
-- Several keys for one provider rotate automatically; a failing key cools down and the next one is used.
+- Several keys for one provider: Ultron stays on ONE key while it works (this keeps Groq's cache warm, so fewer tokens count). He moves to the next key only when Groq really says limit (429), the key is wrong, or that key's minute is full, and then stays on the new key. A busy server or network blip retries the same key. Gemini is used only when every Groq key is really out.
 - **One Groq key is enough to start.**
 
 Models (change in `config.yaml` or with an environment variable):

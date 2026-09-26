@@ -94,8 +94,8 @@ class LLMRouter:
     def get_provider_order(self, provider_preference: str | None = None) -> list[str]:
         """Return stable capability preference + configured fallback order.
 
-        Providers are not round-robin: that would change behavior/personality
-        between turns. API keys still rotate within each provider.
+        Providers never rotate: that would change behavior/personality
+        between turns. Keys stay on one key until a real limit (see _acquire_key).
         """
         requested = str(provider_preference or "").strip().lower()
         ordered = []
@@ -120,14 +120,20 @@ class LLMRouter:
             return
 
     @staticmethod
-    def _retry_after(response: httpx.Response) -> int:
-        """Seconds from a 429 'retry-after' header (bounded 1..90; 0 = not given)."""
+    def _retry_after(response: httpx.Response, cap: int = 90) -> int:
+        """Seconds from a 429 'retry-after' header (bounded 1..cap; 0 = not given).
+        The key rests the full time (cap 6 h, e.g. a daily limit); the wait loop
+        itself never sleeps longer than _MAX_COOLING_WAIT_SECONDS."""
         try:
             headers = getattr(response, "headers", None) or {}
             value = float(str(headers.get("retry-after", "")).strip())
         except (AttributeError, TypeError, ValueError):
             return 0
-        return int(max(1, min(value, 90))) if value > 0 else 0
+        return int(max(1, min(value, cap))) if value > 0 else 0
+
+    async def _short_pause(self, attempt: int) -> None:
+        """Busy provider or network blip: wait 0.5 s, 1 s, 1.5 s (max 2 s), same key."""
+        await asyncio.sleep(min(2.0, 0.5 * (attempt + 1)))
 
     async def _maybe_discover(self, provider: str) -> None:
         """Whole fallback list retired: ask the provider for today's models (1x/day)."""
@@ -368,7 +374,7 @@ class LLMRouter:
         """True only when the owner says all keys of this provider are ONE account.
 
         Default is per key: keys from different accounts each have their own
-        free limit, so N keys = N x the capacity (the reason for round-robin).
+        free limit, so N keys = N x the capacity (used one after another).
         Set ULTRON_GROQ_KEYS_SHARE_LIMIT=1 if every key is from one account.
         """
         flag = os.getenv(f"ULTRON_{provider.upper()}_KEYS_SHARE_LIMIT", "")
@@ -403,11 +409,12 @@ class LLMRouter:
         )
 
     async def _acquire_key(self, provider: str, payload: dict[str, Any]) -> str:
-        """Round-robin to the next key that has room this minute.
+        """Stay on the current key while it has room (owner's rule: no jumping).
 
-        Walks the pool in the normal rotation order; a key whose minute is
-        full is skipped (not waited on). Only when every key is full does it
-        pause (max 20 s) on the key that frees up first.
+        The same key keeps Groq's prompt cache warm (each account has its own
+        cache). Only when THIS key's minute is really full does it move to the
+        next key, and it stays there. When every key is full it pauses
+        (max 20 s) on the key that frees up first.
         """
         pool_size = max(1, len(self._active_keys(provider)))
         best_key, best_wait = None, float("inf")
@@ -419,6 +426,7 @@ class LLMRouter:
                 return key
             if wait < best_wait:
                 best_key, best_wait = key, wait
+            self.key_manager.move_on(provider, key)
         if best_key is not None and best_wait > 0:
             await self._respect_budget(provider, payload, key=best_key)
         return best_key or self.key_manager.get_active_key(provider)
@@ -750,18 +758,15 @@ class LLMRouter:
                     timeout=self.request_timeout,
                 )
             except httpx.RequestError as exc:
-                self.key_manager.mark_key_cooling(
-                    provider,
-                    key,
-                    duration_sec=self._cooldown_seconds(15),
-                )
                 if attempt == self.provider_attempts - 1:
                     raise RuntimeError(
                         f"{provider} native-tool network attempts exhausted: {exc}"
                     ) from exc
+                await self._short_pause(attempt)
                 continue
             if response.status_code != 200:
-                self._classify_http_failure(provider, key, response)
+                if self._classify_http_failure(provider, key, response) == "pause":
+                    await self._short_pause(attempt)
                 continue
             body = response.json()
             self._record_usage(provider, key, body.get("usage") if isinstance(body, dict) else None)
@@ -810,18 +815,15 @@ class LLMRouter:
                     timeout=self.request_timeout,
                 )
             except httpx.RequestError as exc:
-                self.key_manager.mark_key_cooling(
-                    provider,
-                    key,
-                    duration_sec=self._cooldown_seconds(15),
-                )
                 if attempt == self.provider_attempts - 1:
                     raise RuntimeError(
                         f"Gemini native-tool network attempts exhausted: {exc}"
                     ) from exc
+                await self._short_pause(attempt)
                 continue
             if response.status_code != 200:
-                self._classify_http_failure(provider, key, response)
+                if self._classify_http_failure(provider, key, response) == "pause":
+                    await self._short_pause(attempt)
                 continue
             return self._parse_gemini_native_message(response.json())
         self._raise_if_cooling(provider)
@@ -833,17 +835,17 @@ class LLMRouter:
         if status == 429:
             # V2 Step E3: the provider says exactly when this key is free again.
             self.key_manager.mark_key_cooling(
-                provider, key, duration_sec=self._retry_after(response) or self._cooldown_seconds(30)
+                provider, key,
+                duration_sec=self._retry_after(response, cap=6 * 3600) or self._cooldown_seconds(30),
             )
             return "retry"
         if status in self._AUTH_STATUS:
             self.key_manager.mark_key_failed(provider, key)
             return "retry"
         if status in self._TEMPORARY_STATUS:
-            self.key_manager.mark_key_cooling(
-                provider, key, duration_sec=self._cooldown_seconds(15)
-            )
-            return "retry"
+            # Provider busy (5xx/timeout): the key is fine. Retry the SAME key
+            # after a short pause; no fake "cooling" that makes keys jump.
+            return "pause"
 
         # V2 Step E2: the provider retired this model -> use the next one now.
         from backend.app.brain import model_fallback
@@ -890,14 +892,13 @@ class LLMRouter:
                     timeout=self.request_timeout,
                 )
             except httpx.RequestError as exc:
-                self.key_manager.mark_key_cooling(
-                    provider, key, duration_sec=self._cooldown_seconds(15)
-                )
                 if attempt == self.provider_attempts - 1:
                     raise RuntimeError(f"Groq network attempts exhausted: {exc}") from exc
+                await self._short_pause(attempt)
                 continue
             if response.status_code != 200:
-                self._classify_http_failure(provider, key, response)
+                if self._classify_http_failure(provider, key, response) == "pause":
+                    await self._short_pause(attempt)
                 continue
             try:
                 body = response.json()
@@ -926,14 +927,13 @@ class LLMRouter:
                     timeout=self.request_timeout,
                 )
             except httpx.RequestError as exc:
-                self.key_manager.mark_key_cooling(
-                    provider, key, duration_sec=self._cooldown_seconds(15)
-                )
                 if attempt == self.provider_attempts - 1:
                     raise RuntimeError(f"Gemini network attempts exhausted: {exc}") from exc
+                await self._short_pause(attempt)
                 continue
             if response.status_code != 200:
-                self._classify_http_failure(provider, key, response)
+                if self._classify_http_failure(provider, key, response) == "pause":
+                    await self._short_pause(attempt)
                 continue
             try:
                 return response.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -963,14 +963,13 @@ class LLMRouter:
                     timeout=self.request_timeout,
                 )
             except httpx.RequestError as exc:
-                self.key_manager.mark_key_cooling(
-                    provider, key, duration_sec=self._cooldown_seconds(15)
-                )
                 if attempt == self.provider_attempts - 1:
                     raise RuntimeError(f"NVIDIA network attempts exhausted: {exc}") from exc
+                await self._short_pause(attempt)
                 continue
             if response.status_code != 200:
-                self._classify_http_failure(provider, key, response)
+                if self._classify_http_failure(provider, key, response) == "pause":
+                    await self._short_pause(attempt)
                 continue
             try:
                 return response.json()["choices"][0]["message"]["content"]

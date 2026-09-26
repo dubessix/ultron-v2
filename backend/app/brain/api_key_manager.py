@@ -76,7 +76,12 @@ class APIKeyManager:
                     self._cooldowns.pop(key, None)
 
     def get_active_key(self, provider: str) -> str:
-        """Return the next ACTIVE key; never force-reuse a cooling/failed key."""
+        """Return the CURRENT key while it is ACTIVE (sticky, no per-call jumping).
+
+        Owner's rule: keep one key until it is really limited (429 -> COOLING),
+        broken (401/403 -> FAILED) or full this minute (router calls move_on).
+        Then the next ACTIVE key becomes current and stays current; a rested key
+        does not steal the turn back. Never force-reuses a cooling/failed key."""
         provider = provider.lower()
         with self._lock:
             if provider not in self._keys:
@@ -90,7 +95,7 @@ class APIKeyManager:
             for offset in range(len(pool)):
                 index = (start + offset) % len(pool)
                 if pool[index]["state"] == "ACTIVE":
-                    self._cursors[provider] = (index + 1) % len(pool)
+                    self._cursors[provider] = index
                     return pool[index]["key"]
 
             cooling = [
@@ -101,8 +106,18 @@ class APIKeyManager:
                 raise APIKeyCoolingError(provider, min(cooling) - time.time())
             raise RuntimeError(f"All configured API keys for {provider} are failed")
 
+    def move_on(self, provider: str, key: str) -> None:
+        """This key's minute is full: make the next key current (it stays current)."""
+        provider = provider.lower()
+        with self._lock:
+            pool = self._keys.get(provider) or []
+            for index, item in enumerate(pool):
+                if item["key"] == key:
+                    self._cursors[provider] = (index + 1) % len(pool)
+                    return
+
     def active_keys(self, provider: str) -> List[str]:
-        """ACTIVE keys in pool order, without moving the round-robin cursor."""
+        """ACTIVE keys in pool order, without moving the current-key cursor."""
         provider = provider.lower()
         with self._lock:
             self._clean_cooldowns_locked()

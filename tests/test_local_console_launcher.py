@@ -120,6 +120,8 @@ class TestManualEnvKeySlots(unittest.TestCase):
             manager = APIKeyManager()
             self.assertEqual(manager.runtime_status()["groq"]["active"], 2)
             self.assertEqual(manager.get_active_key("groq"), "real-groq-three")
+            self.assertEqual(manager.get_active_key("groq"), "real-groq-three")  # sticky
+            manager.move_on("groq", "real-groq-three")  # its minute is full
             self.assertEqual(manager.get_active_key("groq"), "real-groq-four")
 
     def test_readme_explains_placeholder_and_non_contiguous_keys(self):
