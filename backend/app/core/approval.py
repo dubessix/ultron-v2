@@ -52,8 +52,10 @@ def needs_ask(tool_id: str, arguments: dict, level: int) -> bool:
     if tool_id == "terminal_run":
         return bool(RISKY_COMMAND.search(str(args.get("command") or "")))
     if tool_id == "file_write":
+        if args.get("content") is None and args.get("search_text"):
+            return False  # one exact edit, backed up and undoable
         target = str(args.get("filepath") or "")
-        return bool(target) and Path(os.path.expanduser(target)).exists()  # replacing a file
+        return bool(target) and Path(os.path.expanduser(target)).exists()  # replacing a whole file
     if tool_id == "manage_memory" and action in {"restore", "forget", "correct", "reembed"}:
         return True
     if tool_id == "optimize_code" and args.get("apply_changes"):

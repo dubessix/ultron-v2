@@ -148,7 +148,7 @@ class TestOptimizerFailureSafety(unittest.TestCase):
         self.assertTrue(result["success"], result)
         self.assertTrue(result["data"]["write_verification"]["verified"])
         self.assertIn("message = f'Hello {name}!'", path.read_text(encoding="utf-8"))
-        backup = path.with_suffix(".py.bak")
+        backup = Path(result["data"]["backup_created"])
         self.assertEqual(backup.read_text(encoding="utf-8"), original)
 
     def test_ambiguous_exact_type_check_is_analysis_only(self):

@@ -7,7 +7,6 @@ Natively integrates an un-mocked, stateful Self-Healing Compiler Loop (Autoreact
 import os
 import ntpath
 import shlex
-import signal
 import platform
 import asyncio
 import re
@@ -15,7 +14,7 @@ import shutil
 import subprocess
 import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Literal, Optional
 from pydantic import BaseModel, Field
 from backend.app.install_paths import CONFIG_PATH
 from backend.app.tools.tool_base import BaseTool
@@ -33,7 +32,8 @@ _DEFAULT_APPROVED_COMMANDS = {
 _SHELL_METACHARS = (";", "&", "|", ">", "<", "`", "$(")
 _WINDOWS_EXECUTABLE_SUFFIXES = (".exe", ".cmd", ".bat", ".com")
 MAX_TERMINAL_OUTPUT_BYTES = 1024 * 1024
-TERMINAL_TIMEOUT_SECONDS = 20.0
+DEFAULT_WAIT_SECONDS = 60
+MAX_WAIT_SECONDS = 120
 
 
 def _split_command(command: str) -> list[str]:
@@ -58,6 +58,28 @@ def _split_command(command: str) -> list[str]:
         local_free.argtypes = [wintypes.HLOCAL]
         local_free.restype = wintypes.HLOCAL
         local_free(ctypes.cast(argv, wintypes.HLOCAL))
+
+
+def _default_terminal_folder(check_path) -> Path:
+    """Where the owner works (last folder, else home); the allowed project folder
+    only in the restricted access mode. Never raises."""
+    try:
+        from backend.app.core import recent_folders
+
+        folder = recent_folders.personal_base()
+        if check_path(str(folder))["safe"]:
+            return folder
+    except Exception:
+        pass
+    try:
+        from backend.app.security.path_guard import resolve_project_root
+
+        decision = resolve_project_root("personal")
+        if decision.get("safe"):
+            return Path(decision["path"])
+    except Exception:
+        pass
+    return Path.home()
 
 
 def _normalized_executable_name(value: str) -> str:
@@ -135,8 +157,12 @@ def _approved_command(command: str) -> bool:
     return first in _load_approved_commands()
 
 class TerminalRunArgs(BaseModel):
-    command: str = Field(..., description="Shell command to run on the owner's PC (runs after the owner approves it).")
-    cwd: Optional[str] = Field(None, description="Working directory: a full path, '~/...', 'Desktop', or just a folder name like 'Projects' (auto-found). Defaults to the Ultron project root.")
+    command: str = Field("", description="Shell command for the owner's PC. Use no-question flags (-y, --yes, --no-interactive): nothing can type into it.")
+    cwd: Optional[str] = Field(None, description="Folder: full path, '~/...', 'Desktop' or a folder name (auto-found). Default: the folder Ultron last used, else home.")
+    mode: Literal["wait", "background", "status", "stop"] = Field("wait", description="wait: run and return the result (still running after wait_seconds -> keeps running as a job). background: servers, GUI programs, long jobs; returns at once. status/stop: a job by job_id (status with no id lists jobs).")
+    wait_seconds: int = Field(DEFAULT_WAIT_SECONDS, ge=1, le=MAX_WAIT_SECONDS, description="wait mode: how long to wait before leaving it running in the background.")
+    job_id: Optional[str] = Field(None, description="Job id for status / stop.")
+
 
 class AppLaunchArgs(BaseModel):
     pass
@@ -158,6 +184,8 @@ class TerminalRunTool(BaseTool):
             args_model=TerminalRunArgs,
             usage_examples=["terminal_run(command='npm run build')"]
         )
+        # the registry allows the longest wait plus a margin (not the 30 s default)
+        self.max_runtime_seconds = MAX_WAIT_SECONDS + 15
 
     # V2 Step 7 (Tony mode): plain look-only commands run without asking.
     _READ_ONLY = {
@@ -193,55 +221,6 @@ class TerminalRunTool(BaseTool):
         if word == "ping" and not any(p in {"-c", "-n"} for p in parts):
             return self.permission_level  # endless ping would hang the turn
         return 1
-
-    @staticmethod
-    async def _read_limited(stream, limit: int):
-        """Drain a pipe fully while retaining at most limit bytes."""
-        chunks = []
-        retained = 0
-        total = 0
-        while True:
-            chunk = await stream.read(65536)
-            if not chunk:
-                break
-            total += len(chunk)
-            if retained < limit:
-                keep = chunk[: limit - retained]
-                chunks.append(keep)
-                retained += len(keep)
-        return b"".join(chunks), total > limit
-
-    @staticmethod
-    async def _terminate_process_group(proc) -> None:
-        """Kill and await the complete process group so transports are closed."""
-        if proc is None or proc.returncode is not None:
-            return
-        try:
-            if os.name != "nt":
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            else:
-                killed = await asyncio.to_thread(
-                    subprocess.run,
-                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                    timeout=10.0,
-                )
-                if killed.returncode != 0 and proc.returncode is None:
-                    proc.kill()
-        except (OSError, ProcessLookupError, PermissionError, subprocess.SubprocessError):
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except (asyncio.TimeoutError, ProcessLookupError):
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
 
     def _attempt_self_healing_analysis(self, stderr: str, project_root: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         """
@@ -383,6 +362,16 @@ class TerminalRunTool(BaseTool):
 
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
+        from backend.app.tools import terminal_jobs
+
+        mode = str(kwargs.get("mode") or "wait")
+        if mode == "status":
+            return await asyncio.to_thread(terminal_jobs.status, kwargs.get("job_id"))
+        if mode == "stop":
+            if not kwargs.get("job_id"):
+                return {"success": False, "error": "Say which job_id to stop (mode=status lists them).", "data": {}}
+            return await asyncio.to_thread(terminal_jobs.stop, kwargs["job_id"])
+
         command = str(kwargs.get("command", ""))
         if not command.strip():
             return {"success": False, "error": "Command parameter is empty.", "data": {}}
@@ -393,7 +382,7 @@ class TerminalRunTool(BaseTool):
         if not is_command_safe(command):
             return {"success": False, "error": "Command blocked by risk guard.", "data": {}}
 
-        default_root = Path(__file__).resolve().parent.parent.parent.parent
+        default_root = _default_terminal_folder(check_path)
         project_root = Path(kwargs.get("cwd") or default_root).expanduser().resolve(strict=False)
         path_decision = check_path(str(project_root))
         if not path_decision["safe"]:
@@ -412,100 +401,60 @@ class TerminalRunTool(BaseTool):
                 "error": "Command blocked: executable is not in security.terminal_allowed_commands.",
                 "data": {},
             }
+        argv = None
+        if not use_shell:
+            argv = _split_command(command)
+            if not argv:
+                return {"success": False, "error": "Command parameter is empty.", "data": {}}
+            resolved = shutil.which(argv[0], path=os.environ.get("PATH"))
+            if resolved:
+                argv[0] = resolved
+            elif not Path(argv[0]).exists():
+                use_shell, argv = True, None  # a shell built-in (cd, dir, echo, export...) or missing
 
-        proc = None
-        stdout_task = None
-        stderr_task = None
         try:
-            common = {
-                "cwd": str(project_root),
-                "stdout": asyncio.subprocess.PIPE,
-                "stderr": asyncio.subprocess.PIPE,
-            }
-            if os.name == "nt":
-                common["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            else:
-                common["start_new_session"] = True
-            if use_shell:
-                proc = await asyncio.create_subprocess_shell(command, **common)
-            else:
-                argv = _split_command(command)
-                if not argv:
-                    return {"success": False, "error": "Command parameter is empty.", "data": {}}
-                proc = await asyncio.create_subprocess_exec(*argv, **common)
-
-            stdout_task = asyncio.create_task(
-                self._read_limited(proc.stdout, MAX_TERMINAL_OUTPUT_BYTES)
+            job = await asyncio.to_thread(
+                terminal_jobs.start, command, str(project_root), use_shell=use_shell, argv=argv
             )
-            stderr_task = asyncio.create_task(
-                self._read_limited(proc.stderr, MAX_TERMINAL_OUTPUT_BYTES)
-            )
+        except OSError as exc:
+            return {"success": False, "error": f"Could not start the command: {exc}", "data": {}}
 
-            timed_out = False
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=TERMINAL_TIMEOUT_SECONDS)
-            except asyncio.TimeoutError:
-                timed_out = True
-                await self._terminate_process_group(proc)
+        if mode == "background":
+            code = await terminal_jobs.wait(job["id"], 2.0)  # catch an instant crash
+            data = {"job_id": job["id"], "pid": job["pid"], "cwd": str(project_root),
+                    "running": code is None, "exit_code": code, **terminal_jobs.output(job)}
+            if code is None:
+                data["note"] = "Running in the background. Check with mode=status, end with mode=stop."
+                return {"success": True, "data": data, "error": None}
+            return {"success": code == 0, "data": data,
+                    "error": None if code == 0 else (data["stderr"] or f"Exited with code {code}.")}
 
-            stdout_result, stderr_result = await asyncio.gather(stdout_task, stderr_task)
-            stdout_bytes, stdout_truncated = stdout_result
-            stderr_bytes, stderr_truncated = stderr_result
-            stdout = stdout_bytes.decode("utf-8", "ignore").strip()
-            stderr = stderr_bytes.decode("utf-8", "ignore").strip()
-            if stdout_truncated:
-                stdout += "\n[output truncated]"
-            if stderr_truncated:
-                stderr += "\n[output truncated]"
-
-            if timed_out:
-                message = f"Command timed out after {int(TERMINAL_TIMEOUT_SECONDS)}s; process group terminated."
-                return {
-                    "success": False,
-                    "data": {
-                        "exit_code": 124,
-                        "stdout": stdout,
-                        "stderr": stderr or message,
-                        "stdout_truncated": stdout_truncated,
-                        "stderr_truncated": stderr_truncated,
-                        "cwd": str(project_root),
-                        "self_healing_fix": None,
-                    },
-                    "error": message,
-                }
-
-            exit_code = proc.returncode
-            data = {
-                "exit_code": exit_code,
-                "stdout": stdout,
-                "stderr": stderr,
-                "stdout_truncated": stdout_truncated,
-                "stderr_truncated": stderr_truncated,
-                "cwd": str(project_root),
-                "self_healing_fix": None,
-            }
-            if exit_code != 0 and stderr:
-                healing = self._attempt_self_healing_analysis(stderr, project_root)
-                if healing:
-                    data["self_healing_fix"] = healing
-
-            return {
-                "success": exit_code == 0,
-                "data": data,
-                "error": stderr if exit_code != 0 else None,
-            }
-
+        seconds = max(1, min(int(kwargs.get("wait_seconds") or DEFAULT_WAIT_SECONDS), MAX_WAIT_SECONDS))
+        try:
+            code = await terminal_jobs.wait(job["id"], seconds)
         except asyncio.CancelledError:
-            await self._terminate_process_group(proc)
-            if stdout_task or stderr_task:
-                await asyncio.gather(
-                    *(task for task in (stdout_task, stderr_task) if task),
-                    return_exceptions=True,
-                )
+            await asyncio.to_thread(terminal_jobs.kill_now, job["id"])  # a cancelled turn leaves nothing behind
             raise
-        except Exception as exc:
-            await self._terminate_process_group(proc)
-            return {"success": False, "error": f"Execution failed: {exc}", "data": {}}
+        out = terminal_jobs.output(job)
+        if code is None:
+            return {"success": True, "error": None, "data": {
+                "exit_code": None, "running": True, "job_id": job["id"], "cwd": str(project_root),
+                "note": f"Still running after {seconds}s, so it keeps going in the background. "
+                        "Not finished yet: say so. Check with mode=status, end with mode=stop.",
+                **out, "self_healing_fix": None}}
+
+        data = {"exit_code": code, "cwd": str(project_root), **out, "self_healing_fix": None}
+        if code != 0 and out["stderr"]:
+            healing = self._attempt_self_healing_analysis(out["stderr"], project_root)
+            if healing:
+                data["self_healing_fix"] = healing
+        error = None
+        if code != 0:
+            error = out["stderr"] or out["stdout"][-500:] or f"Exited with code {code}."
+            if code in (127, 9009):  # the shell's "command not found" (Linux / Windows)
+                program = command.split()[0]
+                error = f"'{program}' is not installed or not on PATH. {error}".strip()
+        return {"success": code == 0, "data": data, "error": error}
 
 
 async def _launch_verified(candidates, args=None):

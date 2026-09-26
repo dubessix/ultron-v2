@@ -44,7 +44,7 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("extract_zip", "zippath, extract_to: unzip an archive"),
             ("convert_file_format", "source_filepath, destination_filepath: JSON<->CSV"),
             ("download_file", "url, save_path: download a file"),
-            ("universal_search", "query: filenames, tasks, reminders, memories at once"),
+            ("universal_search", "query: files, tasks, reminders, memories"),
         ),
     ),
     (
@@ -57,7 +57,7 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("screenshot", "(none): save the screen to Pictures/Ultron"),
             ("notify", "message, ?title: desktop pop-up"),
             ("jarvis_actions", "action=log|undo|undo_list|trusted|revoke, ?day, ?id"),
-            ("terminal_run", "command, ?cwd: any shell command"),
+            ("terminal_run", "command, ?cwd, ?mode=wait|background|status|stop, ?job_id: shell"),
             ("system_metrics", "(none): CPU, RAM, disk, uptime"),
             ("set_volume", "?level"),
             ("open_calculator", "(none)"),

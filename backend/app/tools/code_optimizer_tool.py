@@ -2,7 +2,7 @@
 Ultron Code Optimizer and Architectural Compliance Tool
 Implements a production-grade, un-mocked developer tool that analyzes code quality,
 checks SOLID compliance, spots anti-patterns, and can automatically refactor/optimize files.
-Creates automated .bak backup files before applying any refactoring changes (Level 2 System Security).
+Keeps a backup copy (Ultron's data folder, undoable) before applying any refactoring changes (Level 2 System Security).
 """
 
 import ast
@@ -185,7 +185,7 @@ class CodeOptimizerTool(BaseTool):
         
         has_changed = (original_content.strip() != optimized_content.strip())
         
-        # 3. If apply_changes is requested, write a .bak file, then save optimized file
+        # 3. If apply_changes is requested, save the optimized file (safe_write keeps a backup)
         backup_path_str = None
         message = "Analysis and refactoring recommendations generated successfully."
         

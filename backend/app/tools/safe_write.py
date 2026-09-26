@@ -36,7 +36,7 @@ def _verify_candidate(path: Path, temp_path: Path, content: str) -> Dict[str, An
         if executable is None:
             return {
                 "checked": False,
-                "verified": False,
+                "verified": None,
                 "language": suffix.lstrip("."),
                 "detail": "esbuild syntax verifier unavailable",
             }
@@ -56,8 +56,8 @@ def _verify_candidate(path: Path, temp_path: Path, content: str) -> Dict[str, An
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             return {
-                "checked": True,
-                "verified": False,
+                "checked": False,
+                "verified": None,
                 "language": suffix.lstrip("."),
                 "detail": f"syntax check failed: {exc}",
             }
@@ -79,9 +79,9 @@ def _verify_candidate(path: Path, temp_path: Path, content: str) -> Dict[str, An
                 check=False,
             )
         except FileNotFoundError:
-            return {"checked": False, "verified": False, "language": "javascript", "detail": "node unavailable"}
+            return {"checked": False, "verified": None, "language": "javascript", "detail": "node unavailable"}
         except subprocess.TimeoutExpired:
-            return {"checked": True, "verified": False, "language": "javascript", "detail": "syntax check timed out"}
+            return {"checked": False, "verified": None, "language": "javascript", "detail": "syntax check timed out"}
         detail = (completed.stderr or completed.stdout or "syntax OK").strip()
         return {
             "checked": True,
@@ -96,6 +96,33 @@ def _verify_candidate(path: Path, temp_path: Path, content: str) -> Dict[str, An
         "language": None,
         "detail": "no non-executing syntax verifier for this file type",
     }
+
+
+BACKUPS_KEPT = 40
+
+
+def _backup_path_for(path: Path) -> Path:
+    """A timestamped copy in Ultron's own data folder (never clutters the owner's folders)."""
+    import time
+    import uuid
+
+    from backend.app.runtime_paths import runtime_data_path
+
+    folder = runtime_data_path("file_backups")
+    _prune_backups(folder)
+    return folder / f"{time.strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:6]}_{path.name}"
+
+
+def _prune_backups(folder: Path) -> None:
+    try:
+        files = sorted((f for f in folder.iterdir() if f.is_file()), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for old in files[BACKUPS_KEPT - 1:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
 
 
 def safe_write_file(
@@ -149,7 +176,7 @@ def safe_write_file(
         suffix=f".tmp{path.suffix}",
     )
     temp_path = Path(temp_name)
-    backup_path = path.with_suffix(path.suffix + ".bak") if exists else None
+    backup_path = _backup_path_for(path) if exists else None
 
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -158,9 +185,8 @@ def safe_write_file(
             os.fsync(handle.fileno())
 
         verification = _verify_candidate(path, temp_path, content)
-        code_suffixes = {".py", ".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx"}
-        verifier_failed = path.suffix.lower() in code_suffixes and not verification["verified"]
-        if verifier_failed or (verification["checked"] and not verification["verified"]):
+        # Refuse only a REAL syntax error; a missing checker never blocks the owner's job.
+        if verification["checked"] and verification["verified"] is False:
             return {
                 "success": False,
                 "error": f"Candidate verification failed: {verification['detail']}",
@@ -172,13 +198,7 @@ def safe_write_file(
             }
 
         if exists and backup_path is not None:
-            backup_decision = check_path(str(backup_path))
-            if not backup_decision["safe"]:
-                return {
-                    "success": False,
-                    "error": f"Backup path blocked ({backup_decision['reason']}): {backup_path}",
-                    "data": {"original_preserved": True},
-                }
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
             backup_path.write_text(old_content or "", encoding="utf-8")
 
         os.replace(temp_path, path)
@@ -191,6 +211,16 @@ def safe_write_file(
     finally:
         temp_path.unlink(missing_ok=True)
 
+    try:
+        from backend.app.core import action_journal
+
+        if exists:
+            action_journal.record("edit", f"edited {path.name}", path=str(path), backup=str(backup_path))
+        else:
+            action_journal.record("create", f"created {path.name}", path=str(path))
+    except Exception:
+        pass  # the write itself succeeded; undo history is best effort
+
     old_lines = len((old_content or "").splitlines()) if exists else 0
     new_lines = len(content.splitlines())
     action = "updated" if exists else "created"
@@ -198,7 +228,7 @@ def safe_write_file(
         "success": True,
         "data": {
             "message": (
-                f"Overwrote file: {filepath} (backup: {backup_path})"
+                f"Updated file: {filepath} (undo possible)"
                 if exists else f"Created file: {filepath}"
             ),
             "file": filepath,

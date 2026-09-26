@@ -4,6 +4,7 @@ Verifies AST code optimization and semantic search graph execution.
 """
 
 import unittest
+from pathlib import Path
 import asyncio
 from backend.app.tools.tool_registry import ToolRegistry
 from backend.app.tools.code_optimizer_tool import CodeOptimizerTool
@@ -98,7 +99,7 @@ class TestDeveloperIntelligenceTools(unittest.TestCase):
         self.assertIsInstance(data, dict)
         
         # Verify backup file was created
-        bak_file = self.test_file_path.with_suffix(".py.bak")
+        bak_file = Path(data["backup_created"])
         self.assertTrue(bak_file.exists())
         
         # Read backup content to make sure it matches original

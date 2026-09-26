@@ -284,7 +284,7 @@ class ToolRegistry:
         has_confirmed: bool = False,
         confirmation_token: Optional[str] = None,
         session_id: Optional[str] = None,
-        timeout: float = 30.0,
+        timeout: Optional[float] = None,
         max_retries: int = 0,
         require_confirmation: bool = False,
         resume_context: Optional[Dict[str, Any]] = None,
@@ -423,9 +423,11 @@ class ToolRegistry:
         # restore waits for an in-flight action, and new actions fail clearly.
         raw_result = None
         execution_error = None
+        if timeout is None:  # each tool may declare how long it needs (terminal jobs)
+            timeout = float(getattr(tool, "max_runtime_seconds", 30.0) or 30.0)
         operation_guard = (
             maintenance_coordinator.database_access()
-            if permission_level >= 1 and tool_id != "database_restore"
+            if permission_level >= 1 and tool_id not in {"database_restore", "terminal_run"}
             else nullcontext()
         )
         try:
@@ -495,7 +497,7 @@ class ToolRegistry:
         confirmation_token: str,
         session_id: Optional[str],
         *,
-        timeout: float = 30.0,
+        timeout: Optional[float] = None,
         include_resume_context: bool = False,
     ) -> Dict[str, Any]:
         """Claim and execute the exact stored action without regenerating it."""

@@ -42,8 +42,9 @@ class TestSafeWriteBackup(unittest.TestCase):
         result = _run(FileWriteTool().execute(filepath=str(target), content="UPDATED"))
         self.assertTrue(result["success"])
         self.assertEqual(target.read_text(encoding="utf-8"), "UPDATED")
-        # A .bak backup of the original must exist.
-        backup = Path(str(target) + ".bak")
+        # A backup of the original must exist (in Ultron's data folder, not next to the file).
+        backup = Path(result["data"]["backup"])
+        self.assertFalse(Path(str(target) + ".bak").exists())
         self.assertTrue(backup.exists())
         self.assertEqual(backup.read_text(encoding="utf-8"), "ORIGINAL")
 
@@ -96,7 +97,7 @@ class TestCodingSafeWrite(unittest.TestCase):
             confirmation_token=r["confirmation_token"]))
         self.assertTrue(r2["success"])
         self.assertEqual(target.read_text(encoding="utf-8"), "NEW")
-        self.assertTrue(Path(str(target) + ".bak").exists())
+        self.assertEqual(Path(r2["data"]["backup"]).read_text(encoding="utf-8"), "OLD")
 
     def test_confirmation_rejected_when_content_differs(self):
         """A 'yes' bound to content A must NOT authorize content B."""

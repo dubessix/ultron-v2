@@ -43,7 +43,7 @@ def _save(items: list[dict]) -> None:
 
 
 def record(kind: str, summary: str, **details) -> dict:
-    """kind: trash | move | rename | organize | create | copy."""
+    """kind: trash | move | rename | organize | create | copy | edit."""
     entry = {"id": uuid.uuid4().hex[:10], "kind": kind, "summary": summary, "at": time.time(),
              "undone": False, **details}
     with _lock:
@@ -88,6 +88,12 @@ def _reverse(entry: dict) -> str:
             except OSError:
                 pass
         return f"Put {moved} files back where they were"
+    if kind == "edit":
+        target, backup = Path(entry["path"]), Path(entry["backup"])
+        if not backup.exists():
+            raise FileNotFoundError("the saved copy is gone")
+        shutil.copy2(backup, target)
+        return f"Put {target.name} back as it was"
     if kind in {"create", "copy"}:
         target = Path(entry["path"])
         if not target.exists():

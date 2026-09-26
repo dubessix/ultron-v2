@@ -227,9 +227,10 @@ class CognitiveOrchestrator:
         """Compile native tool schemas for this turn.
 
         allow_defaults=True on a non-coding turn = Jarvis Core: at most
-        JARVIS_NATIVE_LIMIT keyword-relevant schemas plus the universal
-        use_tool; the static TOOL MENU (system prompt) exposes every other
-        tool. Coding turns keep the bounded project tool slice (max twelve).
+        JARVIS_NATIVE_LIMIT keyword-hinted schemas plus the universal use_tool;
+        the hint never decides - the static TOOL MENU exposes every tool and the
+        AI picks. (A fixed full set was measured at ~4.7x the counted tokens,
+        because history follows the cached prefix, so it was not adopted.)
         """
         registry = ToolRegistry()
         jarvis_core = allow_defaults and not coding_turn
@@ -237,6 +238,9 @@ class CognitiveOrchestrator:
             user_prompt,
             registry,
             coding_turn=coding_turn,
+            # Jarvis Core: keyword hits only pre-load a few full schemas; every
+            # other tool stays reachable through the menu + use_tool, so no
+            # random default belt is needed.
             # Jarvis Core: keyword hits only pre-load a few full schemas; every
             # other tool stays reachable through the menu + use_tool, so no
             # random default belt is needed.
@@ -250,6 +254,26 @@ class CognitiveOrchestrator:
             metadata.append(use_tool_metadata(registry.get_registered_ids()))
         return json.dumps(metadata, separators=(",", ":"), ensure_ascii=True)
 
+    @staticmethod
+    def _coding_working_folder(default_root: str) -> str:
+        """Coding mode works where the owner works (any folder on the PC).
+
+        Full access: the folder Ultron last used (else home), still path-guarded.
+        Restricted access mode: the configured project root, as before.
+        """
+        try:
+            from backend.app.core import recent_folders
+            from backend.app.security.path_guard import check_path, full_access_enabled
+
+            if not full_access_enabled():
+                return default_root
+            folder = recent_folders.personal_base()
+            if folder.is_dir() and check_path(str(folder))["safe"]:
+                return str(folder.resolve())
+        except Exception:
+            pass
+        return default_root
+
     def _scan_project_context(self, project_root: str, max_depth: int = 3) -> str:
         """Scan only the canonical active project, shallowly and with hard bounds."""
         from pathlib import Path
@@ -258,16 +282,18 @@ class CognitiveOrchestrator:
                   ".venv", "venv", "data", "uploads", "images"}
         lines = []
         stack = [(root, 0)]
-        while stack:
+        visited = 0
+        while stack and len(lines) < 120 and visited < 300:  # hard bound: home folders are huge
             p, depth = stack.pop()
             if depth > max_depth:
                 continue
+            visited += 1
             try:
                 entries = sorted(p.iterdir(), key=lambda e: (e.is_dir(), e.name.lower()))
             except Exception:
                 continue
             for e in entries:
-                if e.name in ignore:
+                if e.name in ignore or e.name.startswith("."):
                     continue
                 indent = "  " * depth
                 if e.is_dir():
@@ -805,8 +831,10 @@ class CognitiveOrchestrator:
         from backend.app.security.path_guard import resolve_agent_tool_arguments
         # Coding turns stay confined to the project; personal Jarvis turns may reach
         # allowlisted personal folders (still fully path-guarded + confirmation-gated).
+        from backend.app.security.path_guard import full_access_enabled
         resolved = resolve_agent_tool_arguments(
-            tool_id, arguments, project_root, confine_to_project=coding_turn
+            tool_id, arguments, project_root,
+            confine_to_project=coding_turn and not full_access_enabled(),
         )
         if not resolved["safe"] and resolved.get("reason") == "ambiguous":
             # V2 Step 5: two folders share the name -> the AI asks the owner.
@@ -1212,7 +1240,9 @@ class CognitiveOrchestrator:
             "- Ask only when two or more real matches exist (one short question listing them), the "
             "target is missing, or something must be installed.\n"
             "- Shell: use non-interactive flags (--yes, -y, --no-interactive); nothing can type into a "
-            "running program. New files go to ~/Documents/Ultron unless he names a place.\n"
+            "running program. Servers and GUI programs: terminal_run mode=background. A result with "
+            "running=true is not finished: say it is still going. New files go to ~/Documents/Ultron "
+            "unless he names a place.\n"
             + control_rules() +
             "- Never claim something happened unless a tool result this turn confirms it.\n"
             "- Greetings, small talk and knowledge questions: answer directly, no tools.\n"
@@ -1253,13 +1283,21 @@ class CognitiveOrchestrator:
             how = "open a file, folder, app or URL: open <target>; screenshot: screencapture <file.png>"
         else:
             how = "use the OS shell"
+        try:
+            from backend.app.core.pc_facts import facts_line
+
+            machine = facts_line()
+        except Exception:
+            machine = f"PC: {system}."
         cls._PC_PROFILE_CACHE = (
-            f"[OWNER PC] {system}. Home: {home}. Home folders: {', '.join(folders) or 'unknown'}. "
-            f"Use full paths. Via terminal_run: {how}."
+            f"[OWNER PC] {machine} Home: {home}. Home folders: {', '.join(folders) or 'unknown'}. "
+            f"Use full paths. Via terminal_run: {how}. Need a program that is not installed: "
+            "use one that is, or ask before installing."
         )
         return cls._PC_PROFILE_CACHE
 
     _STATIC_PREFIX_CACHE: Optional[str] = None
+    _STATIC_PREFIX_DAY: Optional[str] = None
 
     @classmethod
     def _jarvis_static_prefix(cls) -> str:
@@ -1267,8 +1305,13 @@ class CognitiveOrchestrator:
 
         Menu text is static data (tool_catalog) - no tool module is imported.
         """
-        if cls._STATIC_PREFIX_CACHE is not None:
+        import datetime as _dt
+
+        today = _dt.date.today().isoformat()
+        if cls._STATIC_PREFIX_CACHE is not None and cls._STATIC_PREFIX_DAY == today:
             return cls._STATIC_PREFIX_CACHE
+        if cls._STATIC_PREFIX_DAY != today:
+            cls._PC_PROFILE_CACHE = None  # installed programs are re-checked once a day
         from backend.app.tools.tool_catalog import build_tool_menu
 
         registered = ToolRegistry().get_registered_ids()
@@ -1279,6 +1322,7 @@ class CognitiveOrchestrator:
             "tools also declared as functions may be called directly.\n"
             + build_tool_menu(registered)
         )
+        cls._STATIC_PREFIX_DAY = today
         return cls._STATIC_PREFIX_CACHE
 
     @staticmethod
@@ -1391,6 +1435,8 @@ class CognitiveOrchestrator:
             if project_root_decision.get("safe")
             else None
         )
+        if coding_turn and project_root:
+            project_root = self._coding_working_folder(project_root)
 
         # Step 4: COMPUTE CONFIDENCE
         confidence = self.confidence_engine.calculate_confidence(user_prompt, intent)

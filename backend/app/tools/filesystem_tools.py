@@ -24,13 +24,13 @@ class FileReadArgs(BaseModel):
 class FileWriteArgs(BaseModel):
     filepath: str = Field(..., description="Target file path to write.")
     content: Optional[str] = Field(None, description="Complete replacement text for full-file mode.")
-    search_text: Optional[str] = Field(None, description="Exact unique block to replace in patch mode.")
+    search_text: Optional[str] = Field(None, description="Edit mode: the exact text to change (must appear once). Use instead of content to change part of a file.")
     replace_text: Optional[str] = Field(None, description="Replacement block for patch mode; may be empty.")
     expected_sha256: Optional[str] = Field(
         None,
         min_length=64,
         max_length=64,
-        description="Required inspected file fingerprint for patch mode.",
+        description="Optional fingerprint from file_read (coding mode requires it).",
     )
 
     @model_validator(mode="after")
@@ -44,11 +44,11 @@ class FileWriteArgs(BaseModel):
                 raise ValueError("Patch mode requires non-empty search_text.")
             if self.replace_text is None:
                 raise ValueError("Patch mode requires replace_text (empty is allowed).")
-            if not self.expected_sha256 or any(
+            if self.expected_sha256 and any(
                 character not in "0123456789abcdefABCDEF"
                 for character in self.expected_sha256
             ):
-                raise ValueError("Patch mode requires a 64-character SHA-256 fingerprint.")
+                raise ValueError("expected_sha256 must be a 64-character SHA-256 fingerprint.")
         return self
 
 FILE_TYPES: Dict[str, frozenset] = {
@@ -170,7 +170,7 @@ class FileWriteTool(BaseTool):
                     "data": {"original_preserved": True},
                 }
             current_sha256 = hashlib.sha256(current.encode("utf-8")).hexdigest()
-            if current_sha256.lower() != str(expected_sha256 or "").lower():
+            if expected_sha256 and current_sha256.lower() != str(expected_sha256).lower():
                 return {
                     "success": False,
                     "error": "File changed since inspection; read it again before patching.",
@@ -183,7 +183,9 @@ class FileWriteTool(BaseTool):
             if current.count(search_text) != 1:
                 return {
                     "success": False,
-                    "error": "Patch search_text must match exactly one block.",
+                    "error": ("search_text was not found; read the file and copy the exact text."
+                              if current.count(search_text) == 0 else
+                              "search_text appears more than once; include more lines so it is unique."),
                     "data": {
                         "original_preserved": True,
                         "matches": current.count(search_text),

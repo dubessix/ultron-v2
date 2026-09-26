@@ -129,3 +129,66 @@ class TestCleanDownloads(ApiCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReactStyleJobThroughGeneralHands(ApiCase):
+    """'make a React app and start it': the same general shell hand, no special tool.
+
+    No internet in CI, so a tiny fake 'project maker' plays npm create (slow) and a
+    fake dev server plays npm run dev. The real terminal path, jobs and approval run.
+    """
+
+    def test_slow_setup_is_honest_then_server_runs_in_background_and_stops(self):
+        import sys
+        project = self.root / "myapp"
+        maker = self.root / "maker.py"
+        maker.write_text(
+            "import pathlib,sys,time\n"
+            "p=pathlib.Path(sys.argv[1]); p.mkdir(); time.sleep(2)\n"
+            "(p/'package.json').write_text('{}'); print('Done. Now run: npm run dev')\n",
+            encoding="utf-8")
+        server = self.root / "server.py"
+        server.write_text("import time\nprint('Local: http://localhost:5173', flush=True)\ntime.sleep(60)\n",
+                          encoding="utf-8")
+        py = f'"{sys.executable}"'
+        seen = {}
+
+        def setup(prompt, conv):
+            results = tool_results(conv)
+            if not results:
+                return reply("", [use("terminal_run", {"command": f'{py} "{maker}" "{project}"',
+                                                      "cwd": str(self.root), "wait_seconds": 1}, "t1")])
+            seen["setup"] = results[0]
+            return reply("Setting it up, Sir. Still installing; I'll check in a moment.")
+
+        self.script = setup
+        first = self.chat("make a react app called myapp")
+        self.assertIsNone(first.get("pending_confirmation"), "a normal command does not ask")
+        self.assertTrue(seen["setup"]["data"]["running"], "slow step is not killed, and not claimed done")
+        job = seen["setup"]["data"]["job_id"]
+
+        import time
+        time.sleep(2.5)
+
+        def start(prompt, conv):
+            results = tool_results(conv)
+            if not results:
+                return reply("", [use("terminal_run", {"mode": "status", "job_id": job}, "s1")])
+            if len(results) == 1:
+                seen["status"] = results[0]
+                return reply("", [use("terminal_run", {"command": f'{py} "{server}"', "cwd": str(project),
+                                                      "mode": "background"}, "b1")])
+            seen["server"] = results[1]
+            return reply("Done, Sir. myapp runs at localhost 5173.")
+
+        self.script = start
+        second = self.chat("is it ready? then start it", first["session_id"])
+        self.assertEqual(seen["status"]["data"]["exit_code"], 0)
+        self.assertTrue((project / "package.json").exists())
+        self.assertTrue(seen["server"]["data"]["running"])
+        self.assertIn("localhost:5173", seen["server"]["data"]["stdout"])
+        self.assertIn("5173", second["content"])
+
+        from backend.app.tools import terminal_jobs
+        stopped = terminal_jobs.stop(seen["server"]["data"]["job_id"])
+        self.assertTrue(stopped["success"], stopped)
