@@ -1,4 +1,5 @@
-"""V2 Step C acceptance on a real machine: close tab 10/10 and close app 10/10.
+"""V2 Step C acceptance on a real machine: close tab 10/10 and close app 10/10,
+plus sleep / dedupe / reopen / history on real tabs.
 
 Real Ultron backend + real Chromium with the Ultron extension loaded. Ultron's
 own tab stays in front (as when the owner talks to him) and must never close.
@@ -129,6 +130,64 @@ def other_browser_checks(context, ultron_page) -> None:
     print("list / read / switch / refresh / close all: OK", flush=True)
 
 
+def listed_tabs() -> list[dict]:
+    listed = tool("browser_tabs")
+    assert listed["success"], listed
+    return [tab for tab in listed["data"]["tabs"] if not tab["ultron"]]
+
+
+def tab_extras_checks(chrome_binary: str, home: Path) -> None:
+    """Sleep (free RAM), close duplicates, reopen closed, find in history.
+
+    Runs in plain Chromium with NO automation attached: Playwright's debugger
+    takes the whole test browser down when a tab is discarded (real Chrome is
+    fine), so pages are opened from the command line on a virtual screen.
+    """
+    if not os.environ.get("DISPLAY"):
+        raise SystemExit("FAILED: tab extras need a screen; run under xvfb-run")
+    pages = [f"http://127.0.0.1:8765/{name}" for name in ("sleepy-alpha", "sleepy-beta", "dup-page", "dup-page")]
+    chrome = subprocess.Popen(
+        [chrome_binary, f"--user-data-dir={home / 'chrome-plain'}", "--no-first-run", "--no-default-browser-check",
+         "--disable-features=DisableLoadExtensionCommandLineSwitch", f"--disable-extensions-except={EXTENSION}",
+         f"--load-extension={EXTENSION}", "http://127.0.0.1:5173/", *pages],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        wait(lambda: get("/browser/status").get("connected"), "extension to connect (plain Chromium)", 60)
+        wait(lambda: sorted(t["title"] for t in listed_tabs()) == ["dup page", "dup page", "sleepy alpha", "sleepy beta"],
+             "4 tabs loaded")
+
+        r = tool("browser_tabs", action="dedupe")
+        assert r["success"] and r["data"]["closed"] == 1, r
+        assert [t["title"] for t in listed_tabs()].count("dup page") == 1
+
+        r = tool("browser_tabs", action="sleep")
+        assert r["success"] and r["data"]["slept"] == 3, r
+        wait(lambda: all(t["asleep"] for t in listed_tabs()), "tabs asleep")
+        time.sleep(1)
+        assert get("/browser/status")["connected"] and chrome.poll() is None, "helper or Chrome died after sleep"
+        ultron = [t for t in tool("browser_tabs")["data"]["tabs"] if t["ultron"]]
+        assert ultron and not ultron[0]["asleep"], "Ultron's own tab must never sleep"
+
+        r = tool("close_tab", which="sleepy alpha")
+        assert r["success"] and "sleepy alpha" not in [t["title"] for t in listed_tabs()], r
+        r = tool("browser_tabs", action="reopen", which="alpha")
+        assert r["success"] and r["data"]["reopened"]["url"].endswith("/sleepy-alpha"), r
+        wait(lambda: any(t["url"].endswith("/sleepy-alpha") for t in listed_tabs()), "reopened tab")
+
+        r = wait(lambda: (lambda h: h if h["success"] and h["data"]["count"] else None)(
+            tool("browser_tabs", action="history", which="sleepy beta")), "history match", 30)
+        assert r["data"]["matches"][0]["url"].endswith("/sleepy-beta"), r
+        r = tool("browser_tabs", action="history", which="zzqq nothing like this")
+        assert r["success"] and r["data"]["count"] == 0, r
+        print("sleep / dedupe / reopen / history (plain Chromium): OK", flush=True)
+    finally:
+        chrome.terminate()
+        try:
+            chrome.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            chrome.kill()
+
+
 def close_app_rounds(folder: Path) -> int:
     passed = 0
     for i in range(1, 11):
@@ -186,7 +245,10 @@ def main() -> int:
             print("extension connected", flush=True)
             tabs_ok = close_tab_rounds(context, ultron_page)
             other_browser_checks(context, ultron_page)
+            chrome_binary = p.chromium.executable_path
             context.close()
+        wait(lambda: not get("/browser/status").get("connected"), "test browser to disconnect", 20)
+        tab_extras_checks(chrome_binary, home)
         folder = home / "apps"
         folder.mkdir()
         apps_ok = close_app_rounds(folder)

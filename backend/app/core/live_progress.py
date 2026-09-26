@@ -73,7 +73,10 @@ def line_for(tool_id: str, args: Optional[dict] = None) -> str:
         "open_new_tab": f"Opening {_plain(a.get('url'), 30) or 'a new tab'}",
         "close_tab": f"Closing the {name} tab" if name and name != "current" else "Closing the tab",
         "browser_tabs": {"switch": f"Switching to {name}", "mute": "Muting the tab",
-                         "unmute": "Unmuting the tab"}.get(action, "Checking your tabs"),
+                         "unmute": "Unmuting the tab", "sleep": "Putting tabs to sleep to free memory",
+                         "reopen": "Reopening the tab", "dedupe": "Closing duplicate tabs",
+                         "history": f"Searching your history for {name}" if name and name != "current"
+                         else "Searching your history"}.get(action, "Checking your tabs"),
         "read_current_page": "Reading the page",
         "close_browser": "Closing the browser tabs",
         "download_file": f"Downloading {_plain(a.get('save_path')) or 'the file'}",

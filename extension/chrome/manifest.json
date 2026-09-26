@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Ultron Browser Hands",
-  "version": "1.0.0",
-  "description": "Lets your own Ultron (on this PC only) list, switch, close, reload and read your tabs.",
+  "version": "1.1.0",
+  "description": "Lets your own Ultron (on this PC only) list, switch, close, reload, read, sleep and reopen your tabs, and find pages in your history.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1z0gXtDUDRqQg2xTLn0R2+eqsrQbtv0AWzBphoCq0eN+nUCLNs3TnqAEodjdY7nx9ZLcD9S0rk0AIAC1pW64bj0TPVDcchJmMcRZFJCTR7XDOBP06qIAM1b/XX7oLroJR6n/WqCl9WPH/lnr1UaPqlw9YZLxrMvoYhXxPtJNulRh4Pc3EasBavpexBG7nNtnpBAnTzv8iChD3wAibeR/1HD+oX8LWHMIFgsy0kgshU3sdnAz5i/mpwrwENj76RAMEWIWL2PEYfVHswjTvlPeHsP9LbrMHxPT1jTXE+qzfn4GtuRKzIooyAdkCpasMZbyi4hU5Y3iJtBxI1+Dc20SlwIDAQAB",
   "background": {
@@ -11,7 +11,9 @@
   "permissions": [
     "tabs",
     "scripting",
-    "alarms"
+    "alarms",
+    "sessions",
+    "history"
   ],
   "host_permissions": [
     "<all_urls>"

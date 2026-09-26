@@ -91,7 +91,7 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("browser_forward", "(none)"),
             ("close_tab", "?which: tab in front or by name"),
             ("close_browser", "(none): all tabs"),
-            ("browser_tabs", "?action=list|switch|mute|unmute, ?which"),
+            ("browser_tabs", "?action=list|switch|mute|unmute|sleep|reopen|dedupe|history, ?which"),
             ("image_search", "query: open an image search"),
             ("video_search", "query: open a YouTube search"),
             ("reddit_search", "query"),

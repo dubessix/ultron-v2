@@ -61,7 +61,7 @@ function isUltron(tab) {
 function brief(tab) {
   return {
     id: tab.id, title: (tab.title || '').slice(0, 80), url: (tab.url || '').slice(0, 200),
-    active: !!tab.active, audible: !!tab.audible, muted: !!(tab.mutedInfo && tab.mutedInfo.muted),
+    active: !!tab.active, audible: !!tab.audible, muted: !!(tab.mutedInfo && tab.mutedInfo.muted), asleep: !!tab.discarded,
     ultron: isUltron(tab),
   };
 }
@@ -109,6 +109,19 @@ async function stillOpen(ids) {
   const open = new Set((await allTabs()).map((t) => t.id));
   return ids.filter((id) => open.has(id));
 }
+
+// "all", "current", "" -> every tab; otherwise the words pick tabs.
+function meansAll(which) {
+  const want = String(which || '').trim().toLowerCase();
+  return !want || ['current', 'this', 'this tab', 'active', 'all', 'all tabs', 'tabs', 'background', 'other', 'others'].includes(want);
+}
+
+// Same page = same address without the #part and the last slash.
+function samePage(url) {
+  return String(url || '').split('#')[0].replace(/\/+$/, '').toLowerCase();
+}
+
+const HISTORY_DAYS = 90;
 
 // ---------------------------------------------------------------- actions
 
@@ -171,6 +184,75 @@ async function run(action, args) {
       });
       const page = (result && result.result) || {};
       return { title: page.title || tab.title, url: tab.url, text: String(page.text || '').replace(/\s+/g, ' ').trim() };
+    }
+    case 'sleep': {
+      // Frees RAM: background tabs stay in the tab bar and reload when clicked.
+      // Never the tab in front, a tab playing sound, Ultron, or (unless named) a pinned tab.
+      const named = !meansAll(args.which);
+      const pool = named ? await findTabs(args.which) : await allTabs();
+      const picks = pool.filter((t) => !isUltron(t) && !t.active && !t.audible && !t.discarded && (named || !t.pinned));
+      const slept = [];
+      for (const tab of picks) {
+        try {
+          const done = await chrome.tabs.discard(tab.id);
+          if (done && done.discarded !== false) slept.push((tab.title || '').slice(0, 60));
+        } catch (e) { /* a tab Chrome won't sleep (e.g. its own pages); skip it */ }
+      }
+      const awake = (await allTabs()).filter((t) => !isUltron(t) && !t.discarded).length;
+      return { slept: slept.length, titles: slept.slice(0, 10), still_awake: awake,
+        note: slept.length ? '' : 'No tab could sleep: the rest are in front, playing sound or already asleep.' };
+    }
+    case 'reopen': {
+      // The last closed tab (or the one whose title matches), from Chrome's own list.
+      const keys = words(args.which).filter((w) => !['tab', 'tabs', 'the', 'closed', 'last', 'current', 'this', 'that', 'it', 'just', 'one', 'my'].includes(w));
+      const recent = await chrome.sessions.getRecentlyClosed({ maxResults: 25 });
+      const entry = recent.find((s) => {
+        const tab = s.tab;
+        if (!tab || isUltron(tab)) return false;
+        const hay = ((tab.title || '') + ' ' + (tab.url || '')).toLowerCase();
+        return keys.every((k) => hay.includes(k));
+      });
+      if (!entry) throw new Error(keys.length ? `No recently closed tab matches "${args.which}".` : 'No recently closed tab to reopen.');
+      const back = await chrome.sessions.restore(entry.tab.sessionId);
+      const tab = (back && back.tab) || entry.tab;
+      return { reopened: { title: (tab.title || '').slice(0, 80), url: (tab.url || '').slice(0, 200) } };
+    }
+    case 'dedupe': {
+      // Same page open more than once -> keep one (the one in front, playing, or last used).
+      const groups = new Map();
+      for (const tab of await allTabs()) {
+        if (isUltron(tab) || !tab.url) continue;
+        const key = samePage(tab.url);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(tab);
+      }
+      const drop = [];
+      for (const list of groups.values()) {
+        if (list.length < 2) continue;
+        list.sort((a, b) => (!!b.active - !!a.active) || (!!b.audible - !!a.audible) || ((b.lastAccessed || 0) - (a.lastAccessed || 0)));
+        drop.push(...list.slice(1));
+      }
+      const ids = drop.map((t) => t.id);
+      if (ids.length) await chrome.tabs.remove(ids);
+      const left = await stillOpen(ids);
+      return { closed: ids.length - left.length, titles: drop.slice(0, 10).map((t) => (t.title || '').slice(0, 60)), left: left.length };
+    }
+    case 'history': {
+      // Search Chrome history on this PC for the words said; only matches are returned.
+      const keys = words(args.which).filter((w) => !['tab', 'tabs', 'the', 'site', 'page', 'website', 'current', 'this', 'that', 'about', 'saw', 'seen', 'visited', 'opened',
+        'was', 'yesterday', 'today', 'earlier', 'last', 'week', 'one', 'my', 'history', 'find', 'open'].includes(w));
+      if (!keys.length) throw new Error('Say what the page was about, like "react hooks".');
+      const items = await chrome.history.search({ text: keys.join(' '), startTime: Date.now() - HISTORY_DAYS * 86400000, maxResults: 60 });
+      const seen = new Set();
+      const matches = [];
+      for (const item of items) {
+        const key = samePage(item.url);
+        if (!item.url || seen.has(key) || isUltron({ url: item.url })) continue;
+        seen.add(key);
+        matches.push({ title: (item.title || '').slice(0, 80), url: item.url.slice(0, 200), last_visit: new Date(item.lastVisitTime || 0).toISOString().slice(0, 16) });
+        if (matches.length >= 8) break;
+      }
+      return { count: matches.length, matches, note: matches.length ? 'Open one with open_new_tab.' : `Nothing in the last ${HISTORY_DAYS} days matches.` };
     }
     default:
       throw new Error(`Unknown browser action "${action}".`);

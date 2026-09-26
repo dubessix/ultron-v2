@@ -154,7 +154,7 @@ jobs:
         run: |
           python -m pip install playwright==1.55.0
           python -m playwright install --with-deps chromium
-          python .github/scripts/cloud_browser_acceptance.py
+          xvfb-run -a python .github/scripts/cloud_browser_acceptance.py
 
       - name: Confirm repository data was untouched
         id: data_isolation
@@ -176,7 +176,7 @@ jobs:
             echo "| App shortcuts/icons | ${{ steps.shortcut_acceptance.outcome }} |"
             echo "| Start / Health / Stop | ${{ steps.runtime_acceptance.outcome }} |"
             echo "| Idle soak (RAM, CPU, stop) | ${{ steps.soak_check.outcome }} |"
-            echo "| Real Chromium tabs + apps (10/10 each) | ${{ steps.browser_acceptance.outcome }} |"
+            echo "| Real Chromium tabs + apps (10/10 each) + sleep/dedupe/reopen/history | ${{ steps.browser_acceptance.outcome }} |"
             echo "| Source data isolation | ${{ steps.data_isolation.outcome }} |"
             echo
             echo "No real owner API key was supplied. Hardware and desktop interaction remain unverified."

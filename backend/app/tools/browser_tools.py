@@ -35,8 +35,11 @@ class TabArgs(BaseModel):
     which: str = Field("current", description="current (default), or words from the tab title/site like 'youtube', or 'all youtube'.")
 
 class BrowserTabsArgs(BaseModel):
-    action: Literal["list", "switch", "mute", "unmute"] = Field("list", description="list open tabs, or switch/mute/unmute one.")
-    which: str = Field("current", description="Tab words like 'youtube' or 'github'; 'current' by default.")
+    action: Literal["list", "switch", "mute", "unmute", "sleep", "reopen", "dedupe", "history"] = Field(
+        "list", description="list tabs; switch/mute/unmute one; sleep background tabs to free RAM; reopen the last "
+        "closed tab; dedupe closes duplicate tabs; history finds pages visited (which = what it was about).")
+    which: str = Field("current", description="Tab words like 'youtube' or 'github'; 'current' by default. "
+                       "For history: the words to search.")
 
 # --- Real tabs through the Ultron Chrome extension (never key presses) ---
 
@@ -344,9 +347,11 @@ class BrowserTabsTool(BaseTool):
         super().__init__(
             tool_id="browser_tabs",
             name="Browser Tabs",
-            description="Lists the open browser tabs, or switches to / mutes / unmutes one by name.",
+            description="Browser tabs: list, switch to / mute / unmute one by name, sleep background tabs to free "
+                        "RAM (Chrome slow), reopen the tab just closed, close duplicate tabs, or find a page in "
+                        "Chrome history (then open it with open_new_tab).",
             category="browser",
-            tags=["browser", "tabs", "tab", "switch", "mute"],
+            tags=["browser", "tabs", "tab", "switch", "mute", "sleep", "memory", "reopen", "duplicate", "history"],
             permission_level=0,
             args_model=BrowserTabsArgs,
             usage_examples=["browser_tabs()", "browser_tabs(action='switch', which='youtube')"]

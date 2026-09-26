@@ -27,7 +27,7 @@ class TestManifest(unittest.TestCase):
 
     def test_small_permissions_and_files_present(self):
         self.assertEqual(self.manifest["manifest_version"], 3)
-        self.assertEqual(sorted(self.manifest["permissions"]), ["alarms", "scripting", "tabs"])
+        self.assertEqual(sorted(self.manifest["permissions"]), ["alarms", "history", "scripting", "sessions", "tabs"])
         self.assertGreaterEqual(int(self.manifest["minimum_chrome_version"]), 116)
         for name in ("background.js", "icon128.png"):
             self.assertTrue((FOLDER / name).is_file(), name)
