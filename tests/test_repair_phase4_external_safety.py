@@ -12,7 +12,7 @@ _REAL_ASYNC_CLIENT = httpx.AsyncClient
 
 from backend.app.runtime_paths import isolated_test_artifact_path
 from backend.app.security.url_guard import validate_browser_url, validate_redirect
-from backend.app.tools.browser_tools import DownloadFileTool, OpenUrlTool, ReadPageTool, send_browser_shortcut
+from backend.app.tools.browser_tools import CloseCurrentTabTool, DownloadFileTool, OpenUrlTool, ReadPageTool
 from backend.app.tools.filesystem_search_tool import ConvertFileFormatTool
 from backend.app.tools.git_tool import GitCloneTool
 from backend.app.tools.music_tools import PlayMusicTool, SetVolumeTool
@@ -123,9 +123,10 @@ class TestHonestExternalOperations(unittest.IsolatedAsyncioTestCase):
             result = await OpenUrlTool().execute(url="https://example.com")
         self.assertFalse(result["success"])
 
-    async def test_missing_xdotool_is_failure(self):
-        with patch("backend.app.tools.browser_tools.shutil.which", return_value=None):
-            self.assertFalse(await send_browser_shortcut("ctrl+w"))
+    async def test_close_tab_without_extension_is_honest_failure(self):
+        result = await CloseCurrentTabTool().execute()
+        self.assertFalse(result["success"])
+        self.assertIn("Load unpacked", result["error"])
 
     async def test_missing_calculator_is_unavailable(self):
         with patch("backend.app.tools.system_tools.shutil.which", return_value=None):

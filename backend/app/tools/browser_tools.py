@@ -1,20 +1,17 @@
 """
-Ultron Production-Grade Browser Tools
-Implements un-mocked WebBrowser controls: Open URL, Open Tab, Close Tab, Refresh, Back, Forward, and Close Browser.
-Uses lightweight cross-platform shell key senders (xdotool on Linux, powershell on Windows)
-to trigger active browser controls without heavy Selenium/Playwright dependencies, protecting 8GB RAM bounds.
+Ultron browser tools: open URLs and pages, download, read pages.
+Tab work (close, switch, reload, back, forward, mute, read the live tab) goes
+through the small Ultron Chrome extension (extension/chrome, V2 Step C3), so it
+hits the real tab on Wayland and X11 and never closes Ultron's own tab.
 """
 
 import re
 import webbrowser
 import httpx
-import platform
-import asyncio
 import os
-import shutil
 import tempfile
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, Literal
 from pydantic import BaseModel, Field
 from backend.app.tools.tool_base import BaseTool
 
@@ -31,51 +28,24 @@ class DownloadUrlArgs(BaseModel):
     save_path: str = Field(..., description="Target local destination file path.")
 
 class ReadPageArgs(BaseModel):
-    url: str = Field(..., description="Target web page URL address to read and parse.")
+    url: str = Field("", description="A web address to fetch; leave empty to read the tab the owner is looking at.")
+    which: str = Field("current", description="Which open tab to read when url is empty (e.g. 'youtube').")
 
-# --- Helper Key Senders ---
+class TabArgs(BaseModel):
+    which: str = Field("current", description="current (default), or words from the tab title/site like 'youtube', or 'all youtube'.")
 
-async def send_browser_shortcut(key_combo: str) -> bool:
-    """Send a shortcut only when the required executable exits successfully."""
-    try:
-        if platform.system() == "Windows":
-            powershell = shutil.which("powershell") or shutil.which("pwsh")
-            if not powershell:
-                return False
-            script = (
-                "$wshell = New-Object -ComObject wscript.shell; "
-                f"$wshell.SendKeys('{key_combo}')"
-            )
-            proc = await asyncio.create_subprocess_exec(
-                powershell, "-NoProfile", "-Command", script,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        else:
-            xdotool = shutil.which("xdotool")
-            if not xdotool:
-                return False
-            lowered = key_combo.lower()
-            if "^w" in lowered or "ctrl+w" in lowered:
-                key = "ctrl+w"
-            elif "f5" in lowered:
-                key = "F5"
-            elif "%{left}" in lowered or "alt+left" in lowered:
-                key = "alt+Left"
-            elif "%{right}" in lowered or "alt+right" in lowered:
-                key = "alt+Right"
-            elif "%{f4}" in lowered or "alt+f4" in lowered:
-                key = "alt+F4"
-            else:
-                return False
-            proc = await asyncio.create_subprocess_exec(
-                xdotool, "key", key,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        return await proc.wait() == 0
-    except (OSError, ValueError):
-        return False
+class BrowserTabsArgs(BaseModel):
+    action: Literal["list", "switch", "mute", "unmute"] = Field("list", description="list open tabs, or switch/mute/unmute one.")
+    which: str = Field("current", description="Tab words like 'youtube' or 'github'; 'current' by default.")
+
+# --- Real tabs through the Ultron Chrome extension (never key presses) ---
+
+async def _tab_action(action: str, **args) -> Dict[str, Any]:
+    """Keys go to whatever window has focus (often Ultron's own tab) and do nothing on
+    Wayland, so every tab action goes through the extension and is checked."""
+    from backend.app.core import browser_bridge
+
+    return await browser_bridge.call(action, args)
 
 # --- Tool Implementations ---
 
@@ -138,97 +108,85 @@ class CloseCurrentTabTool(BaseTool):
         super().__init__(
             tool_id="close_tab",
             name="Tab Closer",
-            description="Closes the currently active browser tab using system keyboard controls. Never closes browser window.",
+            description="Closes a real browser tab (the one in front, or by name like 'youtube') and checks it is gone. Never Ultron's own tab.",
             category="browser",
             tags=["browser", "tab", "close", "remove"],
-            permission_level=1, # Level 2: Requires manual confirmation
-            args_model=EmptyArgs,
-            usage_examples=["close_tab()"]
+            permission_level=1,
+            args_model=TabArgs,
+            usage_examples=["close_tab()", "close_tab(which='youtube')"]
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        # Sends Ctrl+W macro shortcut natively to close active tab
-        success = await send_browser_shortcut("^w" if platform.system() == "Windows" else "ctrl+w")
-        if success:
-            return {"success": True, "data": {"message": "Active browser tab closed successfully."}, "error": None}
-        return {"success": False, "error": "Failed to close active tab. System command macro error.", "data": {}}
+        result = await _tab_action("close", which=kwargs.get("which") or "current")
+        data = result.get("data") or {}
+        if result["success"] and data.get("need_choice"):
+            titles = "; ".join(m.get("title", "") for m in data.get("matches", [])[:5])
+            return {"success": False, "error": f"{data.get('note')} Open: {titles}", "data": data}
+        return result
 
 class RefreshPageTool(BaseTool):
     def __init__(self) -> None:
         super().__init__(
             tool_id="refresh_page",
             name="Page Refresher",
-            description="Refreshes the active browser tab page natively.",
+            description="Reloads the browser tab in front (never Ultron's own).",
             category="browser",
             tags=["browser", "refresh", "reload"],
-            permission_level=1, # Level 1
+            permission_level=1,
             args_model=EmptyArgs,
             usage_examples=["refresh_page()"]
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        success = await send_browser_shortcut("{F5}" if platform.system() == "Windows" else "f5")
-        if success:
-            return {"success": True, "data": {"message": "Browser page refreshed successfully."}, "error": None}
-        return {"success": False, "error": "Failed to execute page refresh.", "data": {}}
+        return await _tab_action("reload")
 
 class BackTool(BaseTool):
     def __init__(self) -> None:
         super().__init__(
             tool_id="browser_back",
             name="Browser Navigation Back",
-            description="Navigates back to the previous page in the browser history.",
+            description="Goes back one page in the browser tab in front.",
             category="browser",
             tags=["browser", "back", "previous"],
-            permission_level=1, # Level 1
+            permission_level=1,
             args_model=EmptyArgs,
             usage_examples=["browser_back()"]
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        success = await send_browser_shortcut("%{LEFT}" if platform.system() == "Windows" else "alt+left")
-        if success:
-            return {"success": True, "data": {"message": "Navigated back successfully."}, "error": None}
-        return {"success": False, "error": "Failed to navigate back.", "data": {}}
+        return await _tab_action("back")
 
 class ForwardTool(BaseTool):
     def __init__(self) -> None:
         super().__init__(
             tool_id="browser_forward",
             name="Browser Navigation Forward",
-            description="Navigates forward to the next page in the browser history.",
+            description="Goes forward one page in the browser tab in front.",
             category="browser",
             tags=["browser", "forward", "next"],
-            permission_level=1, # Level 1
+            permission_level=1,
             args_model=EmptyArgs,
             usage_examples=["browser_forward()"]
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        success = await send_browser_shortcut("%{RIGHT}" if platform.system() == "Windows" else "alt+right")
-        if success:
-            return {"success": True, "data": {"message": "Navigated forward successfully."}, "error": None}
-        return {"success": False, "error": "Failed to navigate forward.", "data": {}}
+        return await _tab_action("forward")
 
 class CloseBrowserTool(BaseTool):
     def __init__(self) -> None:
         super().__init__(
             tool_id="close_browser",
-            name="Browser Window Closer",
-            description="Closes the entire browser window recursively. Requires explicit confirmation.",
+            name="Browser Tabs Closer",
+            description="Closes every browser tab except Ultron's own. Asks first.",
             category="browser",
             tags=["browser", "close", "quit", "window"],
-            permission_level=3, # Level 3: Dangerous (Requires confirmation)
+            permission_level=3,
             args_model=EmptyArgs,
             usage_examples=["close_browser()"]
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        # Sends Alt+F4 macro to close browser window natively
-        success = await send_browser_shortcut("%{F4}" if platform.system() == "Windows" else "alt+f4")
-        if success:
-            return {"success": True, "data": {"message": "Entire browser window closed successfully."}, "error": None}
-        return {"success": False, "error": "Failed to close browser window.", "data": {}}
+        return await _tab_action("close_all")
 
 class DownloadFileTool(BaseTool):
     def __init__(self) -> None:
@@ -320,16 +278,24 @@ class ReadPageTool(BaseTool):
         super().__init__(
             tool_id="read_current_page",
             name="Web Page Reader",
-            description="Reads and extracts unformatted, clean text contents from a target URL.",
+            description="Reads the text of the tab the owner is looking at (no url), or of a web address.",
             category="browser",
             tags=["browser", "read", "parse", "html", "scrape"],
             permission_level=0, # Level 0: Read-Only (Auto Allow)
             args_model=ReadPageArgs,
-            usage_examples=["read_current_page(url='https://example.com')"]
+            usage_examples=["read_current_page()", "read_current_page(url='https://example.com')"]
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        current_url = kwargs.get("url", "")
+        current_url = str(kwargs.get("url") or "").strip()
+        if not current_url:
+            result = await _tab_action("read", which=kwargs.get("which") or "current")
+            if result["success"]:
+                data = result["data"]
+                text = str(data.get("text") or "")
+                data["content"] = text[:3000] + ("..." if len(text) > 3000 else "")
+                data.pop("text", None)
+            return result
         from backend.app.security.url_guard import (
             MAX_PAGE_BYTES, MAX_REDIRECTS, response_peer_is_approved,
             validate_public_url_details, validate_redirect,
@@ -371,3 +337,23 @@ class ReadPageTool(BaseTool):
             return {"success": False, "error": "Web redirect loop ended unexpectedly.", "data": {}}
         except Exception as e:
             return {"success": False, "error": f"Failed to scrape web page: {e}", "data": {}}
+
+
+class BrowserTabsTool(BaseTool):
+    def __init__(self) -> None:
+        super().__init__(
+            tool_id="browser_tabs",
+            name="Browser Tabs",
+            description="Lists the open browser tabs, or switches to / mutes / unmutes one by name.",
+            category="browser",
+            tags=["browser", "tabs", "tab", "switch", "mute"],
+            permission_level=0,
+            args_model=BrowserTabsArgs,
+            usage_examples=["browser_tabs()", "browser_tabs(action='switch', which='youtube')"]
+        )
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        action = kwargs.get("action") or "list"
+        if action == "list":
+            return await _tab_action("list")
+        return await _tab_action(action, which=kwargs.get("which") or "current")

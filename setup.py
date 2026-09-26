@@ -32,6 +32,12 @@ def _runtime_data_files() -> list[tuple[str, list[str]]]:
             "images/ultron_icon.ico",
             "images/ultron_icon.png",
         ],
+        # The Ultron Chrome extension (real tab control, V2 Step C).
+        "share/ultron/extension/chrome": [
+            "extension/chrome/manifest.json",
+            "extension/chrome/background.js",
+            "extension/chrome/icon128.png",
+        ],
     }
     frontend = ROOT / "frontend"
     for path in sorted(frontend.rglob("*")):

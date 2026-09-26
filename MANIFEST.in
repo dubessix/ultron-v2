@@ -10,6 +10,7 @@ include start_ultron.sh
 include images/ultron_icon.ico
 include images/ultron_icon.png
 recursive-include frontend *.html *.json *.js *.jsx *.css
+recursive-include extension *.json *.js *.png
 recursive-include backend/app/personalities *.md
 recursive-include backend/app/skills *.md
 prune frontend/node_modules

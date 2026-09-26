@@ -147,6 +147,7 @@ class AppsArgs(BaseModel):
     action: Literal["open", "close", "running"] = Field("open", description="open an app, close it, or list heavy running apps.")
     name: Optional[str] = Field(None, max_length=120, description="App name as said, e.g. 'WhatsApp', 'VLC', 'Word'.")
     pid: Optional[int] = Field(None, ge=1, description="Exact process id to close (from action=running).")
+    force: bool = Field(False, description="close only: end it even if it did not close gently (unsaved work is lost). Only after the owner says so.")
     limit: int = Field(8, ge=1, le=25)
 
 
@@ -171,7 +172,7 @@ class AppsTool(BaseTool):
         if action == "running":
             return await asyncio.to_thread(self._running, int(kwargs.get("limit") or 8))
         if action == "close":
-            return await asyncio.to_thread(self._close, kwargs.get("name"), kwargs.get("pid"))
+            return await asyncio.to_thread(self._close, kwargs.get("name"), kwargs.get("pid"), bool(kwargs.get("force")))
         name = str(kwargs.get("name") or "").strip()
         if not name:
             return _fail("Say which app to open.")
@@ -249,30 +250,52 @@ class AppsTool(BaseTool):
         return _ok(apps=heavy, ram_used_percent=memory.percent, ram_free_gb=round(memory.available / 1e9, 1))
 
     @staticmethod
-    def _close(name: Optional[str], pid: Optional[int]) -> Dict[str, Any]:
+    def _close(name: Optional[str], pid: Optional[int], force: bool = False) -> Dict[str, Any]:
+        """Close gently -> check it is really gone -> report the truth. Force only on request."""
         import psutil
 
-        targets = [proc for proc in psutil.process_iter(["pid", "name", "username"]) if _closable(proc, name, pid)]
+        keys = _target_keys(name)
+        attrs = ["pid", "name", "username", "exe", "cmdline", "create_time"]
+        targets = [proc for proc in psutil.process_iter(attrs) if _closable(proc, name, pid, keys)]
+        label = str(name or pid)
         if not targets:
+            protected = sorted({str(proc.info.get("name")) for proc in psutil.process_iter(["name"])
+                                if name and _is_protected(str(proc.info.get("name") or ""))
+                                and _matches(_process_keys(proc), keys, name)})
+            if protected:
+                return _fail(f"{protected[0]} is part of the system (the desktop itself). "
+                             "Closing it would break the screen, so I will not.", protected=protected)
+            return _fail(f"'{label}' is not running.", running=False)
+
+        names = sorted({str(proc.info.get("name")) for proc in targets})
+        if force:
+            for proc in targets:
+                try:
+                    proc.kill()
+                except (psutil.Error, OSError):
+                    pass
+            _gone, alive = psutil.wait_procs(targets, timeout=5)
+        else:
+            _close_gently(targets, name)
+            _gone, alive = psutil.wait_procs(targets, timeout=6)
+        alive = [proc for proc in alive if _still_same(proc)]
+        if alive:
+            left = sorted({str(proc.info.get("name")) for proc in alive})
             return _fail(
-                f"No closable app matching '{name or pid}' is running "
-                "(only the owner's own apps can be closed; system processes are protected)."
-            )
-        for proc in targets:
-            try:
-                proc.terminate()  # graceful: apps may save their work
-            except (psutil.Error, OSError):
-                pass
-        gone, alive = psutil.wait_procs(targets, timeout=4)
-        return _ok(closed=sorted({p.info["name"] for p in targets}), processes=len(gone), still_running=len(alive))
+                f"{', '.join(left)} is still running"
+                + (" even after force." if force else
+                   " (it may be asking to save work). Tell the owner; force close only if he says so."),
+                still_running=left, pids=[proc.pid for proc in alive][:10], closed=False)
+        return _ok(closed=names, processes=len(targets), verified_gone=True)
 
-
-_PROTECTED_PREFIXES = ("systemd", "kworker", "gnome-", "gsd-", "xdg-", "dbus", "polkit", "gvfs", "at-spi",
-                       "ibus", "pipewire", "wireplumber", "pulseaudio", "xorg", "xwayland", "mutter", "kwin",
-                       "plasmashell", "sddm", "lightdm", "gdm", "networkmanager", "wpa_supplicant", "snapd",
-                       "svchost", "csrss", "wininit", "winlogon", "lsass", "services", "smss", "dwm",
+_PROTECTED_PREFIXES = ("systemd", "kworker", "gnome-shell", "gnome-session", "gnome-keyring", "gnome-settings",
+                       "gnome-remote-desktop", "gsd-", "goa-", "evolution-", "tracker-", "xdg-", "dbus", "polkit",
+                       "gvfs", "at-spi", "ibus", "pipewire", "wireplumber", "pulseaudio", "xorg", "xwayland",
+                       "mutter", "kwin", "plasmashell", "sddm", "lightdm", "gdm", "networkmanager", "wpa_supplicant",
+                       "snapd", "svchost", "csrss", "wininit", "winlogon", "lsass", "services", "smss", "dwm",
                        "explorer", "sihost", "ctfmon", "runtimebroker", "searchhost", "startmenuexperiencehost",
                        "shellexperiencehost", "textinputhost", "fontdrvhost", "msmpeng", "securityhealth")
+_VENDOR_PREFIXES = ("gnome", "google", "org", "kde", "com", "io", "snap")
 
 
 def _current_user() -> str:
@@ -289,12 +312,86 @@ def _is_protected(process_name: str) -> bool:
     return low in _PROTECTED_PROCESSES or low.startswith(_PROTECTED_PREFIXES)
 
 
-def _closable(proc, name: Optional[str], pid: Optional[int]) -> bool:
-    """Only the owner's own, non-system apps that match by name start (or exact pid)."""
+def _strip_vendor(key: str) -> str:
+    for prefix in _VENDOR_PREFIXES:
+        if key.startswith(prefix) and len(key) > len(prefix) + 2:
+            return key[len(prefix):]
+    return key
+
+
+def _process_keys(proc) -> set[str]:
+    """Names a running process goes by: its name, its program file, its first argument."""
+    info = getattr(proc, "info", {}) or {}
+    raw = [str(info.get("name") or "")]
+    for value in (info.get("exe"), (info.get("cmdline") or [None])[0]):
+        if value:
+            raw.append(re.split(r"[\\/]", str(value))[-1])
+    keys = set()
+    for item in raw:
+        key = _norm(re.sub(r"\.exe$", "", item, flags=re.I))
+        if key:
+            keys.update({key, _strip_vendor(key)})
+    return keys
+
+
+def _target_keys(name: Optional[str]) -> dict[str, set[str]]:
+    """spoken: what the owner said (+ alias); launcher: the app's own program / window class."""
+    spoken_text = _APP_ALIASES.get(str(name or "").lower().strip(), name or "")
+    spoken = {k for k in {_norm(spoken_text), _strip_vendor(_norm(spoken_text))} if k}
+    launcher: set[str] = set()
+    if name and not IS_WINDOWS:
+        try:
+            apps = _linux_apps()
+            hit = _best(_norm(spoken_text), list(apps))
+            if hit:
+                desktop_id, exec_line = apps[hit]
+                words = [w for w in shlex.split(exec_line) if not w.startswith("%")]
+                program = next((w for w in words if not w.startswith("-") and w not in {"env", "flatpak", "run"}
+                                and "=" not in w), "")
+                for raw in (program.split("/")[-1], desktop_id.split(".")[-1]):
+                    key = _norm(raw)
+                    if len(key) >= 3:
+                        launcher.update({key, _strip_vendor(key)})
+        except (OSError, ValueError):
+            pass
+    return {"spoken": spoken, "launcher": launcher}
+
+
+def _matches(process_keys: set[str], keys: dict[str, set[str]], name: Optional[str]) -> bool:
+    for pk in process_keys:
+        for tk in keys.get("spoken", ()):
+            if len(tk) >= 3 and pk.startswith(tk):
+                return True
+        for tk in keys.get("launcher", ()):
+            if (len(tk) >= 3 and pk.startswith(tk)) or (len(pk) >= 4 and tk.startswith(pk)):
+                return True
+    return False
+
+
+def _is_ultron(proc) -> bool:
+    """Ultron himself, his launcher and his own python/node servers are never closed."""
+    info = getattr(proc, "info", {}) or {}
+    if info.get("pid") in {os.getpid(), os.getppid()}:
+        return True
+    name = str(info.get("name") or "").lower()
+    if not name.startswith(("python", "node", "uvicorn", "npm")):
+        return False  # e.g. VS Code with the Ultron folder open is still closable
+    try:
+        from backend.app.install_paths import ASSET_ROOT
+
+        home = str(ASSET_ROOT)
+        cmd = " ".join(str(part) for part in (info.get("cmdline") or []))
+        return len(home) > 3 and home in cmd
+    except Exception:
+        return False
+
+
+def _closable(proc, name: Optional[str], pid: Optional[int], keys: Optional[dict] = None) -> bool:
+    """Only the owner's own, non-system apps that match by name (or exact pid)."""
     try:
         info = proc.info
         pname = str(info.get("name") or "")
-        if info.get("pid") in {os.getpid(), os.getppid()} or _is_protected(pname):
+        if _is_ultron(proc) or _is_protected(pname):
             return False
         owner = str(info.get("username") or "").lower().split("\\")[-1]
         me = _current_user()
@@ -302,9 +399,35 @@ def _closable(proc, name: Optional[str], pid: Optional[int]) -> bool:
             return False  # root/SYSTEM services and other users are never touched
         if pid:
             return info.get("pid") == pid
-        key = _norm(_APP_ALIASES.get(str(name or "").lower().strip(), name or ""))
-        stem = _norm(re.sub(r"\.exe$", "", pname, flags=re.I))
-        return len(key) >= 3 and stem.startswith(key)
+        return _matches(_process_keys(proc), keys if keys is not None else _target_keys(name), name)
+    except Exception:
+        return False
+
+
+def _close_gently(targets: list, name: Optional[str]) -> None:
+    """Like clicking X: apps get the chance to save. Windows: WM_CLOSE; Linux: app quit, else SIGTERM."""
+    import psutil
+
+    pids = [proc.pid for proc in targets]
+    if IS_WINDOWS:
+        argv = ["taskkill"]
+        for pid in pids[:40]:
+            argv += ["/PID", str(pid)]
+        try:
+            subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)  # noqa: S603
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return
+    for proc in targets:
+        try:
+            proc.terminate()  # SIGTERM: Chrome, VS Code, mpv save state and exit
+        except (psutil.Error, OSError):
+            pass
+
+
+def _still_same(proc) -> bool:
+    try:
+        return proc.is_running() and proc.status() != "zombie"
     except Exception:
         return False
 

@@ -147,6 +147,15 @@ jobs:
         continue-on-error: true
         run: python .github/scripts/cloud_soak_check.py
 
+      - name: Real browser tabs and apps (close tab 10/10, close app 10/10)
+        id: browser_acceptance
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          python -m pip install playwright==1.55.0
+          python -m playwright install --with-deps chromium
+          python .github/scripts/cloud_browser_acceptance.py
+
       - name: Confirm repository data was untouched
         id: data_isolation
         continue-on-error: true
@@ -167,6 +176,7 @@ jobs:
             echo "| App shortcuts/icons | ${{ steps.shortcut_acceptance.outcome }} |"
             echo "| Start / Health / Stop | ${{ steps.runtime_acceptance.outcome }} |"
             echo "| Idle soak (RAM, CPU, stop) | ${{ steps.soak_check.outcome }} |"
+            echo "| Real Chromium tabs + apps (10/10 each) | ${{ steps.browser_acceptance.outcome }} |"
             echo "| Source data isolation | ${{ steps.data_isolation.outcome }} |"
             echo
             echo "No real owner API key was supplied. Hardware and desktop interaction remain unverified."
@@ -214,5 +224,6 @@ jobs:
           RUNTIME_ACCEPTANCE: ${{ steps.runtime_acceptance.outcome }}
           SOAK_CHECK: ${{ steps.soak_check.outcome }}
           DATA_ISOLATION: ${{ steps.data_isolation.outcome }}
+          BROWSER_ACCEPTANCE: ${{ steps.browser_acceptance.outcome }}
         run: >-
-          python -c "import os,sys; names=('PYTHON_SUITE','UNITTEST_SUITE','FRONTEND_VOICE','FRONTEND_BUILD','SHORTCUT_ACCEPTANCE','RUNTIME_ACCEPTANCE','SOAK_CHECK','DATA_ISOLATION'); failed=[f'{name}={os.environ.get(name)}' for name in names if os.environ.get(name) != 'success']; print('Cloud acceptance failures: ' + (', '.join(failed) if failed else 'none')); sys.exit(bool(failed))"
+          python -c "import os,sys; names=('PYTHON_SUITE','UNITTEST_SUITE','FRONTEND_VOICE','FRONTEND_BUILD','SHORTCUT_ACCEPTANCE','RUNTIME_ACCEPTANCE','SOAK_CHECK','DATA_ISOLATION','BROWSER_ACCEPTANCE'); skip_ok=os.environ.get('RUNNER_OS')=='Windows'; failed=[f'{name}={os.environ.get(name)}' for name in names if os.environ.get(name) != 'success' and not (name=='BROWSER_ACCEPTANCE' and skip_ok and os.environ.get(name)=='skipped')]; print('Cloud acceptance failures: ' + (', '.join(failed) if failed else 'none')); sys.exit(bool(failed))"

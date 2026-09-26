@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from backend.app.tools import media_control
 from backend.app.tools.tool_base import BaseTool
 
 
@@ -39,6 +40,12 @@ class LocalMusicPlayerController:
         if filepath not in self.playlist:
             self.playlist.append(filepath)
         self.current_idx = self.playlist.index(filepath)
+
+    def owns_playing(self) -> bool:
+        return bool(self.proc and self.proc.returncode is None and self.is_playing and not self.is_paused)
+
+    def owns_paused(self) -> bool:
+        return bool(self.proc and self.proc.returncode is None and self.is_paused)
 
     def get_current_track(self) -> Optional[str]:
         if not self.playlist or not self.is_playing:
@@ -160,59 +167,66 @@ class PlayMusicTool(BaseTool):
 
 class PauseMusicTool(BaseTool):
     def __init__(self) -> None:
-        super().__init__("pause_music", "Music Pauser", "Pauses the owned player process.", "music", ["music", "pause"], 1, EmptyArgs, ["pause_music()"])
+        super().__init__("pause_music", "Music Pauser", "Pauses whatever is playing (YouTube/Spotify in the browser, any player) and checks it paused.", "music", ["music", "pause"], 1, EmptyArgs, ["pause_music()"])
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        result = await _player_controller.pause()
-        return {"success": result["success"], "data": {"status": "paused"} if result["success"] else {"status": "unavailable"}, "error": result.get("error")}
-
+        if _player_controller.owns_playing():
+            result = await _player_controller.pause()
+            return {"success": result["success"], "data": {"status": "paused", "player": "Ultron"} if result["success"] else {}, "error": result.get("error")}
+        return await asyncio.to_thread(media_control.control, "pause")
 
 class ResumeMusicTool(BaseTool):
     def __init__(self) -> None:
-        super().__init__("resume_music", "Music Resumer", "Resumes the owned paused player.", "music", ["music", "resume"], 1, EmptyArgs, ["resume_music()"])
+        super().__init__("resume_music", "Music Resumer", "Resumes the paused player (browser, Spotify, any player).", "music", ["music", "resume"], 1, EmptyArgs, ["resume_music()"])
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        result = await _player_controller.resume()
-        return {"success": result["success"], "data": {"status": "playing"} if result["success"] else {"status": "unavailable"}, "error": result.get("error")}
-
+        if _player_controller.owns_paused():
+            result = await _player_controller.resume()
+            return {"success": result["success"], "data": {"status": "playing", "player": "Ultron"} if result["success"] else {}, "error": result.get("error")}
+        return await asyncio.to_thread(media_control.control, "play")
 
 class NextTrackTool(BaseTool):
     def __init__(self) -> None:
-        super().__init__("next_track", "Next Track", "Plays the next owned playlist track.", "music", ["music", "next"], 1, EmptyArgs, ["next_track()"])
+        super().__init__("next_track", "Next Track", "Next track/video in whatever is playing.", "music", ["music", "next"], 1, EmptyArgs, ["next_track()"])
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        result = await _player_controller.change_track(1)
-        return {"success": result["success"], "data": {"current_track": _player_controller.get_current_track()} if result["success"] else {"status": "unavailable"}, "error": result.get("error")}
-
+        if _player_controller.owns_playing() and len(_player_controller.playlist) > 1:
+            result = await _player_controller.change_track(1)
+            return {"success": result["success"], "data": {"current_track": _player_controller.get_current_track()} if result["success"] else {}, "error": result.get("error")}
+        return await asyncio.to_thread(media_control.control, "next")
 
 class PreviousTrackTool(BaseTool):
     def __init__(self) -> None:
-        super().__init__("previous_track", "Previous Track", "Plays the previous owned playlist track.", "music", ["music", "previous"], 1, EmptyArgs, ["previous_track()"])
+        super().__init__("previous_track", "Previous Track", "Previous track in whatever is playing.", "music", ["music", "previous"], 1, EmptyArgs, ["previous_track()"])
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        result = await _player_controller.change_track(-1)
-        return {"success": result["success"], "data": {"current_track": _player_controller.get_current_track()} if result["success"] else {"status": "unavailable"}, "error": result.get("error")}
-
+        if _player_controller.owns_playing() and len(_player_controller.playlist) > 1:
+            result = await _player_controller.change_track(-1)
+            return {"success": result["success"], "data": {"current_track": _player_controller.get_current_track()} if result["success"] else {}, "error": result.get("error")}
+        return await asyncio.to_thread(media_control.control, "previous")
 
 class StopMusicTool(BaseTool):
     def __init__(self) -> None:
         super().__init__("stop_music", "Music Stopper", "Stops the owned player process.", "music", ["music", "stop"], 1, EmptyArgs, ["stop_music()"])
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        result = await _player_controller.stop()
-        return {"success": True, "data": {"status": "stopped", "was_playing": result["was_playing"]}, "error": None}
-
+        if _player_controller.owns_playing() or _player_controller.owns_paused():
+            result = await _player_controller.stop()
+            return {"success": True, "data": {"status": "stopped", "was_playing": result["was_playing"]}, "error": None}
+        result = await asyncio.to_thread(media_control.control, "pause")
+        if not result["success"] and ("players" in (result.get("data") or {}) or "gdbus" in str(result.get("error"))):
+            return {"success": True, "data": {"status": "stopped", "was_playing": False}, "error": None}
+        return result
 
 class CurrentTrackTool(BaseTool):
     def __init__(self) -> None:
-        super().__init__("current_track", "Current Track Inspector", "Reports the verified owned player state.", "music", ["music", "current", "track"], 0, EmptyArgs, ["current_track()"])
+        super().__init__("current_track", "Current Track Inspector", "What is playing now (any player).", "music", ["music", "current", "track"], 0, EmptyArgs, ["current_track()"])
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         track = _player_controller.get_current_track()
-        if not track:
-            return {"success": False, "data": {"status": "stopped"}, "error": "No owned music process is playing."}
-        return {"success": True, "data": {"status": "paused" if _player_controller.is_paused else "playing", "current_track": track, "player": _player_controller.player}, "error": None}
-
+        if track and (_player_controller.owns_playing() or _player_controller.owns_paused()):
+            return {"success": True, "data": {"status": "paused" if _player_controller.is_paused else "playing", "current_track": track, "player": "Ultron"}, "error": None}
+        return await asyncio.to_thread(media_control.now_playing)
 
 class SetVolumeTool(BaseTool):
     def __init__(self) -> None:
@@ -221,22 +235,25 @@ class SetVolumeTool(BaseTool):
     async def execute(self, **kwargs) -> Dict[str, Any]:
         level = max(0, min(100, int(kwargs.get("level", 50))))
         if platform.system() == "Windows":
-            return {
-                "success": False,
-                "data": {"status": "unavailable"},
-                "error": "Verified exact system-volume control is unavailable on Windows.",
-            }
-        else:
-            executable = shutil.which("amixer")
+            return {"success": False, "data": {"status": "unavailable"}, "error": "Use pc_control volume on Windows."}
+        options = [
+            ("wpctl", ["set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", f"{level / 100:.2f}"]),
+            ("pactl", ["set-sink-volume", "@DEFAULT_SINK@", f"{level}%"]),
+            ("amixer", ["-q", "sset", "Master", f"{level}%"]),
+        ]
+        last_error, tried = "No volume mixer found (wpctl, pactl or amixer).", False
+        for name, args in options:
+            executable = shutil.which(name)
             if not executable:
-                return {"success": False, "data": {"status": "unavailable"}, "error": "amixer unavailable."}
-            argv = [executable, "sset", "Master", f"{level}%"]
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            return {"success": False, "data": {"status": "failed", "stdout": stdout.decode("utf-8", "ignore")[:500]}, "error": stderr.decode("utf-8", "ignore")[:500] or f"Mixer exited {proc.returncode}"}
-        return {"success": True, "data": {"status": "verified", "level": level, "mixer": executable}, "error": None}
+                continue
+            tried = True
+            try:
+                proc = await asyncio.create_subprocess_exec(executable, *args, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+                _out, err = await asyncio.wait_for(proc.communicate(), timeout=5)
+            except (OSError, asyncio.TimeoutError) as exc:
+                last_error = f"{name} failed: {exc}"
+                continue
+            if proc.returncode == 0:
+                return {"success": True, "data": {"status": "verified", "level": level, "mixer": name}, "error": None}
+            last_error = err.decode("utf-8", "ignore")[:300] or f"{name} exited {proc.returncode}"
+        return {"success": False, "data": {"status": "failed" if tried else "unavailable"}, "error": last_error}

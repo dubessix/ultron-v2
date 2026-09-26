@@ -555,6 +555,14 @@ async def restore_db(request: BackupRequest):
         timeout=180.0,
     )
 
+@api_router.get("/browser/status", status_code=status.HTTP_200_OK)
+async def browser_helper_status() -> Dict[str, Any]:
+    """Is the Ultron Chrome extension connected (real tab control)?"""
+    from backend.app.core import browser_bridge
+
+    return {**browser_bridge.status(), "setup": None if browser_bridge.connected() else browser_bridge.setup_steps()}
+
+
 @api_router.get("/providers/status", status_code=status.HTTP_200_OK)
 async def provider_status(live: bool = Query(False, description="Make one tiny live request per configured provider.")):
     """Report effective models, redacted key state and optional live reachability."""

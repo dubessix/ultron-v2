@@ -73,6 +73,10 @@ app.include_router(api_router)
 # Initialize the global, thread-safe WebSocket Connection Coordinator
 ws_manager = WebSocketManager()
 
+from backend.app.core import live_progress  # noqa: E402  (Ultron talks while he works)
+
+live_progress.set_manager(ws_manager)
+
 class HealthStatusResponse(BaseModel):
     status: str
     uptime_seconds: float
@@ -361,7 +365,8 @@ async def websocket_chat_endpoint(websocket: WebSocket, client_id: str = "defaul
     Accepts user text, runs the shared canonical chat service (same pipeline as
     /api/chat), and returns the completed result with progress + widget pushes.
     """
-    await ws_manager.connect("chat", client_id, websocket)
+    if not await ws_manager.connect("chat", client_id, websocket):
+        return
     from backend.app.router import get_orchestrator
     from backend.app.services.chat_service import process_chat_message
     orchestrator = get_orchestrator()  # shared — do NOT close it on disconnect
@@ -465,7 +470,8 @@ async def websocket_chat_endpoint(websocket: WebSocket, client_id: str = "defaul
 @app.websocket("/ws/events")
 async def websocket_events_endpoint(websocket: WebSocket, client_id: str = "default_client"):
     """Server-initiated push channel. Broadcasters trigger alerts, reminders, and Zora auto-handoffs."""
-    await ws_manager.connect("events", client_id, websocket)
+    if not await ws_manager.connect("events", client_id, websocket):
+        return
     try:
         # "Tell me when I come": reminders that fired while no screen was
         # connected (away, app closed, PC off) are delivered right now.
@@ -484,10 +490,30 @@ async def websocket_events_endpoint(websocket: WebSocket, client_id: str = "defa
         print(f"[WS_EVENTS] Connection closed: {exc}")
         ws_manager.disconnect("events", client_id)
 
+@app.websocket("/ws/browser")
+async def websocket_browser_endpoint(websocket: WebSocket):
+    """The Ultron Chrome extension: real tab control (only its pinned origin may connect)."""
+    from backend.app.core import browser_bridge
+
+    if not await ws_manager.connect("browser", "extension", websocket):
+        return
+    try:
+        await browser_bridge.attach(websocket)
+        while True:
+            browser_bridge.handle(await websocket.receive_text())
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        print(f"[WS_BROWSER] Connection closed: {exc}")
+    finally:
+        browser_bridge.detach(websocket)
+        ws_manager.disconnect("browser", "extension")
+
 @app.websocket("/ws/logs")
 async def websocket_logs_endpoint(websocket: WebSocket, client_id: str = "default_client"):
     """Streams terminal subprocess and local server logging actions in real-time."""
-    await ws_manager.connect("logs", client_id, websocket)
+    if not await ws_manager.connect("logs", client_id, websocket):
+        return
     try:
         while True:
             await websocket.receive_text()
@@ -497,7 +523,8 @@ async def websocket_logs_endpoint(websocket: WebSocket, client_id: str = "defaul
 @app.websocket("/ws/dashboard")
 async def websocket_dashboard_endpoint(websocket: WebSocket, client_id: str = "default_client"):
     """Pushes local CPU/RAM hardware utilization and session metrics on intervals (Push-on-Change)."""
-    await ws_manager.connect("dashboard", client_id, websocket)
+    if not await ws_manager.connect("dashboard", client_id, websocket):
+        return
     try:
         last_ram = 0.0
         while True:

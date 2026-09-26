@@ -4,6 +4,7 @@ import { createPresenceTracker } from './arrival';
 import AppShell from './components/AppShell';
 import NotificationToast from './components/NotificationToast';
 import { api, apiBase, executeTool, websocketBase } from './api';
+import { progressAction } from './liveProgress';
 import { connectEvents, planForEvent, planForReturn } from './reminderAlerts';
 import { isPlaybackBlocked, playbackProblem } from './speechPlayback';
 
@@ -26,6 +27,8 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
+  const processingRef = useRef(false);
+  useEffect(() => { processingRef.current = isProcessing; }, [isProcessing]);
   const [isSpeaking, setIsSpeaking] = useState(false);
   // Coding Mode (NVIDIA brain) — manual toggle synced to backend /api/coding-mode
   const [codingMode, setCodingMode] = useState(false);
@@ -694,6 +697,15 @@ export default function App() {
     if (typeof window === 'undefined' || typeof window.WebSocket !== 'function') return undefined;
     const isHidden = () => typeof document !== 'undefined' && document.visibilityState === 'hidden';
     const stop = connectEvents(`${websocketBase()}/ws/events?client_id=web-reminders`, (event) => {
+      if (event?.type === 'ultron_progress') {
+        // V2 Step C7: say along while working (spoken only for slow steps).
+        const step = progressAction(event, { processing: processingRef.current, sessionId: sessionIdRef.current });
+        if (step) {
+          setActivityText(`${step.text}…`);
+          if (step.speak) speakRef.current?.(step.text, personalityRef.current);
+        }
+        return;
+      }
       const plan = planForEvent(event, { hidden: isHidden() });
       if (plan.action === 'queue') {
         // Away: a quiet system notification now, the spoken summary on return.
@@ -1050,14 +1062,8 @@ export default function App() {
         if (data.events && data.events.length) {
           const logLines = data.events.filter(e => e.type === "log").map(e => ({ level: e.log.level, message: e.log.message }));
           if (logLines.length) {
+            // Logs are for the Log tab only; Ultron already spoke live while working.
             setLogs(prev => [...prev, ...logLines].slice(-80));
-            // Preserve both spoken outputs without replacing the response audio.
-            const narration = logLines.find(l => l.level === "info");
-            if (narration) {
-              speechSequence = speechSequence.then(() =>
-                speakResponse(narration.message, data.personality || "ultron")
-              );
-            }
           }
         }
         if (data.arrival?.speech) {
