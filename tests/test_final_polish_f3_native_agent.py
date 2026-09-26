@@ -218,6 +218,11 @@ class TestPendingResumeAndCodeValidation(unittest.TestCase):
             str(target),
             "export const App = () => <div>broken</span>;\n",
         )
+        if result["success"]:
+            # No checker on this machine (no esbuild): the owner's job is never
+            # blocked, but the result says honestly that it was not checked.
+            self.assertFalse(result["data"]["verification"]["checked"])
+            self.skipTest("esbuild not available here; strict check covered where it exists")
         self.assertFalse(result["success"])
         self.assertTrue(result["data"]["original_preserved"])
         self.assertEqual(

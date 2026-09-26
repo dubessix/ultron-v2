@@ -451,7 +451,7 @@ class TerminalRunTool(BaseTool):
         error = None
         if code != 0:
             error = out["stderr"] or out["stdout"][-500:] or f"Exited with code {code}."
-            if code in (127, 9009):  # the shell's "command not found" (Linux / Windows)
+            if code in (127, 9009) or "is not recognized as an internal or external command" in error:
                 program = command.split()[0]
                 error = f"'{program}' is not installed or not on PATH. {error}".strip()
         return {"success": code == 0, "data": data, "error": error}

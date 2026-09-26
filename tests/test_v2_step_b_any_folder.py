@@ -30,9 +30,13 @@ class AnyFolderCase(ApiCase):
         for folder in ("Desktop", "Documents", "Projects/app"):
             (self.home / folder).mkdir(parents=True)
         (self.home / "Projects/app/main.py").write_text("print('hi')\n", encoding="utf-8")
-        home = patch.object(Path, "home", classmethod(lambda cls: self.home))
-        home.start()
-        self.addCleanup(home.stop)
+        from backend.app.security import path_locator
+        for item in (patch.object(Path, "home", classmethod(lambda cls: self.home)),
+                     # Windows reads the real Desktop/Documents from the registry
+                     patch.object(path_locator, "_windows_shell_folder", lambda _c: None),
+                     patch("backend.app.core.recent_folders.last", return_value=None)):
+            item.start()
+            self.addCleanup(item.stop)
         from backend.app.core import orchestrator as orch
         self.addCleanup(setattr, orch, "_SHARED_CODING_MODE", False)
 
@@ -78,7 +82,8 @@ class TestPersonalTurnsReachEveryFolder(AnyFolderCase):
 class TestCodingTurnsWorkInTheOwnersProject(AnyFolderCase):
     def test_coding_shell_runs_in_a_project_outside_ultron(self):
         project = self.home / "Projects/app"
-        answer, result = self.run_tool("terminal_run", {"command": "cd" if os.name == "nt" else "pwd",
+        # a look-only command, so coding mode does not ask first (dir = Windows, pwd = Linux)
+        answer, result = self.run_tool("terminal_run", {"command": "dir" if os.name == "nt" else "pwd",
                                                         "cwd": str(project)}, coding=True)
         self.assertNotIn("outside_active_project", str(answer))
         self.assertIn('"success":true', result)
