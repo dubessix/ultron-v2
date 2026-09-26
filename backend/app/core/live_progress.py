@@ -94,8 +94,8 @@ def line_for(tool_id: str, args: Optional[dict] = None) -> str:
 def spoken_preamble(content: Any) -> Optional[str]:
     """The brain's own short words next to a tool call, if it wrote any."""
     text = re.sub(r"\s+", " ", str(content or "")).strip()
-    if not text or len(text) > 160 or "{" in text or "[" in text:
-        return None
+    if not text or len(text) > 160 or re.search(r"[{}\[\]<>`|\\/*#=_~]|https?:|www\.", text):
+        return None  # paths, links, code or markup: the built plain line is used instead
     return text
 
 

@@ -39,6 +39,8 @@ class TestLines(unittest.TestCase):
         self.assertIsNone(live_progress.spoken_preamble(""))
         self.assertIsNone(live_progress.spoken_preamble('{"tool": "x"}'))
         self.assertIsNone(live_progress.spoken_preamble("x" * 200))
+        for bad in ("Opening /home/me/Downloads", "Running `npm i`", "Opening https://x.com", "Using file_write"):
+            self.assertIsNone(live_progress.spoken_preamble(bad), bad)
 
 
 class TestTiming(unittest.IsolatedAsyncioTestCase):
@@ -113,6 +115,63 @@ class TestAgentLoopTalks(unittest.IsolatedAsyncioTestCase):
         texts = [e["text"] for _c, e in manager.events if e["type"] == "ultron_progress"]
         self.assertEqual(texts, ["Opening chrome"])
         self.assertEqual(manager.events[0][1]["session_id"], "s9")
+
+
+class TestBrainTalksWhileWorking(unittest.IsolatedAsyncioTestCase):
+    """Rule #1: the brain writes one short line with its tool call; Ultron says it while the tool runs."""
+
+    def test_rule_is_in_the_fixed_prompt(self):
+        from backend.app.core.orchestrator import CognitiveOrchestrator
+
+        mandate = CognitiveOrchestrator._action_mandate_block()
+        self.assertIn("Talk while working", mandate)
+        self.assertIn("before the tool confirms", mandate)
+
+    async def run_loop(self, first, tool_seconds):
+        from backend.app.core.orchestrator import CognitiveOrchestrator
+
+        manager = FakeManager()
+        live_progress.set_manager(manager)
+        self.addCleanup(live_progress.set_manager, None)
+        o = CognitiveOrchestrator.__new__(CognitiveOrchestrator)
+        o.max_agent_steps, o.max_coding_steps = 5, 5
+        o._dispatch_log = lambda *a, **k: None
+        o._remember_folders = lambda *a, **k: None
+
+        async def fake_exec(call, **kwargs):
+            await asyncio.sleep(tool_seconds)
+            return call["arguments"], {"success": True, "data": {}, "error": None}
+
+        class Router:
+            async def get_completions_with_tools(self, *a, **k):
+                return {"content": "Chrome is open, Sir.", "tool_calls": []}
+
+        o.router, o._execute_native_agent_call = Router(), fake_exec
+        with patch.object(live_progress, "PREAMBLE_SECONDS", 0.05), patch.object(live_progress, "SLOW_SECONDS", 0.05):
+            out = await o._run_native_agent_loop(
+                first, system_prompt="s", user_prompt="open chrome", tools=[], session_id="s1",
+                project_id="personal", project_root=None, coding_turn=False, provider_for_turn="groq")
+        return out, [e for _c, e in manager.events]
+
+    async def test_brains_own_line_is_shown_then_spoken_while_the_tool_runs(self):
+        first = {"content": "Opening Chrome, Sir.",
+                 "tool_calls": [{"id": "c1", "name": "apps", "arguments": {"action": "open", "name": "chrome"}}]}
+        out, events = await self.run_loop(first, tool_seconds=0.2)
+        self.assertEqual([(e["text"], e["speak"]) for e in events],
+                         [("Opening Chrome, Sir.", False), ("Opening Chrome, Sir.", True)])
+        self.assertEqual(out["content"], "Chrome is open, Sir.", "the final answer is separate")
+
+    async def test_quick_tool_shows_the_line_but_does_not_talk_over_the_answer(self):
+        first = {"content": "Opening Chrome, Sir.",
+                 "tool_calls": [{"id": "c1", "name": "apps", "arguments": {"action": "open", "name": "chrome"}}]}
+        _out, events = await self.run_loop(first, tool_seconds=0.0)
+        self.assertEqual([e["speak"] for e in events], [False])
+
+    async def test_bad_line_falls_back_to_plain_built_line(self):
+        first = {"content": "Running `ls /home`",
+                 "tool_calls": [{"id": "c1", "name": "terminal_run", "arguments": {"command": "ls"}}]}
+        _out, events = await self.run_loop(first, tool_seconds=0.2)
+        self.assertEqual(events[0]["text"], "Running ls")
 
 
 if __name__ == "__main__":
