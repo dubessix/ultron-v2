@@ -146,13 +146,21 @@ def tab_extras_checks(chrome_binary: str, home: Path) -> None:
     if not os.environ.get("DISPLAY"):
         raise SystemExit("FAILED: tab extras need a screen; run under xvfb-run")
     pages = [f"http://127.0.0.1:8765/{name}" for name in ("sleepy-alpha", "sleepy-beta", "dup-page", "dup-page")]
+    chrome_log = open(home / "chrome-plain.log", "w")
     chrome = subprocess.Popen(
+        # --no-sandbox as Playwright does (CI Ubuntu 24.04 blocks the sandbox); test pages are local only.
         [chrome_binary, f"--user-data-dir={home / 'chrome-plain'}", "--no-first-run", "--no-default-browser-check",
+         "--no-sandbox",
          "--disable-features=DisableLoadExtensionCommandLineSwitch", f"--disable-extensions-except={EXTENSION}",
          f"--load-extension={EXTENSION}", "http://127.0.0.1:5173/", *pages],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        stdout=chrome_log, stderr=subprocess.STDOUT)
     try:
-        wait(lambda: get("/browser/status").get("connected"), "extension to connect (plain Chromium)", 60)
+        try:
+            wait(lambda: get("/browser/status").get("connected"), "extension to connect (plain Chromium)", 60)
+        except SystemExit:
+            chrome_log.flush()
+            print("chromium log tail:\n" + (home / "chrome-plain.log").read_text(errors="replace")[-2000:], flush=True)
+            raise
         wait(lambda: sorted(t["title"] for t in listed_tabs()) == ["dup page", "dup page", "sleepy alpha", "sleepy beta"],
              "4 tabs loaded")
 
@@ -186,6 +194,7 @@ def tab_extras_checks(chrome_binary: str, home: Path) -> None:
             chrome.wait(timeout=10)
         except subprocess.TimeoutExpired:
             chrome.kill()
+        chrome_log.close()
 
 
 def close_app_rounds(folder: Path) -> int:
