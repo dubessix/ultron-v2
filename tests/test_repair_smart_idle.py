@@ -94,15 +94,16 @@ class TestReminderTiming(unittest.IsolatedAsyncioTestCase):
 
         capture = CaptureManager()
         started = time.monotonic()
-        with patch("backend.app.main.ws_manager", capture):
+        # Short poll so a slow cloud machine can't make the timing flaky; the real app polls every 5 s.
+        with patch("backend.app.main.ws_manager", capture), patch("backend.app.main.REMINDER_POLL_SECONDS", 0.3):
             task = asyncio.create_task(run_reminder_scheduler())
             try:
-                await asyncio.wait_for(capture.event.wait(), timeout=6.5)
+                await asyncio.wait_for(capture.event.wait(), timeout=10)
             finally:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
         elapsed = time.monotonic() - started
-        self.assertLessEqual(elapsed, 6.0)
+        self.assertLessEqual(elapsed, 5.0, "fires on the next poll, not much later")
         self.assertEqual(capture.payload["type"], "reminder_triggered")
         with get_db_connection() as conn:
             status = conn.execute(

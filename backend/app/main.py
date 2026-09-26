@@ -179,6 +179,9 @@ def collect_due_reminders() -> list[dict]:
     return fired
 
 
+REMINDER_POLL_SECONDS = 5.0  # how often due reminders are checked
+
+
 async def run_reminder_scheduler():
     """
     Background scheduler loop that runs every 5 seconds to look for
@@ -200,7 +203,7 @@ async def run_reminder_scheduler():
         except Exception as e:
             print(f"[SCHEDULER] Error in scheduler loop: {e}")
 
-        await asyncio.sleep(5.0)
+        await asyncio.sleep(REMINDER_POLL_SECONDS)
 
 async def run_emergency_monitor():
     """
