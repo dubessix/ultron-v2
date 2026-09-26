@@ -99,6 +99,7 @@ def _verify_candidate(path: Path, temp_path: Path, content: str) -> Dict[str, An
 
 
 BACKUPS_KEPT = 40
+BACKUPS_MAX_BYTES = 300 * 1024 * 1024  # V2 Step E4: total size cap too
 
 
 def _backup_path_for(path: Path) -> Path:
@@ -118,11 +119,18 @@ def _prune_backups(folder: Path) -> None:
         files = sorted((f for f in folder.iterdir() if f.is_file()), key=lambda f: f.stat().st_mtime, reverse=True)
     except OSError:
         return
-    for old in files[BACKUPS_KEPT - 1:]:
+    total = 0
+    for index, old in enumerate(files):
         try:
-            old.unlink()
+            size = old.stat().st_size
         except OSError:
-            pass
+            continue
+        total += size
+        if index >= BACKUPS_KEPT - 1 or (index > 0 and total > BACKUPS_MAX_BYTES):
+            try:
+                old.unlink()
+            except OSError:
+                pass
 
 
 def safe_write_file(

@@ -6,6 +6,7 @@ Bypasses local transformers footprint, fully complying with 8GB RAM host limitat
 
 import hashlib
 import json
+import uuid
 import yaml
 import sqlite3
 from typing import List, Dict, Any, Optional
@@ -26,6 +27,55 @@ def _lazy_numpy():
         import numpy
         _np = numpy
     return _np
+
+# ---------------------------------------------------------------------------
+# V2 Step E: Jarvis memory keeps what matters forever and stays light.
+# ---------------------------------------------------------------------------
+# Facts the owner told Ultron (and important ones) are NEVER auto-deleted.
+KEEP_CATEGORIES = ("explicit", "owner_preference", "decision", "goal")
+KEEP_IMPORTANCE = ("high", "critical")
+OFFLINE_EMBEDDING = "offline-hash"
+_MEM_VERSION = [0]  # bumped on every write so cached views (core profile) refresh
+
+
+def _json_field(field: str) -> str:
+    return f"(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.{field}') END)"
+
+
+# SQL that is true for rows that must be kept forever.
+KEEP_SQL = (
+    f"({_json_field('kind')} = 'explicit_remember' OR {_json_field('source')} = 'user' OR "
+    f"{_json_field('importance')} IN ('high', 'critical') OR "
+    f"{_json_field('category')} IN ('explicit', 'owner_preference', 'decision', 'goal'))"
+)
+
+
+def is_kept_forever(metadata: Optional[Dict[str, Any]]) -> bool:
+    meta = metadata or {}
+    return bool(
+        meta.get("kind") == "explicit_remember"
+        or meta.get("source") == "user"
+        or meta.get("importance") in KEEP_IMPORTANCE
+        or meta.get("category") in KEEP_CATEGORIES
+    )
+
+
+def memory_version() -> int:
+    return _MEM_VERSION[0]
+
+
+def _bump_version() -> None:
+    _MEM_VERSION[0] += 1
+
+
+def _memory_setting(name: str, default: int, low: int, high: int) -> int:
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            value = (yaml.safe_load(f) or {}).get("memory", {}).get(name, default)
+        return max(low, min(int(value), high))
+    except Exception:
+        return default
+
 
 class VectorStore:
     def __init__(self, key_manager: Optional[APIKeyManager] = None) -> None:
@@ -76,6 +126,18 @@ class VectorStore:
             vector = vector / norm
         return vector.astype(np.float32).tolist()
 
+    async def embed(self, text: str) -> tuple:
+        """(vector, model name). Never raises: when the embedding service is down or
+        out of quota the memory is still saved with a labelled offline vector (and
+        is always findable by its words); `reembed` upgrades it later."""
+        try:
+            vector = await self.generate_embedding(text)
+            model = get_model("embedding") if self.key_manager.has_real_key("gemini") else OFFLINE_EMBEDDING
+            return vector, model
+        except Exception as exc:
+            print(f"[VECTOR_STORE] Embedding unavailable, saving with an offline vector: {exc}")
+            return self._deterministic_offline_embedding(text.strip(), get_embedding_dimensions()), OFFLINE_EMBEDDING
+
     async def generate_embedding(self, text: str) -> List[float]:
         """Return a config-driven Gemini embedding or a deterministic offline vector."""
         normalized = text.strip()
@@ -99,8 +161,9 @@ class VectorStore:
             "outputDimensionality": dims,
         }
         last_error = None
-        for _attempt in range(2):
+        for _attempt in range(3):
             api_key = self.key_manager.get_active_key("gemini")
+            payload["model"] = f"models/{model}"
             url = url_template.format(model=model, key=api_key)
             try:
                 async with httpx.AsyncClient(timeout=15.0) as client:
@@ -123,6 +186,20 @@ class VectorStore:
                 last_error = RuntimeError(f"Embedding API authentication HTTP {response.status_code}")
                 continue
             if response.status_code != 200:
+                # V2 Step E2: Google retired the embedding model -> next one (or ask
+                # Google which embedding models exist today, at most once a day).
+                from backend.app.brain import model_fallback
+                from backend.app.brain.model_config import retire_model
+
+                if model_fallback.is_model_gone_error(response.status_code, response.text or ""):
+                    next_model = retire_model("embedding", model)
+                    if not next_model:
+                        async with httpx.AsyncClient(timeout=15.0) as client:
+                            next_model = await model_fallback.discover("embedding", client, api_key)
+                    if next_model and next_model != model:
+                        model = next_model
+                        last_error = RuntimeError("embedding model retired; switched")
+                        continue
                 raise RuntimeError(f"Embedding API rejected request with HTTP {response.status_code}")
 
             try:
@@ -133,10 +210,49 @@ class VectorStore:
                 raise RuntimeError(
                     f"Embedding API returned {len(vector)} dimensions; expected {dims}"
                 )
-            self._cache_embedding(cache_key, vector)
+            self._cache_embedding(f"{model}|{dims}|{normalized}", vector)
             return vector
 
         raise RuntimeError(f"Gemini embedding provider unavailable: {last_error}")
+
+    async def remember(
+        self,
+        mem_type: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        return_status: bool = False,
+    ):
+        """Save one memory. Never lost to an embedding outage (offline vector +
+        needs_reembed). Returns True/False, or "saved"/"duplicate"/"failed"."""
+        try:
+            embedding, model_name = await self.embed(content)
+            meta = dict(metadata or {})
+            meta["embedding_model"] = model_name
+            if model_name == OFFLINE_EMBEDDING and self.key_manager.has_real_key("gemini"):
+                meta["needs_reembed"] = True
+            status = self.save_vector_memory(
+                msg_id=str(uuid.uuid4()), mem_type=mem_type, content=content,
+                embedding=embedding, metadata=meta, return_status=True,
+            )
+        except Exception as exc:
+            print(f"[VECTOR_STORE] Warning: failed to save {mem_type} memory: {exc}")
+            status = "failed"
+        return status if return_status else status == "saved"
+
+    async def recall(
+        self, mem_type: str, query: str, limit: int = 3, project_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Similar memories of one type inside a project (never raises)."""
+        try:
+            query_emb, model_name = await self.embed(query)
+            metadata_filter = {"project_id": project_id} if project_id else None
+            return self.search_similarity(
+                mem_type, query_emb, limit=limit, metadata_filter=metadata_filter,
+                embedding_model=model_name,
+            )
+        except Exception as exc:
+            print(f"[VECTOR_STORE] Warning: {mem_type} recall failed: {exc}")
+            return []
 
     def _cache_embedding(self, key: str, vec: List[float]) -> None:
         """Bounded in-memory embedding cache (token saver)."""
@@ -151,11 +267,13 @@ class VectorStore:
         mem_type: str,
         content: str,
         embedding: List[float],
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> bool:
+        metadata: Optional[Dict[str, Any]] = None,
+        return_status: bool = False,
+    ):
         """
         Saves a serialized vector memory row. Implements duplicate checks:
         if a high similarity exceeds config-defined threshold, halts writing.
+        return_status=True returns "saved" / "duplicate" instead of True/False.
         """
         # Convert list to high-performance NumPy float32 array
         np = _lazy_numpy()
@@ -166,13 +284,14 @@ class VectorStore:
         if metadata and metadata.get("project_id"):
             duplicate_filter = {"project_id": metadata["project_id"]}
         existing_matches = self.search_similarity(
-            mem_type, embedding, limit=1, metadata_filter=duplicate_filter
+            mem_type, embedding, limit=1, metadata_filter=duplicate_filter,
+            embedding_model=(metadata or {}).get("embedding_model"),
         )
         if existing_matches:
             top_similarity = existing_matches[0]["similarity"]
             if top_similarity > self.duplicate_threshold:
                 print(f"[VECTOR_STORE] Duplicate write aborted. Similarity ({top_similarity:.3f}) exceeds threshold ({self.duplicate_threshold}).")
-                return False
+                return "duplicate" if return_status else False
 
         # 2. Serialize vector array to raw binary BLOB
         vec_blob = new_vec.tobytes()
@@ -199,6 +318,7 @@ class VectorStore:
                 metadata=enriched_metadata,
             )
             conn.commit()
+            _bump_version()
 
             # Opportunistic storage-retention guard (bounds long-term growth).
             self._writes_since_prune += 1
@@ -209,7 +329,7 @@ class VectorStore:
                 except Exception as e:
                     print(f"[VECTOR_STORE] Warning: retention prune failed: {e}")
 
-            return True
+            return "saved" if return_status else True
 
     def search_similarity(
         self,
@@ -217,71 +337,79 @@ class VectorStore:
         query_embedding: List[float],
         limit: int = 5,
         metadata_filter: Optional[Dict[str, Any]] = None,
+        embedding_model: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Loads all matching type vector binaries from SQLite, deserializes them to NumPy arrays,
-        computes local Cosine Similarities, and returns sorted top matches.
-        """
+        """Cosine top matches over a BOUNDED slice: every kept-forever fact plus the
+        newest `vector_scan_limit` automatic memories. Years of memories never load
+        into RAM at once; older chats stay findable through the word index (FTS).
+        Vectors from another embedding model (or offline ones) are not compared."""
         np = _lazy_numpy()
         target_vec = np.array(query_embedding, dtype=np.float32)
-        target_norm = np.linalg.norm(target_vec)
-        
+        target_norm = float(np.linalg.norm(target_vec))
         if target_norm == 0:
             return []
+        scan_limit = _memory_setting("vector_scan_limit", 6000, 200, 50000)
+        kept_limit = _memory_setting("kept_scan_limit", 5000, 100, 50000)
 
-        matches = []
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, content, embedding, metadata, created_at FROM vector_memories WHERE type = ?;",
-                (mem_type,)
-            )
-            rows = cursor.fetchall()
+            newest = conn.execute(
+                "SELECT id, content, embedding, metadata, created_at FROM vector_memories "
+                "WHERE type = ? ORDER BY rowid DESC LIMIT ?;",
+                (mem_type, scan_limit),
+            ).fetchall()
+            kept = conn.execute(
+                "SELECT id, content, embedding, metadata, created_at FROM vector_memories "
+                f"WHERE type = ? AND {KEEP_SQL} ORDER BY rowid DESC LIMIT ?;",
+                (mem_type, kept_limit),
+            ).fetchall()
 
-            for row in rows:
-                try:
-                    row_metadata = json.loads(row["metadata"] or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    row_metadata = {}
-                if metadata_filter:
-                    mismatch = False
-                    for key, value in metadata_filter.items():
-                        actual = row_metadata.get(key, "personal" if key == "project_id" else None)
-                        if actual != value:
-                            mismatch = True
-                            break
-                    if mismatch:
-                        continue
-                # Load binary BLOB back to NumPy float32 array
-                db_vec = np.frombuffer(row["embedding"], dtype=np.float32)
-                db_norm = np.linalg.norm(db_vec)
-                
-                if db_norm == 0:
+        seen: set = set()
+        candidates = []
+        vectors = []
+        for row in list(newest) + list(kept):
+            if row["id"] in seen:
+                continue
+            seen.add(row["id"])
+            try:
+                row_metadata = json.loads(row["metadata"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                row_metadata = {}
+            if not isinstance(row_metadata, dict):
+                row_metadata = {}
+            if metadata_filter and any(
+                row_metadata.get(key, "personal" if key == "project_id" else None) != value
+                for key, value in metadata_filter.items()
+            ):
+                continue
+            if embedding_model:
+                stored_model = row_metadata.get("embedding_model")
+                # offline vectors only match offline vectors (and real only real)
+                if (stored_model == OFFLINE_EMBEDDING) != (embedding_model == OFFLINE_EMBEDDING):
                     continue
+            db_vec = np.frombuffer(row["embedding"], dtype=np.float32)
+            if db_vec.shape != target_vec.shape:
+                continue  # old model size: re-embed to migrate
+            candidates.append((row, row_metadata))
+            vectors.append(db_vec)
 
-                # Robustness: if a stored vector's dimensionality differs from the
-                # current embedding (e.g. a legacy model change), skip it instead of
-                # crashing the whole recall with a dimension mismatch. These rows can
-                # be re-embedded / pruned later.
-                if db_vec.shape != target_vec.shape:
-                    print(f"[VECTOR_STORE] Skipping memory {row['id']}: dimension mismatch "
-                          f"({db_vec.shape[0]} != {target_vec.shape[0]}). Re-embed to migrate.")
-                    continue
-
-                # Execute Cosine Similarity equation: dot(A, B) / (norm(A) * norm(B))
-                similarity = float(np.dot(target_vec, db_vec) / (target_norm * db_norm))
-                
-                matches.append({
-                    "id": row["id"],
-                    "content": row["content"],
-                    "similarity": similarity,
-                    "metadata": row_metadata,
-                    "created_at": row["created_at"]
-                })
-
-        # Sort matches chronologically by similarity descending
-        matches.sort(key=lambda x: x["similarity"], reverse=True)
-        return matches[:limit]
+        if not vectors:
+            return []
+        matrix = np.vstack(vectors)
+        norms = np.linalg.norm(matrix, axis=1)
+        norms[norms == 0] = np.inf
+        scores = (matrix @ target_vec) / (norms * target_norm)
+        order = np.argsort(-scores)[: max(1, int(limit))]
+        return [
+            {
+                "id": candidates[i][0]["id"],
+                "content": candidates[i][0]["content"],
+                "similarity": float(scores[i]),
+                "metadata": candidates[i][1],
+                "created_at": candidates[i][0]["created_at"],
+            }
+            for i in order
+            if np.isfinite(scores[i]) and scores[i] != 0
+        ]
 
     async def update_vector_memory(
         self,
@@ -293,11 +421,14 @@ class VectorStore:
         existing = self.get_memory(msg_id)
         if not existing:
             return False
-        embedding = await self.generate_embedding(content)
+        embedding, model_name = await self.embed(content)
         updated_metadata = dict(existing.get("metadata") or {})
         updated_metadata.update(metadata or {})
-        updated_metadata["embedding_model"] = get_model("embedding")
+        updated_metadata["embedding_model"] = model_name
         updated_metadata["embedding_dimensions"] = len(embedding)
+        updated_metadata.pop("needs_reembed", None)
+        if model_name == OFFLINE_EMBEDDING:
+            updated_metadata["needs_reembed"] = True
         np = _lazy_numpy()
         blob = np.array(embedding, dtype=np.float32).tobytes()
         with get_db_connection() as conn:
@@ -316,6 +447,7 @@ class VectorStore:
                     created_at=str(existing.get("created_at") or ""),
                 )
             conn.commit()
+            _bump_version()
             return cursor.rowcount > 0
 
     async def reembed_project(self, project_id: str, limit: int = 500) -> Dict[str, int]:
@@ -350,6 +482,7 @@ class VectorStore:
                     from backend.app.memory.recall_index import delete_recall_document
                     delete_recall_document(conn, f"memory:{msg_id}")
                 conn.commit()
+                _bump_version()
                 return cur.rowcount > 0
         except sqlite3.Error as e:
             print(f"[VECTOR_STORE] Delete failed: {e}")
@@ -375,18 +508,25 @@ class VectorStore:
         limit: int = 20,
         mem_type: Optional[str] = None,
         project_id: Optional[str] = None,
+        kept_only: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Return recent rows filtered to a project when requested."""
+        """Newest rows (filtered in SQL, so years of memory never load at once)."""
+        where, params = [], []
+        if mem_type:
+            where.append("type = ?")
+            params.append(mem_type)
+        if project_id:
+            where.append(f"COALESCE({_json_field('project_id')}, 'personal') = ?")
+            params.append(project_id)
+        if kept_only:
+            where.append(KEEP_SQL)
+        sql = "SELECT id, type, content, metadata, created_at FROM vector_memories"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY rowid DESC LIMIT ?;"
+        params.append(max(1, int(limit)))
         with get_db_connection() as conn:
-            if mem_type:
-                rows = conn.execute(
-                    "SELECT id, type, content, metadata, created_at FROM vector_memories WHERE type = ? ORDER BY rowid DESC;",
-                    (mem_type,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT id, type, content, metadata, created_at FROM vector_memories ORDER BY rowid DESC;"
-                ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         results = []
         for row in rows:
             item = dict(row)
@@ -394,53 +534,40 @@ class VectorStore:
                 metadata = json.loads(item.pop("metadata") or "{}")
             except (json.JSONDecodeError, TypeError):
                 metadata = {}
-            if project_id and metadata.get("project_id", "personal") != project_id:
-                continue
-            item["metadata"] = metadata
+            item["metadata"] = metadata if isinstance(metadata, dict) else {}
             results.append(item)
-            if len(results) >= limit:
-                break
         return results
 
-    def prune(self, max_per_type: int = 2000) -> int:
-        """
-        Lightweight storage-retention guard. Keeps only the most recent
-        `max_per_type` rows per memory type, deleting the oldest beyond the cap.
-        This bounds long-term growth so memory stays tiny even over years of use.
-        Returns the number of rows removed.
-        """
+    def prune(self, max_per_type: Optional[int] = None) -> int:
+        """Bound AUTOMATIC memories only (newest `max_auto_memories` per type, default
+        20,000 = years of use). Facts the owner told Ultron and important ones are
+        never deleted. Deleted rows leave the word index directly (no full rebuild)."""
+        cap = int(max_per_type) if max_per_type is not None else _memory_setting(
+            "max_auto_memories", 20000, 500, 500000
+        )
         removed = 0
         with get_db_connection() as conn:
-            cursor = conn.cursor()
-            # For each distinct type, delete rows beyond the newest max_per_type.
-            cursor.execute("SELECT DISTINCT type FROM vector_memories;")
-            types = [row["type"] for row in cursor.fetchall()]
+            types = [row["type"] for row in conn.execute("SELECT DISTINCT type FROM vector_memories;")]
+            from backend.app.memory.recall_index import delete_recall_document
             for mem_type in types:
-                # Find the cutoff id: the id at offset max_per_type when ordered newest-first.
-                cursor.execute(
-                    """
-                    SELECT id FROM vector_memories
-                    WHERE type = ?
-                    ORDER BY created_at DESC, rowid DESC
-                    LIMIT 1 OFFSET ?;
-                    """,
-                    (mem_type, max_per_type),
-                )
-                cutoff = cursor.fetchone()
-                if cutoff:
-                    cursor.execute(
-                        """
-                        DELETE FROM vector_memories
-                        WHERE type = ? AND rowid <= (SELECT rowid FROM vector_memories
-                                                     WHERE id = ?);
-                        """,
-                        (mem_type, cutoff["id"]),
+                old_ids = [
+                    row["id"]
+                    for row in conn.execute(
+                        f"SELECT id FROM vector_memories WHERE type = ? AND NOT {KEEP_SQL} "
+                        "ORDER BY rowid DESC LIMIT -1 OFFSET ?;",
+                        (mem_type, cap),
                     )
-                    removed += cursor.rowcount
-            if removed:
-                from backend.app.memory.recall_index import mark_recall_index_dirty
-                mark_recall_index_dirty(conn)
+                ]
+                for start_at in range(0, len(old_ids), 500):
+                    chunk = old_ids[start_at:start_at + 500]
+                    marks = ",".join("?" for _ in chunk)
+                    conn.execute(f"DELETE FROM vector_memories WHERE id IN ({marks});", chunk)
+                    for memory_id in chunk:
+                        delete_recall_document(conn, f"memory:{memory_id}")
+                removed += len(old_ids)
             conn.commit()
         if removed:
-            print(f"[VECTOR_STORE] Storage retention: pruned {removed} old memory rows (bounded to {max_per_type}/type).")
+            _bump_version()
+            print(f"[VECTOR_STORE] Storage retention: pruned {removed} old automatic memories "
+                  f"(kept facts are never pruned; cap {cap}/type).")
         return removed

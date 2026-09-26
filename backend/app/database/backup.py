@@ -124,11 +124,35 @@ def verify_db_file(path: Path) -> Dict[str, Any]:
         return report
 
 
+MIN_BACKUPS_KEPT = 3
+
+
+def newest_good_backup(dest_dir: Optional[Path] = None) -> Optional[Path]:
+    """The newest backup that passes verification (for a one-word restore)."""
+    root = Path(dest_dir or get_approved_backup_root()).resolve(strict=False)
+    if not root.exists():
+        return None
+    candidates = sorted(
+        (p for p in root.glob("ultron_*.db") if p.is_file() and not p.is_symlink()),
+        key=lambda p: (p.stat().st_mtime_ns, p.name),
+        reverse=True,
+    )
+    for path in candidates:
+        if verify_db_file(path).get("valid"):
+            return path
+    return None
+
+
 def prune_backups(
     dest_dir: Optional[Path] = None,
     generations: int = 30,
+    max_total_bytes: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Keep only the newest verified-backup generations in the backup root."""
+    """Keep only the newest verified-backup generations in the backup root.
+
+    V2 Step E4: also keep the backups' TOTAL size under max_total_bytes (the
+    database grows with years of memory; 30 full copies could fill the disk).
+    The newest MIN_BACKUPS_KEPT copies always stay."""
     root = Path(dest_dir or get_approved_backup_root()).resolve(strict=False)
     keep = max(1, min(int(generations), 365))
     if not root.exists():
@@ -141,6 +165,16 @@ def prune_backups(
         key=lambda path: (path.stat().st_mtime_ns, path.name),
         reverse=True,
     )
+    if max_total_bytes is not None:
+        total = 0
+        for index, path in enumerate(candidates[:keep]):
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+            if total > max_total_bytes and index >= MIN_BACKUPS_KEPT:
+                keep = index
+                break
     removed = 0
     errors = []
     for path in candidates[keep:]:

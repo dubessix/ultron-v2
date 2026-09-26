@@ -12,7 +12,7 @@ from typing import Any, ClassVar, Optional
 
 import httpx
 
-from backend.app.brain.api_key_manager import APIKeyManager
+from backend.app.brain.api_key_manager import APIKeyCoolingError, APIKeyManager
 from backend.app.brain.cache_policy import BaseCachePolicy, HeuristicKeywordCachePolicy
 from backend.app.brain.model_config import get_ai_runtime_settings, get_model
 from backend.app.brain.smart_cache import SmartCache
@@ -109,6 +109,41 @@ class LLMRouter:
                 ordered.append(provider)
         return ordered
 
+    def _raise_if_cooling(self, provider: str) -> None:
+        """Attempts used up because every key is rate limited: say so (the caller
+        then waits for the first free key instead of giving up)."""
+        try:
+            self.key_manager.get_active_key(provider)
+        except APIKeyCoolingError:
+            raise
+        except Exception:
+            return
+
+    @staticmethod
+    def _retry_after(response: httpx.Response) -> int:
+        """Seconds from a 429 'retry-after' header (bounded 1..90; 0 = not given)."""
+        try:
+            headers = getattr(response, "headers", None) or {}
+            value = float(str(headers.get("retry-after", "")).strip())
+        except (AttributeError, TypeError, ValueError):
+            return 0
+        return int(max(1, min(value, 90))) if value > 0 else 0
+
+    async def _maybe_discover(self, provider: str) -> None:
+        """Whole fallback list retired: ask the provider for today's models (1x/day)."""
+        from backend.app.brain import model_fallback
+        from backend.app.brain.model_config import preferred_models
+
+        if not model_fallback.chain_exhausted(provider, preferred_models(provider)):
+            return
+        if not model_fallback.discovery_due(provider):
+            return
+        try:
+            key = self.key_manager.get_active_key(provider)
+        except Exception:
+            return
+        await model_fallback.discover(provider, self.client, key)
+
     def _cooldown_seconds(self, multiplier: float) -> int:
         return max(1, int(round(self.backoff_base_seconds * multiplier)))
 
@@ -131,6 +166,7 @@ class LLMRouter:
                 continue
 
             configured_provider_seen = True
+            await self._maybe_discover(provider)
             model = get_model(provider)
             rejected_reason = self._active_rejection(provider, model)
             if rejected_reason:
@@ -320,6 +356,8 @@ class LLMRouter:
         return messages
 
     REJECTION_TTL_SECONDS: ClassVar[float] = 600.0
+    _MAX_COOLING_ROUNDS: ClassVar[int] = 2
+    _MAX_COOLING_WAIT_SECONDS: ClassVar[float] = 40.0
 
     # Longest pause for the per-minute window before sending anyway.
     _MAX_BUDGET_WAIT_SECONDS: ClassVar[float] = 20.0
@@ -581,51 +619,70 @@ class LLMRouter:
         request_chars = len(system_prompt) + len(user_prompt) + len(
             json.dumps(history, default=str)
         ) + len(json.dumps(tools, default=str))
-        for position, provider in enumerate(provider_order):
-            if not self.key_manager.has_real_key(provider):
-                continue
-            configured_provider_seen = True
-            if not provider_lock and any(p in configured for p in provider_order[position + 1 :]):
-                wait = self._provider_wait(provider, request_chars)
-                if wait > 0:
-                    print(
-                        f"[LLM_ROUTER] every {provider} key's per-minute budget nearly used "
-                        f"(free in ~{wait:.0f}s); starting this job on the next provider."
-                    )
+        waited = 0.0
+        for _round in range(self._MAX_COOLING_ROUNDS + 1):
+            cooling: list[float] = []
+            for position, provider in enumerate(provider_order):
+                if not self.key_manager.has_real_key(provider):
                     continue
-            model = get_model(provider)
-            try:
-                if provider == "gemini":
-                    result = await self._execute_gemini_native_tools(
-                        system_prompt,
-                        user_prompt,
-                        tools,
-                        history,
-                        temperature,
+                configured_provider_seen = True
+                if not provider_lock and any(p in configured for p in provider_order[position + 1 :]):
+                    wait = self._provider_wait(provider, request_chars)
+                    if wait > 0:
+                        print(
+                            f"[LLM_ROUTER] every {provider} key's per-minute budget nearly used "
+                            f"(free in ~{wait:.0f}s); starting this job on the next provider."
+                        )
+                        cooling.append(float(wait))
+                        continue
+                await self._maybe_discover(provider)
+                try:
+                    if provider == "gemini":
+                        result = await self._execute_gemini_native_tools(
+                            system_prompt,
+                            user_prompt,
+                            tools,
+                            history,
+                            temperature,
+                        )
+                    else:
+                        result = await self._execute_openai_native_tools(
+                            provider,
+                            system_prompt,
+                            user_prompt,
+                            tools,
+                            history,
+                            temperature,
+                        )
+                    model = get_model(provider)  # the model that answered (after any swap)
+                    result.update(
+                        {
+                            "provider": provider,
+                            "model": model,
+                            "native_tools": True,
+                        }
                     )
-                else:
-                    result = await self._execute_openai_native_tools(
-                        provider,
-                        system_prompt,
-                        user_prompt,
-                        tools,
-                        history,
-                        temperature,
-                    )
-                result.update(
-                    {
-                        "provider": provider,
-                        "model": model,
-                        "native_tools": True,
-                    }
-                )
-                self._set_route(provider, model, cached=False)
-                return result
-            except Exception as exc:
-                last_error = exc
-                print(f"[LLM_ROUTER] Native tools unavailable on '{provider}': {exc}")
-                if provider_lock:
-                    break
+                    self._set_route(provider, model, cached=False)
+                    return result
+                except Exception as exc:
+                    last_error = exc
+                    if isinstance(exc, APIKeyCoolingError):
+                        cooling.append(float(exc.retry_after))
+                    print(f"[LLM_ROUTER] Native tools unavailable on '{provider}': {exc}")
+                    if provider_lock:
+                        break
+            # V2 Step E3: every configured provider failed only because all its keys
+            # are cooling (rate limit) -> wait for the first key and try again,
+            # bounded (never an endless loop, never a long silent hang).
+            tried = [p for p in (configured if not provider_lock else [provider_lock])]
+            if not cooling or len(cooling) < len(tried):
+                break
+            pause = max(0.5, min(cooling)) + 0.25
+            if waited + pause > self._MAX_COOLING_WAIT_SECONDS:
+                break
+            print(f"[LLM_ROUTER] All keys are rate limited; waiting {pause:.1f}s, then retrying.")
+            await asyncio.sleep(pause)
+            waited += pause
 
         if not configured_provider_seen and not provider_lock:
             content = await self.get_completions(
@@ -709,6 +766,7 @@ class LLMRouter:
             body = response.json()
             self._record_usage(provider, key, body.get("usage") if isinstance(body, dict) else None)
             return self._parse_openai_native_message(body)
+        self._raise_if_cooling(provider)
         raise RuntimeError(f"{provider} native-tool key pool is unavailable")
 
     async def _execute_gemini_native_tools(
@@ -720,8 +778,8 @@ class LLMRouter:
         temperature: float,
     ) -> dict:
         provider = "gemini"
-        model = get_model(provider)
         for attempt in range(self.provider_attempts):
+            model = get_model(provider)  # a retired model is swapped between attempts
             key = self.key_manager.get_active_key(provider)
             url = (
                 "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -766,14 +824,16 @@ class LLMRouter:
                 self._classify_http_failure(provider, key, response)
                 continue
             return self._parse_gemini_native_message(response.json())
+        self._raise_if_cooling(provider)
         raise RuntimeError("Gemini native-tool key pool is unavailable")
 
     def _classify_http_failure(self, provider: str, key: str, response: httpx.Response) -> str:
         """Update key state safely and return 'retry' or raise a config/request error."""
         status = response.status_code
         if status == 429:
+            # V2 Step E3: the provider says exactly when this key is free again.
             self.key_manager.mark_key_cooling(
-                provider, key, duration_sec=self._cooldown_seconds(30)
+                provider, key, duration_sec=self._retry_after(response) or self._cooldown_seconds(30)
             )
             return "retry"
         if status in self._AUTH_STATUS:
@@ -785,10 +845,21 @@ class LLMRouter:
             )
             return "retry"
 
+        # V2 Step E2: the provider retired this model -> use the next one now.
+        from backend.app.brain import model_fallback
+        from backend.app.brain.model_config import retire_model
+
+        body = response.text or ""
+        if model_fallback.is_model_gone_error(status, body):
+            used = get_model(provider)
+            if retire_model(provider, used):
+                return "retry"
+            raise RuntimeError(f"{provider} model {used} was retired and no fallback is left")
+
         # 400/404/422 normally indicate a bad model ID or payload, not a bad key.
         # Remember the rejected provider/model pair for this process so every
         # later turn does not repeatedly pay for the same known-invalid request.
-        detail = (response.text or "").replace("\n", " ")[:200]
+        detail = body.replace("\n", " ")[:200]
         message = f"{provider} rejected request with HTTP {status}: {detail}"
         if status in {400, 404, 422}:
             rejected_key = (provider, get_model(provider))
@@ -838,8 +909,8 @@ class LLMRouter:
 
     async def _execute_gemini_pipeline(self, system_prompt: str, user_prompt: str, temperature: float) -> str:
         provider = "gemini"
-        model = get_model(provider)
         for attempt in range(self.provider_attempts):
+            model = get_model(provider)  # a retired model is swapped between attempts
             key = self.key_manager.get_active_key(provider)
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
             payload = {

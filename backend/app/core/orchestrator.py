@@ -1486,6 +1486,11 @@ class CognitiveOrchestrator:
         memory_context = memory_recall["context"]
         if memory_context:
             system_prompt += memory_context
+        # V2 Step E: the few facts he told Ultron to keep ride along every order
+        # (bounded ~150 tokens, cached; empty until he saves something).
+        from backend.app.memory.core_profile import build_core_profile
+
+        system_prompt += build_core_profile(project_id)
 
         # Codex-style: inject project context ONLY on coding turns, so Ultron knows
         # the project it's editing. Skipped on normal chat to save tokens/latency.

@@ -70,3 +70,13 @@ def ensure_database_schema():
         raise AssertionError(
             "Tests modified production data paths: " + ", ".join(sorted(set(changed)))
         )
+
+
+@pytest.fixture(autouse=True)
+def fresh_model_fallback_state():
+    """V2 Step E2: a model marked 'retired' in one test must not leak into the next."""
+    from backend.app.brain import model_fallback
+
+    model_fallback.reset_for_tests(clear_file=True)
+    yield
+    model_fallback.reset_for_tests(clear_file=True)

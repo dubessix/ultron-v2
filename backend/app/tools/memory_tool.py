@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -104,19 +103,20 @@ class MemoryTool(BaseTool):
                 importance=importance,
                 content=clean_content,
             )
-            ok = await self.memory.episodic.record_event(
-                content=clean_content,
-                metadata=metadata,
+            status = await self.memory.vector_store.remember(
+                "episodic", clean_content, metadata, return_status=True
             )
+            ok = status in {"saved", "duplicate"}
             return {
                 "success": ok,
                 "data": {
-                    "message": "Remembered.",
+                    # a near-identical fact already saved = he already knows it
+                    "message": "Remembered." if status == "saved" else "Already remembered.",
                     "project_id": project_id,
                     "category": metadata["category"],
                     "importance": metadata["importance"],
                 } if ok else {},
-                "error": None if ok else "Failed to save memory (duplicate or provider error).",
+                "error": None if ok else "Could not save the memory (database error).",
             }
 
         if action == "search":
@@ -137,12 +137,27 @@ class MemoryTool(BaseTool):
                 events = await self.memory.episodic.recall_related_events(query, limit=5, project_id=project_id)
             except Exception:
                 events = []
-            hits = [
-                {"text": bounded_text(str(item.get("content") or item.get("text") or ""), 300),
-                 "when": item.get("updated_at") or item.get("created_at") or item.get("timestamp")}
-                for item in list(found) + [e for e in events if e.get("similarity", 0.0) >= 0.45]
-            ]
-            hits = [hit for hit in hits if hit["text"]][:10]
+            hits, seen_ids = [], set()
+            for item in list(found) + [e for e in events if e.get("similarity", 0.0) >= 0.45]:
+                text = bounded_text(str(item.get("content") or item.get("text") or ""), 300)
+                if not text:
+                    continue
+                if "source_type" in item:  # word-index hit (chat, summary or saved fact)
+                    source = item.get("source_type")
+                    memory_id = item.get("source_id") if source == "memory" else None
+                else:  # meaning (vector) hit = always a saved memory row
+                    source, memory_id = "memory", item.get("id")
+                # memory_id lets forget/correct act on the exact saved fact
+                if memory_id and memory_id in seen_ids:
+                    continue
+                if memory_id:
+                    seen_ids.add(memory_id)
+                hit = {"text": text, "kind": "saved fact" if source == "memory" else "past chat",
+                       "when": item.get("updated_at") or item.get("created_at") or item.get("timestamp")}
+                if memory_id and source == "memory":
+                    hit["memory_id"] = memory_id
+                hits.append(hit)
+            hits = hits[:10]
             return {"success": True, "data": {"count": len(hits), "results": hits}, "error": None}
 
         if action in {"list", "export"}:
@@ -247,13 +262,9 @@ class MemoryTool(BaseTool):
                     failed += 1
                     continue
                 imported_metadata.update(structured_metadata)
-                try:
-                    embedding = await self.memory.vector_store.generate_embedding(item_content)
-                    saved = self.memory.vector_store.save_vector_memory(
-                        str(uuid.uuid4()), item_type, item_content, embedding, imported_metadata
-                    )
-                except Exception:
-                    saved = False
+                saved = await self.memory.vector_store.remember(
+                    item_type, item_content, imported_metadata
+                )
                 restored += int(saved)
                 failed += int(not saved)
             return {

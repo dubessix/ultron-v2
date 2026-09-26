@@ -12,6 +12,7 @@ a config change, not a code edit.
 """
 
 import os
+from typing import Optional
 
 import yaml
 
@@ -88,21 +89,38 @@ def get_ai_runtime_settings() -> dict:
     }
 
 
-def get_model(provider: str) -> str:
-    """Resolve the chat/embedding model ID for a provider."""
+def preferred_models(provider: str) -> list[str]:
+    """Owner's choices first (env var, then config.yaml), then the built-in default."""
     provider = provider.lower()
+    chosen: list[str] = []
     env_name = _ENV_MAP.get(provider)
     if env_name:
         val = os.getenv(env_name)
         if val and val.strip():
-            return val.strip()
-
+            chosen.append(val.strip())
     models = _load_ai_config().get("models", {}) or {}
     cfg_val = models.get(provider)
     if cfg_val and str(cfg_val).strip():
-        return str(cfg_val).strip()
+        chosen.append(str(cfg_val).strip())
+    chosen.append(_DEFAULTS.get(provider, _DEFAULTS["groq"]))
+    return chosen
 
-    return _DEFAULTS.get(provider, _DEFAULTS["groq"])
+
+def get_model(provider: str) -> str:
+    """Resolve the chat/embedding model ID for a provider.
+
+    V2 Step E2: a model the provider retired is skipped automatically (next in
+    the owner's choices, then the fallback list, then one the provider lists)."""
+    from backend.app.brain import model_fallback
+
+    return model_fallback.choose(provider, preferred_models(provider))
+
+
+def retire_model(provider: str, model: str) -> Optional[str]:
+    """The provider says `model` is gone: remember it; return the next model."""
+    from backend.app.brain import model_fallback
+
+    return model_fallback.mark_gone(provider, model, preferred_models(provider))
 
 
 def get_embedding_dimensions() -> int:

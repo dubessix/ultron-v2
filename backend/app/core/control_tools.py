@@ -48,5 +48,6 @@ def control_rules() -> str:
         "zora when he asks for Zora or sounds sad, stressed or tired (why=mood); ultron when he asks "
         "for Ultron or work; coding when he wants code written, fixed, reviewed or debugged "
         "(only \"coding mode\" or another mode name = the routine tool).\n"
-        "- He mentions the past: manage_memory search. He tells a fact worth keeping: manage_memory remember.\n"
+        "- Memory: he tells a lasting fact (people, dates, likes, plans) = manage_memory remember; "
+        "he asks about the past or something about him you don't know = manage_memory search first, never guess.\n"
     )

@@ -318,7 +318,9 @@ class TestM3TransportContracts(unittest.TestCase):
         self.assertIn("index_session_summary", summary)
         self.assertIn("index_vector_memory", vectors)
         self.assertIn("delete_recall_document", vectors)
-        self.assertIn("mark_recall_index_dirty", vectors)
+        # V2 Step E: prune removes each pruned memory from the index directly
+        # (a full dirty-rebuild is no longer needed).
+        self.assertIn('delete_recall_document(conn, f"memory:{memory_id}")', vectors)
 
 
 if __name__ == "__main__":

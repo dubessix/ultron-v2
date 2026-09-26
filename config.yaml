@@ -31,6 +31,12 @@ ai:
 
 memory:
   duplicate_similarity_threshold: 0.95
+  # V2 Step E: facts he told Ultron + important ones are kept forever.
+  # Automatic memories: newest N per type (20000 = years). Every chat stays
+  # searchable forever in the word index. Scans are bounded for low RAM.
+  max_auto_memories: 20000
+  vector_scan_limit: 6000
+  kept_scan_limit: 5000
   low_density_keywords:
     - "hi"
     - "hello"

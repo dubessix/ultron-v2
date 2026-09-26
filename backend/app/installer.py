@@ -148,7 +148,8 @@ class InstallerEngine:
                 self.log("▶ Creating .venv")
                 venv.EnvBuilder(with_pip=True, upgrade_deps=True).create(VENV_DIR)
             self._run(
-                [str(venv_python()), "-m", "pip", "install", "-r", str(ROOT / "requirements.txt")],
+                [str(venv_python()), "-m", "pip", "install", "-r", str(ROOT / "requirements.txt"),
+                 *(["-c", str(ROOT / "constraints.txt")] if (ROOT / "constraints.txt").is_file() else [])],
                 "Installing Ultron runtime packages…",
             )
         else:

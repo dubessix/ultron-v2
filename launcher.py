@@ -140,10 +140,34 @@ class ServiceLauncher:
             raise LauncherError("Configuration must contain a 'server' mapping.")
         return config
 
+    def browser_already_opened_this_boot(self) -> bool:
+        """V2 Step E6: started by autostart (ULTRON_AUTOSTART=1) -> open the browser
+        once per PC boot; a restart after a crash must not open a new tab."""
+        if os.getenv("ULTRON_AUTOSTART", "").strip() != "1":
+            return False
+        try:
+            import psutil
+
+            boot = str(int(psutil.boot_time()))
+            marker = self.application_home / "data" / "autostart" / "browser_opened_boot"
+            if marker.is_file() and marker.read_text(encoding="utf-8").strip() == boot:
+                return True
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(boot, encoding="utf-8")
+        except Exception:
+            return False
+        return False
+
+    MAX_LAUNCH_LOG_BYTES = 5 * 1024 * 1024
+
     def _append_launch_log(self, text: str) -> None:
         if self.launch_log_path is None:
             return
         try:
+            # V2 Step E4: written every start, so rotate by size (never grows forever).
+            if (self.launch_log_path.is_file()
+                    and self.launch_log_path.stat().st_size > self.MAX_LAUNCH_LOG_BYTES):
+                self.launch_log_path.replace(self.launch_log_path.with_suffix(".old.log"))
             self.launch_log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.launch_log_path.open("a", encoding="utf-8") as handle:
                 handle.write(text.rstrip("\n") + "\n")
@@ -860,6 +884,8 @@ class ServiceLauncher:
 
             url = f"http://{self.host}:{self.frontend_port}"
             browser_disabled = os.getenv("ULTRON_NO_BROWSER", "").strip().lower() in {"1", "true", "yes"}
+            if not browser_disabled and self.browser_already_opened_this_boot():
+                browser_disabled = True  # autostart restart after a crash: no new tab
             if browser_disabled:
                 dispatched = False
                 self.log("Launcher", f"Both services healthy; browser launch intentionally skipped for {url}.", "33")

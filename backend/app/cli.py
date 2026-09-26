@@ -121,7 +121,7 @@ def doctor():
     warning_count = 0
 
     # 1. Host Hardware Analysis
-    click.echo("\n[1/5] Checking Hardware Environment Constraints...")
+    click.echo("\n[1/6] Checking Hardware Environment Constraints...")
     total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
     click.echo(f"  - Detected OS: {platform.system()} ({platform.release()})")
     click.echo(f"  - Detected CPU Cores: {psutil.cpu_count(logical=True)} logical cores")
@@ -134,7 +134,7 @@ def doctor():
 
     # 2. Binary checks. A verified prebuilt frontend removes Node/npm from the
     # normal beginner install; Node is needed only after frontend source changes.
-    click.echo("\n[2/5] Checking Required Applications...")
+    click.echo("\n[2/6] Checking Required Applications...")
     git_path = shutil.which("git")
     if git_path:
         click.echo(f"  ✓ git     : Found at {git_path}")
@@ -185,7 +185,7 @@ def doctor():
         all_green = False
 
     # 3. Local Port Availability
-    click.echo("\n[3/5] Verifying Port Configurations...")
+    click.echo("\n[3/6] Verifying Port Configurations...")
     config = load_yaml_config()
     backend_port = config.get("server", {}).get("backend_port", 8000)
     frontend_port = config.get("server", {}).get("frontend_port", 5173)
@@ -199,7 +199,7 @@ def doctor():
             all_green = False
 
     # 4. Storage & SQLite Access Verification
-    click.echo("\n[4/5] Checking Storage & Databases Access...")
+    click.echo("\n[4/6] Checking Storage & Databases Access...")
     db_dir = BASE_DIR / "data" / "memory"
     if db_dir.exists():
         try:
@@ -215,7 +215,7 @@ def doctor():
         all_green = False
 
     # 5. Config Profiles Audit
-    click.echo("\n[5/5] Auditing Configuration Profiles...")
+    click.echo("\n[5/6] Auditing Configuration Profiles...")
     config_valid = bool(config) and isinstance(config.get("server"), dict) and isinstance(config.get("ai"), dict)
     if CONFIG_PATH.is_file() and config_valid:
         click.echo(f"  ✓ config.yaml: Parsed required sections from {CONFIG_PATH}.")
@@ -225,6 +225,24 @@ def doctor():
     else:
         click.echo(click.style("  ✗ config.yaml: Missing! System requires a valid configuration file.", fg="red"))
         all_green = False
+
+    # 6. V2 Step E5: daily health in plain words (keys, models, Chrome helper,
+    # disk, database, backups, autostart). Warnings only: never blocks a start.
+    click.echo("\n[6/6] Ultron's daily health (plain words)...")
+    from backend.app import health_checks
+    from backend.app.database.backup import get_approved_backup_root
+    from backend.app.database.db import DB_PATH
+
+    symbols = {"ok": ("✓", "green"), "warn": ("⚠️", "yellow"), "fail": ("✗", "red")}
+    for level, what, fix in health_checks.run_all(
+        home=BASE_DIR, db_path=DB_PATH, backup_dir=get_approved_backup_root(), port=backend_port
+    ):
+        mark, colour = symbols.get(level, ("-", "white"))
+        click.echo(click.style(f"  {mark} {what}", fg=colour) if level != "ok" else f"  {mark} {what}")
+        if fix:
+            click.echo(f"      Fix: {fix}")
+        if level != "ok":
+            warning_count += 1
 
     if all_green and warning_count:
         click.echo(click.style(
@@ -241,15 +259,21 @@ def doctor():
 
 @main.command()
 @click.option("--restore", is_flag=True, help="Restore the database from a backup file.")
-@click.option("--path", type=str, default=None, help="Backup file path to restore from (with --restore).")
+@click.option("--path", type=str, default=None, help="Backup file to restore (default: the newest good backup).")
 @click.option("--yes", is_flag=True, help="Confirm the exact local restore non-interactively.")
 def backup(restore, path, yes):
     """Back up or explicitly restore the local database (durability)."""
     from backend.app.database.backup import backup_database, restore_database
     if restore:
         if not path:
-            click.echo(click.style("Error: --path <backup.db> is required with --restore.", fg="red"))
-            return
+            from backend.app.database.backup import newest_good_backup
+
+            newest = newest_good_backup()
+            if newest is None:
+                click.echo(click.style("✗ No good backup found, so nothing was changed.", fg="red"))
+                return
+            path = str(newest)
+            click.echo(f"Newest good backup: {path}")
         if not yes and not click.confirm(f"Restore the exact approved backup '{path}'?"):
             click.echo("Restore cancelled; database was not changed.")
             return
@@ -264,6 +288,23 @@ def backup(restore, path, yes):
         click.echo(click.style(f"✓ Backup created: {result['data']['backup_path']} ({result['data']['bytes']} bytes, verified)", fg="green"))
     else:
         click.echo(click.style(f"✗ Backup failed: {result['error']}", fg="red"))
+
+@main.command()
+@click.argument("action", type=click.Choice(["on", "off", "status"]), default="status")
+def autostart(action):
+    """Start Ultron at login and restart him after a crash (on / off / status)."""
+    from backend.app import autostart as autostart_module
+
+    if action == "status":
+        info = autostart_module.status()
+        state = "ON" if info["enabled"] else "OFF"
+        click.echo(f"Autostart is {state} ({info['how']}): {info['detail']}")
+        return
+    result = autostart_module.enable() if action == "on" else autostart_module.disable()
+    colour = "green" if result["success"] else "red"
+    click.echo(click.style(("✓ " if result["success"] else "✗ ") + result["message"], fg=colour))
+    if not result["success"]:
+        sys.exit(1)
 
 @main.command()
 def integrity():

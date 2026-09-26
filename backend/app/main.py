@@ -85,6 +85,7 @@ class HealthStatusResponse(BaseModel):
     providers: dict
     provider_key_states: dict
     models: dict
+    browser_helper: dict = {}
 
 # Boot timestamp tracker
 START_TIME = time.time()
@@ -335,7 +336,17 @@ async def get_health_status() -> dict:
         "providers": providers,
         "provider_key_states": key_manager.runtime_status(),
         "models": model_config,
+        "browser_helper": _browser_helper_status(),
     }
+
+
+def _browser_helper_status() -> dict:
+    try:
+        from backend.app.core import browser_bridge
+
+        return browser_bridge.status()
+    except Exception:
+        return {"connected": False}
 
 # ==============================================================================
 # WEBSOCKET CHANNELS ENDPOINT REGISTRATION (Requirement 1, 2)

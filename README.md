@@ -73,7 +73,7 @@ python -m venv .venv
 
 ```powershell
 .venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt -c constraints.txt
 python -m backend.app.cli setup
 python -m backend.app.cli doctor
 ```
@@ -82,7 +82,7 @@ python -m backend.app.cli doctor
 
 ```bash
 source .venv/bin/activate
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt -c constraints.txt
 python -m backend.app.cli setup
 python -m backend.app.cli doctor
 ```
@@ -130,6 +130,12 @@ Click **Ultron** (or run `ultron start` / `python launcher.py`). A terminal wind
 Keep that terminal open while you use Ultron. To stop: click **Stop Ultron** or run `ultron stop`.
 
 Once per day, on the first start, Ultron greets you with a short briefing (morning / afternoon / evening).
+
+**Start at login (recommended):** run `ultron autostart on` once. Ultron then starts when you log in and restarts by himself if he crashes (at most 5 tries in 5 minutes, so he never loops). `ultron autostart off` removes it, and `ultron autostart status` shows it. On Ubuntu this is a user service (no sudo); on Windows it is an entry in your Startup folder.
+
+**Health check:** `ultron doctor` lists everything in plain words: AI keys, models, Chrome helper, disk, database, backups, memory size and autostart, each with a one-line fix.
+
+**Backups:** made by themselves once a day (at most 1 GB total; the newest 3 are always kept). If something breaks, `ultron backup --restore` puts back the newest good copy.
 
 ---
 
@@ -278,7 +284,7 @@ Useful environment variables: `GROQ_CHAT_MODEL`, `GEMINI_CHAT_MODEL`, `NVIDIA_CH
 ```bash
 cd Ultron-Personal-V1
 git pull
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt -c constraints.txt
 ```
 
 Then start Ultron again. The prebuilt frontend in `frontend/prebuilt/` is updated with each change, so Node is not needed. If you change frontend code yourself, the launcher rebuilds it (needs Node 20.19+).

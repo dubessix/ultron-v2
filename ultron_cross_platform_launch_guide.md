@@ -11,7 +11,7 @@
 
 ```bash
 python -m venv .venv
-python -m pip install -r requirements.txt
+python -m pip install -r requirements.txt -c constraints.txt
 python -m backend.app.cli setup
 python -m backend.app.cli doctor
 ```

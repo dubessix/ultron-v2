@@ -11,13 +11,16 @@ from backend.app.memory.structured_memory import bounded_text, normalize_categor
 
 
 RECALL_INDEX_SCHEMA_VERSION = 1
-RECALL_SYNC_LIMIT = 5000
+# V2 Step E: a rebuild indexes EVERY chat, summary and memory (read in batches,
+# so years of history never sit in RAM together).
+REBUILD_BATCH = 500
 _STOP_WORDS = {
     "a", "an", "and", "are", "did", "do", "for", "from", "how", "i", "in",
     "is", "it", "last", "me", "my", "of", "on", "our", "that", "the", "this",
     "to", "was", "we", "what", "when", "where", "who", "why", "you",
 }
-_TOKEN = re.compile(r"[A-Za-z0-9_]{2,}")
+# Latin words plus Hindi (Devanagari) and Bengali letters with their vowel signs.
+_TOKEN = re.compile(r"[A-Za-z0-9_\u0900-\u097F\u0980-\u09FF]{2,}")
 
 
 def ensure_recall_index(conn: sqlite3.Connection) -> None:
@@ -47,6 +50,28 @@ def ensure_recall_index(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # V2 Step E: document_key -> FTS rowid, so replacing or deleting one document
+    # is a direct lookup instead of a scan of the whole index (years of chats).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS recall_keys (
+            document_key TEXT PRIMARY KEY,
+            fts_rowid INTEGER NOT NULL
+        )
+        """
+    )
+    done = conn.execute(
+        "SELECT value FROM recall_index_meta WHERE key = 'keys_table'"
+    ).fetchone()
+    if not done:
+        # one-time backfill for an existing owner database
+        conn.execute(
+            "INSERT OR REPLACE INTO recall_keys(document_key, fts_rowid) "
+            "SELECT document_key, rowid FROM recall_fts"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO recall_index_meta(key, value) VALUES ('keys_table', '1')"
+        )
 
 
 def _meta_value(conn: sqlite3.Connection, key: str) -> Optional[str]:
@@ -80,8 +105,8 @@ def upsert_recall_document(
     content: str,
 ) -> None:
     ensure_recall_index(conn)
-    conn.execute("DELETE FROM recall_fts WHERE document_key = ?", (document_key,))
-    conn.execute(
+    _drop_document(conn, document_key)
+    cursor = conn.execute(
         """
         INSERT INTO recall_fts(
             document_key, source_type, source_id, project_id, session_id,
@@ -102,15 +127,24 @@ def upsert_recall_document(
             bounded_text(content, 1600),
         ),
     )
+    conn.execute(
+        "INSERT OR REPLACE INTO recall_keys(document_key, fts_rowid) VALUES (?, ?)",
+        (document_key, cursor.lastrowid),
+    )
+
+
+def _drop_document(conn: sqlite3.Connection, document_key: str) -> None:
+    row = conn.execute(
+        "SELECT fts_rowid FROM recall_keys WHERE document_key = ?", (document_key,)
+    ).fetchone()
+    if row is not None:
+        conn.execute("DELETE FROM recall_fts WHERE rowid = ?", (row[0],))
+        conn.execute("DELETE FROM recall_keys WHERE document_key = ?", (document_key,))
 
 
 def delete_recall_document(conn: sqlite3.Connection, document_key: str) -> None:
     ensure_recall_index(conn)
-    conn.execute("DELETE FROM recall_fts WHERE document_key = ?", (document_key,))
-
-
-def mark_recall_index_dirty(conn: sqlite3.Connection) -> None:
-    _set_meta(conn, "initial_sync_complete", "0")
+    _drop_document(conn, document_key)
 
 
 def index_conversation_turn(
@@ -195,24 +229,32 @@ def index_vector_memory(
     )
 
 
+def _batches(cursor: sqlite3.Cursor):
+    """Yield rows a batch at a time (bounded RAM for years of history)."""
+    while True:
+        rows = cursor.fetchmany(REBUILD_BATCH)
+        if not rows:
+            return
+        yield from rows
+
+
 def rebuild_recall_index(conn: sqlite3.Connection) -> dict[str, int]:
     """Rebuild from canonical tables for existing owner databases."""
     ensure_recall_index(conn)
     conn.execute("DELETE FROM recall_fts")
+    conn.execute("DELETE FROM recall_keys")
     counts = {"conversation": 0, "session_summary": 0, "memory": 0}
 
-    conversations = conn.execute(
+    conversations = _batches(conn.execute(
         """
         SELECT c.id, c.session_id, c.timestamp, c.user_message, c.ai_response,
                c.intent, COALESCE(NULLIF(s.active_project, ''), 'personal') AS project_id
         FROM conversations AS c
         JOIN sessions AS s ON s.id = c.session_id
-        ORDER BY c.rowid DESC
-        LIMIT ?
-        """,
-        (RECALL_SYNC_LIMIT,),
-    ).fetchall()
-    for row in reversed(conversations):
+        ORDER BY c.rowid ASC
+        """
+    ))
+    for row in conversations:
         index_conversation_turn(
             conn,
             message_id=str(row["id"]),
@@ -225,10 +267,9 @@ def rebuild_recall_index(conn: sqlite3.Connection) -> dict[str, int]:
         )
         counts["conversation"] += 1
 
-    summaries = conn.execute(
-        "SELECT id, summary FROM sessions WHERE summary IS NOT NULL ORDER BY started_at DESC LIMIT ?",
-        (RECALL_SYNC_LIMIT,),
-    ).fetchall()
+    summaries = _batches(conn.execute(
+        "SELECT id, summary FROM sessions WHERE summary IS NOT NULL ORDER BY started_at DESC"
+    ))
     for row in summaries:
         try:
             summary = json.loads(row["summary"])
@@ -242,12 +283,10 @@ def rebuild_recall_index(conn: sqlite3.Connection) -> dict[str, int]:
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_memories'"
     ).fetchone()
     if table:
-        memories = conn.execute(
-            "SELECT id, type, content, metadata, created_at FROM vector_memories "
-            "ORDER BY rowid DESC LIMIT ?",
-            (RECALL_SYNC_LIMIT,),
-        ).fetchall()
-        for row in reversed(memories):
+        memories = _batches(conn.execute(
+            "SELECT id, type, content, metadata, created_at FROM vector_memories ORDER BY rowid ASC"
+        ))
+        for row in memories:
             try:
                 metadata = json.loads(row["metadata"] or "{}")
             except (TypeError, ValueError, json.JSONDecodeError):

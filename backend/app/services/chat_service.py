@@ -126,6 +126,13 @@ async def process_chat_message(
 
     latency_ms = int((time.perf_counter() - start_time) * 1000)
 
+    # V2 Step E2: a provider retired a model and Ultron switched: say it ONCE.
+    from backend.app.brain import model_fallback
+
+    notice = model_fallback.pop_notice()
+    if notice and isinstance(result.get("content"), str) and not result.get("pending_confirmation"):
+        result["content"] = f"{result['content'].rstrip()}\n\n{notice}"
+
     # 3. Persist the turn + the effective personality to the session.
     with get_db_connection() as conn:
         try:

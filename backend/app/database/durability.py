@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +51,8 @@ class DurabilitySettings:
     log_retention_days: int = 30
     scheduler_poll_seconds: float = 900.0
     restore_lock_timeout_seconds: float = 30.0
+    backups_max_total_mb: int = 1024
+    min_free_disk_mb: int = 200
 
 
 def load_durability_settings() -> DurabilitySettings:
@@ -90,6 +93,8 @@ def load_durability_settings() -> DurabilitySettings:
         restore_lock_timeout_seconds=_bounded_float(
             raw.get("restore_lock_timeout_seconds"), 30.0, 5.0, 120.0
         ),
+        backups_max_total_mb=_bounded_int(raw.get("backups_max_total_mb"), 1024, 100, 100000),
+        min_free_disk_mb=_bounded_int(raw.get("min_free_disk_mb"), 200, 50, 100000),
     )
 
 
@@ -145,6 +150,42 @@ def prune_audit_logs(retention_days: int) -> dict:
         return {"success": False, "removed": 0, "error": str(exc)}
 
 
+MAX_LOG_BYTES = 5 * 1024 * 1024
+
+
+def cap_log_sizes(root: Path, max_bytes: int = MAX_LOG_BYTES) -> dict:
+    """A log that is written every day never gets old enough for the age rule,
+    so cap its size: keep the newest half (V2 Step E4)."""
+    trimmed = 0
+    try:
+        files = [p for p in Path(root).rglob("*") if p.is_file() and not p.is_symlink()]
+    except OSError:
+        return {"trimmed": 0}
+    for path in files:
+        try:
+            if path.stat().st_size <= max_bytes:
+                continue
+            with path.open("rb") as handle:
+                handle.seek(-(max_bytes // 2), 2)
+                tail = handle.read()
+            cut = tail.find(b"\n")
+            path.write_bytes(tail[cut + 1:] if cut >= 0 else tail)
+            trimmed += 1
+        except OSError:
+            continue
+    return {"trimmed": trimmed}
+
+
+def _prune_terminal_jobs() -> dict:
+    try:
+        from backend.app.tools import terminal_jobs
+
+        terminal_jobs.prune()
+        return {"success": True}
+    except Exception as exc:  # never break the maintenance loop
+        return {"success": False, "error": str(exc)}
+
+
 class DurabilityScheduler:
     """One low-frequency loop for backup, integrity, WAL, and retention work."""
 
@@ -154,6 +195,22 @@ class DurabilityScheduler:
         self._last_checkpoint = 0.0
         self._last_retention = 0.0
         self.last_result: Dict[str, Any] = {}
+
+    def _disk_is_low(self) -> bool:
+        """Skip the daily copy only when it would not fit: free space must stay above
+        2x the database + min_free_disk_mb (doctor reports low disk separately)."""
+        try:
+            try:
+                db_bytes = _db.DB_PATH.stat().st_size
+            except OSError:
+                db_bytes = 0
+            root = get_approved_backup_root()
+            probe = root if root.exists() else root.parent
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            return shutil.disk_usage(probe).free < 2 * db_bytes + self.settings.min_free_disk_mb * 1024 * 1024
+        except OSError:
+            return False
 
     def run_once(self, force: bool = False) -> Dict[str, Any]:
         now_wall = time.time()
@@ -169,10 +226,16 @@ class DurabilityScheduler:
         backup_due = force or latest is None or (
             now_wall - latest >= self.settings.backup_interval_hours * 3600
         )
-        if self.settings.automatic_backups and backup_due:
+        if self.settings.automatic_backups and backup_due and not self._disk_is_low():
             result["backup"] = backup_database(
                 retention_generations=self.settings.backup_generations
             )
+            prune_backups(
+                generations=self.settings.backup_generations,
+                max_total_bytes=self.settings.backups_max_total_mb * 1024 * 1024,
+            )
+        elif self.settings.automatic_backups and backup_due:
+            result["backup"] = {"status": "skipped_low_disk"}
         elif not self.settings.automatic_backups:
             result["backup"] = {"status": "disabled"}
 
@@ -193,7 +256,8 @@ class DurabilityScheduler:
         if force or now_mono - self._last_retention >= 86400:
             result["retention"] = {
                 "backups": prune_backups(
-                    generations=self.settings.backup_generations
+                    generations=self.settings.backup_generations,
+                    max_total_bytes=self.settings.backups_max_total_mb * 1024 * 1024,
                 ),
                 "audit": prune_audit_logs(self.settings.audit_retention_days),
                 "cache_files": _prune_old_files(
@@ -202,6 +266,9 @@ class DurabilityScheduler:
                 "log_files": _prune_old_files(
                     runtime_data_path("logs"), self.settings.log_retention_days, now_wall
                 ),
+                "safety_copies": prune_backups(get_approved_backup_root() / "safety", generations=5),
+                "big_logs": cap_log_sizes(runtime_data_path("logs")),
+                "terminal_jobs": _prune_terminal_jobs(),
             }
             self._last_retention = now_mono
 
