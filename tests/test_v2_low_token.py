@@ -108,7 +108,27 @@ class TestIdentity(unittest.TestCase):
     def test_personas_are_short(self):
         for name in ("ultron", "zora"):
             words = len((ROOT / f"backend/app/personalities/{name}.md").read_text(encoding="utf-8").split())
-            self.assertLess(words, 260, name)
+            self.assertLess(words, 400, name)
+
+    def test_both_care_about_him_like_jarvis(self):
+        # Owner: "exam tomorrow, I didn't study" must get real concern, a push to
+        # study and an OFFER of help, not a silent tool call or "Got it, Sir".
+        for name in ("ultron", "zora"):
+            text = (ROOT / f"backend/app/personalities/{name}.md").read_text(encoding="utf-8")
+            self.assertIn("## Caring for Debjeet", text, name)
+            self.assertIn("exam", text, name)
+            self.assertIn("not orders: offer, then act after his yes", text, name)
+            self.assertIn("Shall I", text, name)
+            self.assertIn('never a bare "Done"', text, name)
+
+    def test_rules_offer_unasked_help_and_sound_warm(self):
+        from backend.app.core.orchestrator import CognitiveOrchestrator
+
+        rules = CognitiveOrchestrator._action_mandate_block()
+        self.assertIn("Something he did NOT ask for", rules)
+        self.assertIn("Shall I set a reminder for your exam, Sir?", rules)
+        self.assertIn('never a bare "Done"', rules)
+        self.assertNotIn('("Done, Sir.")', rules)
 
 
 class TestUsageMeter(unittest.TestCase):
