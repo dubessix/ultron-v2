@@ -4,6 +4,7 @@ Implements un-mocked SQLite day planner CRUD, and embeds a mathematical
 Time-Block Solver that computes scheduling overlaps and suggests blank gaps (Level 1 Security).
 """
 
+import json
 import uuid
 import datetime
 from typing import Dict, Any, Optional, List
@@ -12,7 +13,9 @@ from backend.app.tools.tool_base import BaseTool
 from backend.app.database.db import get_db_connection
 
 class CalendarArgs(BaseModel):
-    action: str = Field(..., description="Action to perform: create, list, delete, smart_schedule.")
+    action: str = Field(..., description=(
+        "create, list, delete, smart_schedule; plan = save several blocks at once (a study or day plan); "
+        "mark = a plan block done or skipped; shift = move a plan block and the rest of that day's plan."))
     event_id: Optional[str] = Field(None, description="Event ID (required for deletion).")
     title: Optional[str] = Field(None, description="Title of the schedule event.")
     description: Optional[str] = Field(None, description="Optional description details.")
@@ -20,6 +23,11 @@ class CalendarArgs(BaseModel):
     end_time: Optional[str] = Field(None, description="End date/time (ISO format, YYYY-MM-DDTHH:MM:SS).")
     category: Optional[str] = Field("general", description="Category classification: work, development, physical, study, break.")
     duration_hours: Optional[float] = Field(2.0, gt=0, le=12, description="Duration in hours requested for smart_schedule search.")
+    blocks: Optional[List[Dict[str, Any]]] = Field(None, description=(
+        "For plan: [{title, start_time, end_time, say?, check_in?}] local ISO; say=spoken at start, "
+        "check_in=ask at end"))
+    status: Optional[str] = Field(None, description="For mark: done or skipped.")
+    minutes: Optional[int] = Field(None, description="For shift: minutes to move (negative = earlier).")
 
 class CalendarTool(BaseTool):
     def __init__(self) -> None:
@@ -133,6 +141,67 @@ class CalendarTool(BaseTool):
 
         return suggested_slots[:3]
 
+    MAX_PLAN_BLOCKS = 12
+    PLAN = "plan"  # open block; plan_done / plan_skipped once checked
+
+    @staticmethod
+    def _find_plan_block(cursor, ref: str) -> Optional[dict]:
+        """A plan block by id, or by (part of) its title: the open one closest to now."""
+        row = cursor.execute("SELECT * FROM calendar_events WHERE id = ?;", (ref,)).fetchone()
+        if row:
+            return dict(row) if str(row["category"] or "").startswith("plan") else None
+        rows = [dict(r) for r in cursor.execute(
+            "SELECT * FROM calendar_events WHERE category LIKE 'plan%' AND lower(title) LIKE ? "
+            "ORDER BY start_time ASC LIMIT 40;", (f"%{str(ref).strip().lower()}%",))]
+        if not rows:
+            return None
+        now = datetime.datetime.now().astimezone()
+
+        def distance(item: dict) -> float:
+            try:
+                start = CalendarTool._to_local_aware(datetime.datetime.fromisoformat(item["start_time"]))
+                return abs((start - now).total_seconds()) + (0 if item["category"] == "plan" else 10 ** 9)
+            except (TypeError, ValueError):
+                return float("inf")
+
+        return min(rows, key=distance)
+
+    def _save_plan(self, cursor, blocks: Any) -> Dict[str, Any]:
+        if not isinstance(blocks, list) or not blocks:
+            return {"success": False, "error": "blocks must be a non-empty list.", "data": {}}
+        if len(blocks) > self.MAX_PLAN_BLOCKS:
+            return {"success": False, "error": f"At most {self.MAX_PLAN_BLOCKS} blocks per plan.", "data": {}}
+        now = datetime.datetime.now().astimezone()
+        rows = []
+        for number, block in enumerate(blocks, 1):
+            if not isinstance(block, dict):
+                return {"success": False, "error": f"Block {number} must be an object.", "data": {}}
+            title = " ".join(str(block.get("title") or "").split())[:120]
+            try:
+                start = self._to_local_aware(datetime.datetime.fromisoformat(str(block.get("start_time"))))
+                end = self._to_local_aware(datetime.datetime.fromisoformat(str(block.get("end_time"))))
+            except ValueError:
+                return {"success": False, "error": f"Block {number}: use ISO local times.", "data": {}}
+            if not title or start >= end:
+                return {"success": False, "error": f"Block {number}: needs a title and start before end.", "data": {}}
+            if end <= now:
+                return {"success": False, "error": f"Block {number} ({title}) is already over.", "data": {}}
+            if end - start > datetime.timedelta(hours=12):
+                return {"success": False, "error": f"Block {number} is longer than 12 hours.", "data": {}}
+            extra = {"check_in": bool(block.get("check_in", True))}
+            say = " ".join(str(block.get("say") or "").split())[:160]
+            if say:
+                extra["say"] = say
+            rows.append((str(uuid.uuid4()), title, json.dumps(extra), start.replace(tzinfo=None).isoformat(timespec="seconds"),
+                         end.replace(tzinfo=None).isoformat(timespec="seconds"), self.PLAN))
+        # all or nothing: never half a plan
+        cursor.executemany(
+            "INSERT INTO calendar_events (id, title, description, start_time, end_time, category) "
+            "VALUES (?, ?, ?, ?, ?, ?);", rows)
+        return {"success": True, "error": None, "data": {
+            "message": f"Plan saved: {len(rows)} blocks. Each block is announced when it starts.",
+            "blocks": [{"event_id": r[0], "title": r[1], "start_time": r[3], "end_time": r[4]} for r in rows]}}
+
     async def execute(self, **kwargs) -> Dict[str, Any]:
         action = kwargs.get("action", "list").lower()
         event_id = kwargs.get("event_id")
@@ -185,6 +254,55 @@ class CalendarTool(BaseTool):
                     },
                     "error": None
                 }
+
+            elif action == "plan":
+                result = self._save_plan(cursor, kwargs.get("blocks"))
+                if result["success"]:
+                    conn.commit()
+                return result
+
+            elif action == "mark":
+                status = str(kwargs.get("status") or "done").lower()
+                if status not in {"done", "skipped"}:
+                    return {"success": False, "error": "status must be done or skipped.", "data": {}}
+                block = self._find_plan_block(cursor, event_id or title or "")
+                if not block:
+                    return {"success": False, "error": "No plan block matches that.", "data": {}}
+                cursor.execute("UPDATE calendar_events SET category = ? WHERE id = ?;", (f"plan_{status}", block["id"]))
+                conn.commit()
+                return {"success": True, "error": None, "data": {
+                    "message": f"{block['title']} marked {status}.", "event_id": block["id"]}}
+
+            elif action == "shift":
+                try:
+                    minutes = int(kwargs.get("minutes") or 0)
+                except (TypeError, ValueError):
+                    minutes = 0
+                if not minutes or abs(minutes) > 12 * 60:
+                    return {"success": False, "error": "minutes must be between -720 and 720, not 0.", "data": {}}
+                block = self._find_plan_block(cursor, event_id or title or "")
+                if not block:
+                    return {"success": False, "error": "No plan block matches that.", "data": {}}
+                first = datetime.datetime.fromisoformat(block["start_time"])
+                later = [dict(r) for r in cursor.execute(
+                    "SELECT id, start_time, end_time FROM calendar_events WHERE category = 'plan';")]
+                moved = []
+                step = datetime.timedelta(minutes=minutes)
+                for item in later:
+                    try:
+                        start = datetime.datetime.fromisoformat(item["start_time"])
+                        end = datetime.datetime.fromisoformat(item["end_time"])
+                    except (TypeError, ValueError):
+                        continue
+                    same_day = start.date() == first.date()
+                    if item["id"] == block["id"] or (same_day and start >= first):
+                        cursor.execute("UPDATE calendar_events SET start_time = ?, end_time = ? WHERE id = ?;",
+                                       ((start + step).isoformat(timespec="seconds"),
+                                        (end + step).isoformat(timespec="seconds"), item["id"]))
+                        moved.append(item["id"])
+                conn.commit()
+                return {"success": True, "error": None, "data": {
+                    "message": f"Moved {len(moved)} plan block(s) by {minutes} minutes.", "moved": len(moved)}}
 
             elif action == "list":
                 cursor.execute("SELECT * FROM calendar_events ORDER BY start_time ASC;")

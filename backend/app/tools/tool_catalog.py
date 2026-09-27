@@ -70,9 +70,9 @@ TOOL_MENU: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
     (
         "Day planning",
         (
-            ("manage_reminder", "action=create|list|snooze|dismiss|delete, ?title, ?target_time ISO or +10m/+2h, ?reminder_id"),
+            ("manage_reminder", "action=create|list|snooze|dismiss|delete, ?title, ?target_time +10m or ISO, ?reminder_id"),
             ("manage_task", "action=create|list|update_status|update_priority|delete, ?title, ?priority, ?status, ?due_date, ?task_id"),
-            ("manage_calendar", "action=create|list|delete|smart_schedule, ?title, ?start_time, ?end_time, ?duration_hours, ?event_id"),
+            ("manage_calendar", "action=create|plan|mark|shift|list|delete, ?title, ?start_time, ?end_time, ?blocks, ?minutes, ?event_id"),
             ("daily_briefing", "(none): weather, tasks, schedule, news"),
             ("manage_memory", "action=search|remember|list|forget|correct, ?content, ?memory_id: past chats, owner facts"),
             ("weather_tool", "?city: live weather and forecast"),

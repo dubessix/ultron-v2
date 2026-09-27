@@ -139,7 +139,10 @@ def _gather(since: _dt.datetime, now: _dt.datetime) -> dict:
         if start is not None and now <= start <= now + _dt.timedelta(hours=24):
             upcoming.append({**event, "_start": start})
     upcoming.sort(key=lambda e: e["_start"])
-    return {"missed": missed, "tasks": today_tasks, "next_event": upcoming[0] if upcoming else None}
+    from backend.app.core import plan_context
+
+    return {"missed": missed, "tasks": today_tasks, "next_event": upcoming[0] if upcoming else None,
+            "plan": plan_context.arrival_sentences(now)}
 
 
 def _greeting(now: _dt.datetime, owner: str) -> str:
@@ -172,6 +175,7 @@ def compose(data: dict, now: _dt.datetime, owner: str = "Sir") -> str:
     if parts:
         sentence = _join(parts)
         sentences.append(sentence[0].upper() + sentence[1:] + ".")
+    sentences.extend(data.get("plan") or [])  # exam countdown + today's plan progress
     if len(sentences) == 1:
         sentences.append("Nothing needs you right now.")
     return " ".join(sentences)
@@ -213,7 +217,10 @@ def due_warnings(now: Optional[_dt.datetime] = None, owner: str = "Sir") -> list
     with get_db_connection() as conn:
         tasks = [dict(r) for r in conn.execute(
             "SELECT id, title, due_date FROM project_tasks WHERE status != 'done' AND due_date IS NOT NULL LIMIT 300")]
-        events = [dict(r) for r in conn.execute("SELECT id, title, start_time FROM calendar_events LIMIT 500")]
+        events = [dict(r) for r in conn.execute(
+            "SELECT id, title, description, start_time, end_time, category FROM calendar_events LIMIT 500")]
+    from backend.app.core import plan_context
+
     out: list[dict] = []
     with _lock:
         state = _load()
@@ -232,6 +239,14 @@ def due_warnings(now: Optional[_dt.datetime] = None, owner: str = "Sir") -> list
                             "minutes": minutes,
                             "speech": f"{owner}, heads up: {_clean(task['title'])} is due in {_minutes_text(minutes)}."})
         for event in events:
+            if str(event.get("category") or "").startswith("plan"):
+                # plan blocks: "starts now" / "finished it?" instead of the 15-minute warning
+                for key, speech in plan_context.plan_speech(event, now, owner):
+                    if key not in warned:
+                        warned.add(key)
+                        out.append({"type": "heads_up", "kind": "plan", "title": _clean(event["title"]),
+                                    "minutes": 0, "speech": speech})
+                continue
             start = _as_local(event["start_time"])
             if start is None:
                 continue

@@ -47,6 +47,20 @@ def check_port_availability(port: int, host: str = "127.0.0.1") -> bool:
         except OSError:
             return False
 
+def port_used_by_ultron(port: int, backend: bool) -> bool:
+    """A busy port is fine when Ultron himself is the one using it (doctor run while he runs)."""
+    try:
+        import httpx
+
+        if backend:
+            response = httpx.get(f"http://127.0.0.1:{port}/api/health", timeout=2.0)
+            return response.status_code == 200 and isinstance(response.json(), dict)
+        response = httpx.get(f"http://127.0.0.1:{port}/", timeout=2.0)
+        return response.status_code == 200 and "ultron" in response.text[:4000].lower()
+    except Exception:
+        return False
+
+
 def load_yaml_config():
     """Load configuration variables safely."""
     if not CONFIG_PATH.exists():
@@ -194,6 +208,8 @@ def doctor():
         available = check_port_availability(port)
         if available:
             click.echo(f"  ✓ Port {port:<5}: Available for {name}")
+        elif port_used_by_ultron(port, backend=(port == backend_port)):
+            click.echo(f"  ✓ Port {port:<5}: In use by Ultron ({name} is running)")
         else:
             click.echo(click.style(f"  ✗ Port {port:<5}: Occupied. Cannot boot {name} service.", fg="red"))
             all_green = False

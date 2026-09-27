@@ -117,7 +117,8 @@ def check_brain_state(port: int, fetch: Optional[Callable[[str], dict]] = None) 
         if not isinstance(item, dict) or not item.get("configured"):
             continue
         states = item.get("key_states") or {}
-        line = (f"{provider} now: {states.get('active', 0)} keys ready, "
+        ready = states.get('active', 0)
+        line = (f"{provider} now: {ready} key{'' if ready == 1 else 's'} ready, "
                 f"{states.get('cooling', 0)} resting, {states.get('failed', 0)} broken")
         rests = item.get("model_rests") or []
         if rests:

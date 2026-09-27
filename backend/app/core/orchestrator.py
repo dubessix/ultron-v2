@@ -792,7 +792,8 @@ class CognitiveOrchestrator:
             # "Should I open YouTube?" -> "ok do": approved, do exactly what you offered.
             self._turn_owner_yes = True
             return tool_id, args, {"success": True, "data": {
-                "message": "Owner approved your offer. Do it now with the right tool; no second question."},
+                "message": ("Owner approved your offer. Do it now with the right tool; no second question. "
+                            "Then handle anything else he asked in the same message.")},
                 "error": None}
         return tool_id, args, {"success": False, "data": {},
                                "error": "Nothing was waiting for an answer. Treat the message as a normal request."}
@@ -1244,7 +1245,7 @@ class CognitiveOrchestrator:
     @staticmethod
     def _action_mandate_block() -> str:
         """System-prompt clause that makes the model act like Jarvis, not a chatbot."""
-        from backend.app.core.control_tools import control_rules
+        from backend.app.core.control_tools import care_rules, control_rules
 
         return (
             "\n\n[ACTION MANDATE]\n"
@@ -1272,7 +1273,7 @@ class CognitiveOrchestrator:
             "running program. Servers and GUI programs: terminal_run mode=background. A result with "
             "running=true is not finished: say it is still going. New files go to ~/Documents/Ultron "
             "unless he names a place.\n"
-            + control_rules() +
+            + control_rules() + care_rules() +
             "- Never claim something happened unless a tool result this turn confirms it.\n"
             "- Greetings, small talk and knowledge questions: answer directly, no tools.\n"
             "- Research or writing jobs (report, biography, essay, notes, project): research first "
@@ -1592,6 +1593,13 @@ class CognitiveOrchestrator:
             system_prompt += "\n" + await asyncio.to_thread(live_line)
         except Exception as exc:
             print(f"[COGNITIVE_ORCHESTRATOR] live line skipped: {exc}")
+        # Exams/deadlines coming up + today's plan (empty on a normal day = 0 tokens).
+        try:
+            from backend.app.core.plan_context import prompt_lines
+
+            system_prompt += await asyncio.to_thread(prompt_lines)
+        except Exception as exc:
+            print(f"[COGNITIVE_ORCHESTRATOR] plan lines skipped: {exc}")
         system_prompt += self._open_question_note(session_id)
         if not project_root:
             system_prompt += (
