@@ -1103,6 +1103,61 @@ class LLMRouter:
                 raise RuntimeError("Gemini returned an invalid response schema") from exc
         raise RuntimeError("Gemini key pool is unavailable")
 
+    async def look_at_image(self, image: bytes, mime_type: str, question: str) -> str:
+        """Screen vision: Gemini (free, multimodal) answers a question about one
+        picture. Only called when the owner asks, so it costs ~1,120 tokens per
+        look (Gemini 3 default) and nothing otherwise. Plain text back, or a
+        RuntimeError with a short honest reason."""
+        import base64
+
+        provider = "gemini"
+        if not self.key_manager.has_real_key(provider):
+            raise RuntimeError("Screen vision needs a Gemini key (GEMINI_API_KEY_1 in the .env file).")
+        if not image:
+            raise RuntimeError("The picture is empty.")
+        if len(image) > 15 * 1024 * 1024:
+            raise RuntimeError("The picture is too big to send (over 15 MB).")
+        prompt = (
+            "You are the eyes of a desktop assistant. Answer the owner's question about this "
+            "picture of his screen in at most 4 short sentences. Quote exact text (errors, names, "
+            "numbers) when it matters. If something cannot be read, say so.\n\nQuestion: "
+            + (question.strip() or "What is on the screen?")
+        )
+        payload = {
+            "contents": [{"role": "user", "parts": [
+                {"text": prompt},
+                {"inlineData": {"mimeType": mime_type, "data": base64.b64encode(image).decode("ascii")}},
+            ]}],
+            "generationConfig": {"temperature": 0.2, "maxOutputTokens": 600},
+        }
+        for attempt in range(self.provider_attempts):
+            model = get_model(provider)
+            key = self.key_manager.get_active_key(provider)
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+            try:
+                response = await self.client.post(
+                    url, headers={"Content-Type": "application/json", "x-goog-api-key": key},
+                    json=payload, timeout=max(30.0, float(self.request_timeout)),
+                )
+            except httpx.RequestError as exc:
+                if attempt == self.provider_attempts - 1:
+                    raise RuntimeError(f"Could not reach Gemini: {exc}") from exc
+                await self._short_pause(attempt)
+                continue
+            if response.status_code != 200:
+                if self._classify_http_failure(provider, key, response) == "pause":
+                    await self._short_pause(attempt)
+                continue
+            try:
+                parts = response.json()["candidates"][0]["content"]["parts"]
+                text = " ".join(str(part.get("text") or "") for part in parts).strip()
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                raise RuntimeError("Gemini sent back an answer I could not read.") from exc
+            if text:
+                return text
+            raise RuntimeError("Gemini looked but gave no answer.")
+        raise RuntimeError("Every Gemini key is busy right now. Try again in a minute.")
+
     async def _execute_nvidia_pipeline(self, system_prompt: str, user_prompt: str, temperature: float) -> str:
         provider = "nvidia"
         url = "https://integrate.api.nvidia.com/v1/chat/completions"

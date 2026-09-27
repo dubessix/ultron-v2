@@ -9,9 +9,18 @@ Every command Ultron runs becomes a small "job":
   * status / stop work by job id, and stop kills the whole process tree;
   * the AI sees only the head + tail of long output; the full log stays on disk.
 
-Light for an old PC: no threads, no pipes to drain, a 0.25 s poll while
-waiting, old logs pruned, huge logs trimmed. Nothing here ever raises into the
-agent loop - callers get plain dicts.
+Light for an old PC: no pipes to drain, a 0.25 s poll while waiting, old logs
+pruned, huge logs trimmed. Nothing here ever raises into the agent loop -
+callers get plain dicts.
+
+Safety cap (owner: "a bad command must not freeze my 8 GB PC"): every job runs
+at low priority (the UI and voice stay smooth on 2 cores), and one small guard
+thread - alive only while jobs run - stops a job whose whole process tree goes
+over the RAM limit (default 2 GB), or that is the big eater when the PC is
+nearly out of memory, or a normal (not background) command that runs longer
+than the time limit (default 30 min). Servers started on purpose in background
+mode have no time limit. The reason is written into the job's error log, so
+the AI reads it and says it honestly.
 """
 
 from __future__ import annotations
@@ -34,6 +43,26 @@ MAX_JOBS_KEPT = 25
 LOG_KEEP_SECONDS = 2 * 86400
 MAX_LOG_BYTES = 20 * 1024 * 1024
 TRIMMED_KEEP_BYTES = 256 * 1024
+GUARD_INTERVAL_SECONDS = 2.0
+LOW_MEMORY_MB = 350  # PC nearly out of memory: the biggest job (over 500 MB) is stopped
+LOW_MEMORY_JOB_MB = 500
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def memory_limit_mb() -> int:
+    """RAM cap per job tree (0 = off). ULTRON_JOB_MEMORY_MB overrides."""
+    return _env_int("ULTRON_JOB_MEMORY_MB", 2048)
+
+
+def time_limit_seconds() -> int:
+    """Time cap for normal commands (0 = off). ULTRON_JOB_MAX_MINUTES overrides."""
+    return _env_int("ULTRON_JOB_MAX_MINUTES", 30) * 60
 
 # Programs read these and stop asking questions.
 NON_INTERACTIVE_ENV = {
@@ -52,6 +81,8 @@ NON_INTERACTIVE_ENV = {
 
 _lock = threading.Lock()
 _procs: dict[str, subprocess.Popen] = {}  # live handles for jobs started by this process
+_limits: dict[str, dict] = {}  # job id -> {"deadline": monotonic or None}
+_guard_thread: Optional[threading.Thread] = None
 
 
 def _dir() -> Path:
@@ -93,8 +124,10 @@ def _create_time(pid: int) -> Optional[float]:
         return None
 
 
-def start(command: str, cwd: str, *, use_shell: bool, argv: Optional[list[str]] = None) -> dict:
-    """Start a job detached from Ultron's own process; returns its record."""
+def start(command: str, cwd: str, *, use_shell: bool, argv: Optional[list[str]] = None,
+          timed: bool = True) -> dict:
+    """Start a job detached from Ultron's own process; returns its record.
+    `timed=False` (background servers) skips the time limit, never the RAM cap."""
     prune()
     job_id = uuid.uuid4().hex[:8]
     folder = _dir()
@@ -102,9 +135,9 @@ def start(command: str, cwd: str, *, use_shell: bool, argv: Optional[list[str]] 
     env = {**os.environ, **NON_INTERACTIVE_ENV}
     kwargs: dict[str, Any] = {"cwd": cwd, "stdin": subprocess.DEVNULL, "env": env}
     if IS_WINDOWS:
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
-            subprocess, "CREATE_NO_WINDOW", 0
-        )
+        kwargs["creationflags"] = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                                   | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                   | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
     else:
         kwargs["start_new_session"] = True
     with open(out_path, "ab") as out, open(err_path, "ab") as err:
@@ -117,12 +150,127 @@ def start(command: str, cwd: str, *, use_shell: bool, argv: Optional[list[str]] 
         "started": time.time(), "create_time": _create_time(proc.pid),
         "out": str(out_path), "err": str(err_path), "exit_code": None, "ended": None,
     }
+    if not IS_WINDOWS:
+        _lower_priority(proc.pid)
+    seconds = time_limit_seconds() if timed else 0
     with _lock:
         _procs[job_id] = proc
+        _limits[job_id] = {"deadline": time.monotonic() + seconds if seconds else None}
         jobs = _load()
         jobs[job_id] = record
         _save(jobs)
+    _ensure_guard()
     return record
+
+
+def _lower_priority(pid: int) -> None:
+    """Children inherit it: builds and installs yield the CPU to voice and UI."""
+    try:
+        import psutil
+
+        psutil.Process(pid).nice(10)
+    except Exception:
+        pass
+
+
+def _tree_rss_mb(pid: int) -> float:
+    try:
+        import psutil
+
+        parent = psutil.Process(pid)
+        total = 0
+        for proc in [parent, *parent.children(recursive=True)]:
+            try:
+                total += proc.memory_info().rss
+            except psutil.Error:
+                pass
+        return total / (1024 * 1024)
+    except Exception:
+        return 0.0
+
+
+def _available_mb() -> float:
+    try:
+        import psutil
+
+        return psutil.virtual_memory().available / (1024 * 1024)
+    except Exception:
+        return float("inf")
+
+
+def _over_limit(job_id: str, proc: subprocess.Popen) -> Optional[str]:
+    """Why this job must stop now, or None."""
+    limit = memory_limit_mb()
+    used = _tree_rss_mb(proc.pid)
+    if limit and used > limit:
+        return (f"it used {used / 1024:.1f} GB of memory (limit {limit / 1024:.1f} GB), "
+                "so it was stopped to keep the PC from freezing")
+    if used > LOW_MEMORY_JOB_MB and _available_mb() < LOW_MEMORY_MB:
+        return (f"the PC was almost out of memory and this command used {used:.0f} MB, "
+                "so it was stopped to keep the PC from freezing")
+    deadline = (_limits.get(job_id) or {}).get("deadline")
+    if deadline and time.monotonic() > deadline:
+        minutes = max(1, round(time_limit_seconds() / 60))
+        return (f"it ran longer than {minutes} minutes. For long jobs or servers use "
+                "mode=background (no time limit)")
+    return None
+
+
+def _stop_for(job_id: str, proc: subprocess.Popen, reason: str) -> None:
+    record = _load().get(job_id) or {}
+    try:
+        with open(record.get("err") or os.devnull, "a", encoding="utf-8") as err:
+            err.write(f"\n[Ultron safety cap] This command was stopped: {reason}.\n")
+    except OSError:
+        pass
+    _kill_tree(proc.pid)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    with _lock:
+        jobs = _load()
+        if job_id in jobs:
+            jobs[job_id]["stopped_reason"] = reason
+            _save(jobs)
+    _mark_ended(job_id, -9)
+
+
+def guard_once() -> list[str]:
+    """One check of every live job; returns the ids that were stopped."""
+    stopped = []
+    for job_id, proc in list(_procs.items()):
+        if proc.poll() is not None:
+            _limits.pop(job_id, None)
+            continue
+        reason = _over_limit(job_id, proc)
+        if reason:
+            _stop_for(job_id, proc, reason)
+            stopped.append(job_id)
+    return stopped
+
+
+def _guard_loop() -> None:
+    global _guard_thread
+    while True:
+        time.sleep(GUARD_INTERVAL_SECONDS)
+        try:
+            guard_once()
+        except Exception:
+            pass  # the guard must never die on one odd process
+        with _lock:
+            if not any(proc.poll() is None for proc in _procs.values()):
+                _guard_thread = None  # nothing to watch: the thread ends (0 cost when idle)
+                return
+
+
+def _ensure_guard() -> None:
+    global _guard_thread
+    with _lock:
+        if _guard_thread is not None and _guard_thread.is_alive():
+            return
+        _guard_thread = threading.Thread(target=_guard_loop, name="ultron-job-guard", daemon=True)
+        _guard_thread.start()
 
 
 def _poll(job_id: str) -> Optional[int]:
@@ -159,6 +307,7 @@ def _mark_ended(job_id: str, code: int) -> None:
             jobs[job_id].update(exit_code=code, ended=time.time())
             _save(jobs)
         _procs.pop(job_id, None)
+        _limits.pop(job_id, None)
 
 
 async def wait(job_id: str, seconds: float, should_stop: Optional[Callable[[], bool]] = None) -> Optional[int]:
@@ -267,6 +416,7 @@ def status(job_id: Optional[str] = None) -> dict:
             "job_id": record["id"], "command": record["command"], "cwd": record["cwd"],
             "running": code is None, "exit_code": code,
             "seconds": int((record.get("ended") or time.time()) - record["started"]),
+            **({"stopped_by_safety_cap": record["stopped_reason"]} if record.get("stopped_reason") else {}),
             **output(record)}}
     rows = []
     for record in sorted(jobs.values(), key=lambda r: r["started"], reverse=True)[:10]:

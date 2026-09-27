@@ -717,6 +717,8 @@ class ClipboardTool(BaseTool):
 # ---------------------------------------------------------------------------
 class ScreenshotArgs(BaseModel):
     open_after: bool = Field(False, description="Open the picture after saving.")
+    question: str = Field("", description="Look and answer, e.g. 'read the error'. Empty = only save.")
+    image_path: str = Field("", description="Look at this image file instead of taking a screenshot.")
 
 
 class ScreenshotTool(BaseTool):
@@ -724,15 +726,51 @@ class ScreenshotTool(BaseTool):
         super().__init__(
             tool_id="screenshot",
             name="Screenshot",
-            description="Take a screenshot of the whole screen and save it to Pictures/Ultron.",
+            description=("Take a screenshot (saved to Pictures/Ultron) and, with a question, LOOK at it: "
+                         "read errors, explain what is on screen. Also looks at any image file."),
             category="system",
-            tags=["screenshot", "screen shot", "capture screen", "snap"],
+            tags=["screenshot", "screen shot", "capture screen", "snap", "what's on my screen", "see",
+                  "look", "read this error", "vision", "image"],
             permission_level=1,
             args_model=ScreenshotArgs,
-            usage_examples=["screenshot()"],
+            usage_examples=["screenshot()", "screenshot(question='read the error on screen')",
+                            "screenshot(image_path='~/Pictures/photo.jpg', question='what is this?')"],
         )
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
+        question = str(kwargs.get("question") or "").strip()
+        image_path = str(kwargs.get("image_path") or "").strip()
+        if image_path:
+            return await self._look_at_file(image_path, question)
+        shot = await self._capture(bool(kwargs.get("open_after")))
+        if not shot["success"] or not question:
+            return shot
+        return await self._look(Path(shot["data"]["saved_to"]), question, shot["data"])
+
+    _MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+             ".gif": "image/gif", ".bmp": "image/bmp", ".heic": "image/heic"}
+
+    async def _look_at_file(self, raw: str, question: str) -> Dict[str, Any]:
+        path = Path(os.path.expandvars(raw)).expanduser()
+        if not path.is_file():
+            return _fail(f"No image file at {path}.")
+        if path.suffix.lower() not in self._MIME:
+            return _fail(f"{path.name} is not a picture I can look at (png, jpg, webp, gif, bmp).")
+        return await self._look(path, question or "What is in this picture?", {"image": str(path)})
+
+    async def _look(self, path: Path, question: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Send the picture to the vision model; the saved file is kept either way."""
+        from backend.app.router import get_orchestrator
+
+        try:
+            image = await asyncio.to_thread(path.read_bytes)
+            answer = await get_orchestrator().router.look_at_image(
+                image, self._MIME.get(path.suffix.lower(), "image/png"), question)
+        except Exception as exc:  # no key, offline, busy: say it plainly
+            return _fail(f"I have the picture but could not look at it: {exc}", **data)
+        return _ok(**data, question=question, seen=answer)
+
+    async def _capture(self, open_after: bool) -> Dict[str, Any]:
         from backend.app.security.path_locator import home_folder
 
         folder = (home_folder("Pictures") or Path.home() / "Pictures") / "Ultron"
@@ -756,7 +794,7 @@ class ScreenshotTool(BaseTool):
                 continue
             code, _out, err = await _run(argv, timeout=20)
             if code == 0 and target.exists() and target.stat().st_size > 0:
-                if kwargs.get("open_after"):
+                if open_after:
                     await asyncio.to_thread(FileActionsTool._open, target, False)
                 return _ok(saved_to=str(target), size_kb=round(target.stat().st_size / 1024))
         return _fail("No screenshot program worked. On Ubuntu install gnome-screenshot.")

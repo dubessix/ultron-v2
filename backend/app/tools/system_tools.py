@@ -414,7 +414,8 @@ class TerminalRunTool(BaseTool):
 
         try:
             job = await asyncio.to_thread(
-                terminal_jobs.start, command, str(project_root), use_shell=use_shell, argv=argv
+                terminal_jobs.start, command, str(project_root), use_shell=use_shell, argv=argv,
+                timed=mode != "background",  # servers keep running; normal commands get the time cap
             )
         except OSError as exc:
             return {"success": False, "error": f"Could not start the command: {exc}", "data": {}}
@@ -445,7 +446,8 @@ class TerminalRunTool(BaseTool):
         if code is None:
             return {"success": True, "error": None, "data": {
                 "exit_code": None, "running": True, "job_id": job["id"], "cwd": str(project_root),
-                "note": f"Still running after {seconds}s, so it keeps going in the background. "
+                "note": f"Still running after {seconds}s, so it keeps going in the background"
+                        f"{_time_cap_hint(terminal_jobs.time_limit_seconds())}. "
                         "Not finished yet: say so. Check with mode=status, end with mode=stop.",
                 **out, "self_healing_fix": None}}
 
@@ -461,6 +463,12 @@ class TerminalRunTool(BaseTool):
                 program = command.split()[0]
                 error = f"'{program}' is not installed or not on PATH. {error}".strip()
         return {"success": code == 0, "data": data, "error": error}
+
+
+def _time_cap_hint(cap_seconds: int) -> str:
+    if not cap_seconds:
+        return ""
+    return f" (stopped after {max(1, cap_seconds // 60)} min; servers belong in mode=background)"
 
 
 async def _launch_verified(candidates, args=None):
