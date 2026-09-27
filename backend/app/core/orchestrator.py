@@ -537,6 +537,29 @@ class CognitiveOrchestrator:
         except Exception:
             return ""
 
+    def _open_question_note(self, session_id: str) -> str:
+        """While Ultron's last reply is a question, say exactly which one (owner bug:
+        "why." after the espeak question got an answer about an older mpv question)."""
+        from backend.app.core import approval
+        from backend.app.security.pending_actions import get_pending_action_registry
+
+        try:
+            last = self._last_ai_reply(session_id)
+            if not approval.asked_question(last):
+                return ""
+            waiting = get_pending_action_registry().awaiting_for_session(session_id)
+        except Exception:
+            return ""
+        step = ""
+        if waiting:
+            step = f" Waiting step: {waiting['tool_id']} {bounded_text(str(waiting.get('summary') or ''), 200)}."
+        return (
+            "\n[OPEN QUESTION] Your last message asked: \""
+            + bounded_text(last.strip()[-300:], 300) + "\"." + step
+            + " If he answers it, call owner_reply. If he asks why or what it means, explain THIS "
+            "step and your reason in one or two lines, then ask again. Never answer about an older question."
+        )
+
     def _control_tool_definitions(self, session_id: str) -> list[dict]:
         """owner_reply only when there is something to answer (switch_mode lives in
         the cached prompt and is called through use_tool, so it costs no tokens)."""
@@ -1238,8 +1261,9 @@ class CognitiveOrchestrator:
             "- Never ask permission in words for what he asked: call the tool. The app itself asks "
             "before risky steps. Something he did NOT ask for (a reminder, a timer, closing an app): "
             "offer it in one short line (\"Shall I set a reminder for your exam, Sir?\") and wait.\n"
-            "- Small doubt (name, folder, style, extras): pick the normal default, do it, and mention it "
-            "in half a sentence (\"Plain React; say if you want Tailwind.\").\n"
+            "- Small doubt (name, title, folder, style, extras): pick the normal default, do it, and mention it "
+            "in half a sentence (\"Plain React; say if you want Tailwind.\"). A timer or focus session "
+            "he asks for starts now with a fitting title; never ask for a title or start time.\n"
             "- Ask only when two or more real matches exist (one short question listing them), the "
             "target is missing, or something must be installed.\n"
             "- Shell: use non-interactive flags (--yes, -y, --no-interactive); nothing can type into a "
@@ -1249,8 +1273,17 @@ class CognitiveOrchestrator:
             + control_rules() +
             "- Never claim something happened unless a tool result this turn confirms it.\n"
             "- Greetings, small talk and knowledge questions: answer directly, no tools.\n"
+            "- Research or writing jobs (report, biography, essay, notes, project): research first "
+            "(google_search, then read_current_page with url on the best two or three results; "
+            "more when he says deep or full). Write ONLY facts found in those results; if sources "
+            "disagree or a fact is missing, say so instead of guessing. Write the FULL piece with "
+            "headings and a Sources list at the end into a file with file_write (Markdown, in "
+            "~/Documents/Ultron unless he names a place, a clear name like MS_Dhoni_Biography.md), "
+            "open it for him, and reply with two or three lines on what is in it and where. Never "
+            "shorten what he asked to be full.\n"
             "- Final reply: short, warm and natural like Jarvis, result first in real words, one to "
-            "three sentences (\"Demon Slayer is playing, Sir.\"), never a bare \"Done\". But when he asks you to read, list or tell him something "
+            "three sentences (\"Demon Slayer is playing, Sir.\"), never a bare \"Done\". "
+            "But when he asks you to read, list or tell him something "
             "(news, a file, a list), give all of it.\n"
         )
 
@@ -1557,6 +1590,7 @@ class CognitiveOrchestrator:
             system_prompt += "\n" + await asyncio.to_thread(live_line)
         except Exception as exc:
             print(f"[COGNITIVE_ORCHESTRATOR] live line skipped: {exc}")
+        system_prompt += self._open_question_note(session_id)
         if not project_root:
             system_prompt += (
                 " The requested project ID has no allowlisted canonical root, so local "

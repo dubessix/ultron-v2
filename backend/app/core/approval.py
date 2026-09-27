@@ -39,6 +39,24 @@ RISKY_COMMAND = re.compile(
 )
 
 
+# Apps that hold nothing to save: players, viewers, monitors. Closing them needs no "yes".
+NOTHING_TO_SAVE_APPS = frozenset({
+    "mpv", "vlc", "totem", "celluloid", "smplayer", "mplayer", "haruna", "videos",
+    "rhythmbox", "spotify", "audacious", "lollypop", "amberol", "music",
+    "eog", "loupe", "shotwell", "gwenview", "image viewer", "evince", "papers", "okular",
+    "document viewer", "gnome-calculator", "calculator", "gnome-system-monitor",
+    "system monitor", "nautilus", "files", "gnome-clocks", "clocks", "gnome-weather",
+    "weather", "cheese", "snapshot", "camera", "gnome-calendar", "calendar",
+})
+
+
+def _nothing_to_save(app_name: Any) -> bool:
+    name = str(app_name or "").strip().lower().replace("\\", "/").rsplit("/", 1)[-1]
+    name = name.removesuffix(".desktop").removesuffix(".exe")
+    name = name.rsplit(".", 1)[-1] if name.startswith(("org.", "io.", "com.")) else name
+    return name in NOTHING_TO_SAVE_APPS
+
+
 def needs_ask(tool_id: str, arguments: dict, level: int) -> bool:
     """Personal turn: must the owner approve this exact step first?"""
     args = arguments or {}
@@ -46,7 +64,7 @@ def needs_ask(tool_id: str, arguments: dict, level: int) -> bool:
         return True
     action = str(args.get("action") or "").lower()
     if tool_id == "apps" and action == "close":
-        return True  # unsaved work may be lost
+        return not _nothing_to_save(args.get("name"))  # editors etc. may hold unsaved work
     if tool_id == "pc_control" and action in {"sleep", "restart", "shutdown"}:
         return True
     if tool_id == "terminal_run":
