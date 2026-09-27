@@ -204,7 +204,7 @@ print('installed_resources_ok')
     def test_clean_installed_cli_setup_doctor_and_start_check(self):
         version = self._installed_command("version")
         self.assertEqual(version.returncode, 0, version.stdout)
-        self.assertIn("Version: 1.0.0", version.stdout)
+        self.assertIn("Version: 2.0.0", version.stdout)
 
         setup = self._installed_command("setup")
         self.assertEqual(setup.returncode, 0, setup.stdout)

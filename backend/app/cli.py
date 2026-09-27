@@ -66,7 +66,7 @@ def main():
 def version():
     """Print the current active version of the Ultron system."""
     config = load_yaml_config()
-    version_str = config.get("ultron", {}).get("version", "1.0.0")
+    version_str = config.get("ultron", {}).get("version", "2.0.0")
     click.echo(click.style(f"ULTRON Core Engine — Version: {version_str}", fg="cyan", bold=True))
 
 @main.command()

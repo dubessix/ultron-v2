@@ -182,7 +182,7 @@ def check_autostart() -> list[Check]:
         return [("warn", f"Could not read autostart: {exc}", "")]
     if info["enabled"]:
         return [("ok", f"Starts at login ({info['how']}) and restarts after a crash.", "")]
-    return [("warn", "Ultron does not start at login.", "Run: ultron autostart on")]
+    return [("warn", "Ultron does not start at login.", "Optional: cd ~/ultron-v2 && .venv/bin/python -m backend.app.cli autostart on")]
 
 
 def check_data_folder(home: Path) -> list[Check]:

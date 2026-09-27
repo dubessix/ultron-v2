@@ -50,7 +50,7 @@ async def application_lifespan(_app: FastAPI):
 app = FastAPI(
     title="ULTRON CORE ENGINE API",
     description="Asynchronous processing gateway for local system automation and developer chat.",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=application_lifespan,
 )
 

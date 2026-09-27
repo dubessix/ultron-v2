@@ -53,7 +53,7 @@ def _runtime_data_files() -> list[tuple[str, list[str]]]:
 
 setup(
     name="ultron",
-    version="1.0.0",
+    version="2.0.0",
     packages=find_namespace_packages(include=["backend*"], exclude=["tests*"]),
     package_data={
         "backend.app.personalities": ["*.md"],
