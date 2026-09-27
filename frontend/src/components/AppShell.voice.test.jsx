@@ -74,6 +74,7 @@ function openVoiceSession(props = {}) {
 }
 
 beforeEach(() => {
+  try { window.localStorage.clear(); } catch (_error) {}
   voiceHarness.state = {};
   voiceHarness.options = null;
   baseProps.onVoiceStop.mockClear();
@@ -199,3 +200,33 @@ describe('Infinity button (always listen)', () => {
     expect(window.localStorage.getItem('ultron.alwaysListen')).toBe('0');
   });
 });
+
+describe('owner fix: mic follows infinity, one click recovers, no silent deafness', () => {
+  it('infinity remembered ON: after a reload the mic is ON too', () => {
+    window.localStorage.setItem('ultron.alwaysListen', '1');
+    render(<AppShell {...baseProps} />);
+    expect(voiceHarness.options.enabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Stop voice session' })).toBeTruthy();
+  });
+
+  it('infinity OFF: the mic still starts off (old behaviour)', () => {
+    render(<AppShell {...baseProps} />);
+    expect(voiceHarness.options.enabled).toBe(false);
+  });
+
+  it('mic with an error: one click retries instead of switching off', () => {
+    const retry = vi.fn();
+    voiceHarness.state = { voiceError: 'Microphone is blocked.', retry };
+    openVoiceSession();
+    fireEvent.click(screen.getByRole('button', { name: 'Stop voice session' }));
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(voiceHarness.options.enabled).toBe(true);
+  });
+
+  it('no sound reaching the mic: says so in the red box', () => {
+    voiceHarness.state = { isListening: true, noSound: true };
+    openVoiceSession();
+    expect(screen.getByTestId('voice-status').textContent).toContain('no sound reaches the mic');
+  });
+});
+

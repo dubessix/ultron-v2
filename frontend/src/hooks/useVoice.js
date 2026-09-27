@@ -74,6 +74,9 @@ const RESTART_BASE_MS = 500;
 const RESTART_MAX_MS = 4000;
 const RESTART_MAX_ATTEMPTS = 5;
 const RESTART_RECOVERY_GRACE_MS = 2200;
+// Mic on but not one sound in this long (Ultron not talking): the browser mic is
+// probably the wrong input or muted. Say so instead of staying silently deaf.
+export const NO_SOUND_HINT_MS = 20000;
 
 function isWordCharacter(value) {
   return Boolean(value) && /[\p{L}\p{N}_]/u.test(value);
@@ -171,6 +174,7 @@ export default function useVoice({
   const [conversationActive, setConversationActive] = useState(false);
   const [heardText, setHeardText] = useState('');
   const [voiceError, setVoiceError] = useState('');
+  const [noSound, setNoSound] = useState(false);
   const supported = typeof window !== 'undefined' && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
 
   const recRef = useRef(null);
@@ -204,6 +208,8 @@ export default function useVoice({
   const wakeTimerRef = useRef(null);
   const recoveryTimerRef = useRef(null);
   const restartTimerRef = useRef(null);
+  const noSoundTimerRef = useRef(null);
+  const heardSoundRef = useRef(false);
   const restartAttemptRef = useRef(0);
   const restartSchedulerRef = useRef(null);
   const dispatchRef = useRef(() => {});
@@ -233,6 +239,29 @@ export default function useVoice({
   }, [clearTimer]);
 
   const clearRestartTimer = useCallback(() => clearTimer(restartTimerRef), [clearTimer]);
+
+  // Any sound or words from the mic proves it works: hide the hint for good.
+  const markSound = useCallback(() => {
+    heardSoundRef.current = true;
+    clearTimer(noSoundTimerRef);
+    setNoSound(false);
+  }, [clearTimer]);
+
+  const armNoSound = useCallback(() => {
+    clearTimer(noSoundTimerRef);
+    heardSoundRef.current = false;
+    setNoSound(false);
+    const check = () => {
+      noSoundTimerRef.current = null;
+      if (heardSoundRef.current || !enabledRef.current || fatalRef.current) return;
+      if (pausedRef.current) {
+        noSoundTimerRef.current = setTimeout(check, NO_SOUND_HINT_MS); // Ultron talking: wait more
+        return;
+      }
+      setNoSound(true);
+    };
+    noSoundTimerRef.current = setTimeout(check, NO_SOUND_HINT_MS);
+  }, [clearTimer]);
 
   const resetTurn = useCallback((clearHeard = false, preserveDispatchLock = false) => {
     capturingRef.current = false;
@@ -460,8 +489,11 @@ export default function useVoice({
     recognizer.maxAlternatives = 3;
     recognizer.lang = RECOG_LANG;
 
+    recognizer.onsoundstart = () => { if (recRef.current === recognizer) markSound(); };
+    recognizer.onspeechstart = recognizer.onsoundstart;
     recognizer.onresult = (event) => {
       if (recRef.current !== recognizer || !enabledRef.current) return;
+      if (!heardSoundRef.current) markSound();
       if (pausedRef.current) {
         // Ultron is working: only a stop word counts, everything else is ignored.
         if (!listenForStopRef.current || stopSentRef.current) return;
@@ -524,8 +556,8 @@ export default function useVoice({
       }
 
       const fatalMessages = {
-        'not-allowed': 'Microphone permission was denied.',
-        'audio-capture': 'No microphone input is available in this browser or remote desktop.',
+        'not-allowed': 'Microphone is blocked. Click the lock icon left of the address, allow Microphone, then click the mic button.',
+        'audio-capture': 'No microphone input is available. Plug in or pick a mic in Settings, Sound, Input, then click the mic button.',
         'language-not-supported': 'The selected voice recognition language is unsupported.',
         'bad-grammar': 'The browser rejected the voice recognition configuration.',
       };
@@ -618,6 +650,7 @@ export default function useVoice({
     beginWakeTurn,
     clearRestartTimer,
     clearTimer,
+    markSound,
     micOff,
     resetTurn,
     scheduleRestart,
@@ -638,18 +671,21 @@ export default function useVoice({
     resetTurn(true);
     setIsListening(false);
     setVoiceError('');
-  }, [clearRestartTimer, clearTurnTimers, resetTurn]);
+    clearTimer(noSoundTimerRef);
+    setNoSound(false);
+  }, [clearRestartTimer, clearTurnTimers, resetTurn, clearTimer]);
 
   useEffect(() => {
     if (enabled) {
       fatalRef.current = false;
       networkErrorsRef.current = 0;
       start();
+      armNoSound();
     } else {
       stop();
     }
     return () => { stop(); };
-  }, [enabled, start, stop]);
+  }, [enabled, start, stop, armNoSound]);
 
   // Processing/TTS remains an explicit App-level pause in this private project.
   // Option A does not preserve a follow-up conversation during the pause; after
@@ -681,7 +717,17 @@ export default function useVoice({
   useEffect(() => () => {
     clearTurnTimers();
     clearRestartTimer();
-  }, [clearRestartTimer, clearTurnTimers]);
+    clearTimer(noSoundTimerRef);
+  }, [clearRestartTimer, clearTimer, clearTurnTimers]);
+
+  // One click after an error: forget the error and listen again (no off/on dance).
+  const retry = useCallback(() => {
+    stop();
+    fatalRef.current = false;
+    networkErrorsRef.current = 0;
+    start();
+    armNoSound();
+  }, [armNoSound, start, stop]);
 
   return {
     isListening,
@@ -689,8 +735,10 @@ export default function useVoice({
     conversationActive,
     heardText,
     voiceError,
+    noSound,
     supported,
     start,
     stop,
+    retry,
   };
 }

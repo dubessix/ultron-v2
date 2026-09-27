@@ -7,6 +7,7 @@ import WidgetRail from './WidgetRail';
 import useVoice from '../hooks/useVoice';
 
 const ALWAYS_LISTEN_KEY = 'ultron.alwaysListen';
+const NO_SOUND_TEXT = 'Listening, but no sound reaches the mic. Check Settings, Sound, Input and pick your microphone.';
 import { getPersonalityTheme } from '../theme/personalityTheme';
 
 // Import dynamic widget registry structures (Requirement: Never hardcode widgets in AppShell)
@@ -84,12 +85,14 @@ export default function AppShell({
     : providerLabel;
 
   // Voice control: wake-word listening wired to the bottom mic toggle.
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
   // Infinity button: keep listening with no wake word. Off = old behaviour
   // (say "Ultron" for each command). Remembered across reloads.
   const [alwaysListen, setAlwaysListen] = useState(() => {
     try { return window.localStorage?.getItem(ALWAYS_LISTEN_KEY) === '1'; } catch (_error) { return false; }
   });
+  // Owner bug: after a reload infinity stayed lit but the mic was OFF, so he
+  // talked to a deaf Ultron. Infinity remembered ON now also turns the mic on.
+  const [voiceEnabled, setVoiceEnabled] = useState(() => alwaysListen);
   const voice = useVoice({
     enabled: voiceEnabled,
     paused: Boolean(voicePaused),
@@ -103,6 +106,11 @@ export default function AppShell({
   });
 
   const handleMicToggle = () => {
+    // Mic showing an error: one click listens again (it does not switch off).
+    if (voiceEnabled && voice.voiceError) {
+      voice.retry?.();
+      return;
+    }
     setVoiceEnabled((previous) => {
       const next = !previous;
       if (!next) onVoiceStop?.("voice_session_stopped");
@@ -125,7 +133,9 @@ export default function AppShell({
     ? "Voice session off."
     : voice.voiceError
       ? voice.voiceError
-      : voicePaused
+      : voice.noSound && !voicePaused
+        ? NO_SOUND_TEXT
+        : voicePaused
         ? aiState === "speaking"
           ? "Voice paused — Ultron is speaking."
           : voiceStopListening
@@ -345,7 +355,7 @@ export default function AppShell({
               aria-label={voiceButtonLabel}
               aria-pressed={voiceEnabled}
               className={`relative flex h-8 w-8 items-center justify-center rounded-full border transition-all duration-500 ${
-                voiceEnabled && voice.voiceError
+                voiceEnabled && (voice.voiceError || (voice.noSound && !voicePaused))
                   ? "border-rose-400/35 bg-rose-500/10 text-rose-300"
                   : voiceEnabled && voicePaused
                     ? "border-amber-400/30 bg-amber-500/10 text-amber-200"
@@ -372,7 +382,7 @@ export default function AppShell({
           </div>
 
           {/* Truthful voice-session status; never infer active listening from the Mic toggle alone. */}
-          {voiceEnabled && !voice.voiceError && (
+          {voiceEnabled && !voice.voiceError && !(voice.noSound && !voicePaused) && (
             <div className="pointer-events-none absolute bottom-20 right-6 max-w-72 space-y-1.5 text-right font-mono">
               <div
                 data-testid="voice-status"
@@ -430,12 +440,12 @@ export default function AppShell({
               )}
             </div>
           )}
-          {voiceEnabled && voice.voiceError && (
+          {voiceEnabled && (voice.voiceError || (voice.noSound && !voicePaused)) && (
             <div
               data-testid="voice-status"
               className="pointer-events-none absolute bottom-20 right-6 max-w-64 rounded-lg border border-rose-400/20 bg-rose-500/10 px-3 py-2 text-right font-mono text-[8px] leading-relaxed text-rose-200"
             >
-              {voice.voiceError}
+              {voice.voiceError || NO_SOUND_TEXT}
             </div>
           )}
 

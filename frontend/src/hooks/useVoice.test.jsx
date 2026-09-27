@@ -288,7 +288,7 @@ describe('Voice Option A — resilience and honest lifecycle', () => {
 
     act(() => recognition.emitError('not-allowed'));
     advance(5000);
-    expect(hook.result.current.voiceError).toBe('Microphone permission was denied.');
+    expect(hook.result.current.voiceError).toMatch(/^Microphone is blocked/);
     expect(hook.result.current.isListening).toBe(false);
   });
 });
