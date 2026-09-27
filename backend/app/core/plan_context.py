@@ -156,7 +156,9 @@ def prompt_lines() -> str:
         events = _events()
     except Exception:
         return ""
-    lines = [line for line in (soon_line(now, events), plan_line(now, events)) if line]
+    from backend.app.core import proactive
+
+    lines = [line for line in (soon_line(now, events), plan_line(now, events), proactive.recent_line(now)) if line]
     return ("\n" + "\n".join(lines)) if lines else ""
 
 
@@ -194,7 +196,9 @@ def arrival_sentences(now: _dt.datetime, events: Optional[list[dict]] = None) ->
         return []
     out = []
     horizon = now + _dt.timedelta(days=SOON_DAYS)
-    important = sorted((e for e in events if str(e.get("category") or "") in {"exam", "deadline"}
+    from backend.app.core.proactive import IMPORTANT
+
+    important = sorted((e for e in events if str(e.get("category") or "") in IMPORTANT
                         and now <= e["_end"] and e["_start"] <= horizon), key=lambda e: e["_start"])
     if important:
         first = important[0]

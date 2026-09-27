@@ -139,10 +139,18 @@ def _gather(since: _dt.datetime, now: _dt.datetime) -> dict:
         if start is not None and now <= start <= now + _dt.timedelta(hours=24):
             upcoming.append({**event, "_start": start})
     upcoming.sort(key=lambda e: e["_start"])
-    from backend.app.core import plan_context
+    from backend.app.core import plan_context, proactive
 
-    return {"missed": missed, "tasks": today_tasks, "next_event": upcoming[0] if upcoming else None,
-            "plan": plan_context.arrival_sentences(now)}
+    try:
+        all_events = plan_context._events()
+    except Exception:
+        all_events = []
+    plan = plan_context.arrival_sentences(now, all_events)
+    next_event = upcoming[0] if upcoming else None
+    if next_event and any(_clean(next_event["title"]) in line for line in plan):
+        next_event = None  # the countdown already says it
+    return {"missed": missed, "tasks": today_tasks, "next_event": next_event, "plan": plan,
+            "followup": proactive.briefing_followup(now, all_events)}
 
 
 def _greeting(now: _dt.datetime, owner: str) -> str:
@@ -152,6 +160,9 @@ def _greeting(now: _dt.datetime, owner: str) -> str:
 
 def compose(data: dict, now: _dt.datetime, owner: str = "Sir") -> str:
     sentences = [_greeting(now, owner)]
+    sentences.extend(data.get("plan") or [])  # what matters most first: countdown + plan progress
+    if data.get("followup"):
+        sentences.append(data["followup"])
     missed = data["missed"]
     if missed:
         names = [_clean(m["title"]) for m in missed[:3]]
@@ -175,7 +186,6 @@ def compose(data: dict, now: _dt.datetime, owner: str = "Sir") -> str:
     if parts:
         sentence = _join(parts)
         sentences.append(sentence[0].upper() + sentence[1:] + ".")
-    sentences.extend(data.get("plan") or [])  # exam countdown + today's plan progress
     if len(sentences) == 1:
         sentences.append("Nothing needs you right now.")
     return " ".join(sentences)

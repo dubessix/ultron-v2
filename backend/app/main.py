@@ -91,13 +91,17 @@ class HealthStatusResponse(BaseModel):
 START_TIME = time.time()
 
 async def run_heads_up_scheduler():
-    """Once a minute: speak deadline (60 min) and event (15 min) warnings, each once."""
-    from backend.app.core import arrival
+    """Once a minute: deadline/event/plan warnings, plus JARVIS moments (PC strain,
+    evening before / late night before / after an important event). Each spoken once."""
+    from backend.app.core import arrival, proactive
 
     while True:
         try:
             for warning in arrival.due_warnings():
                 await ws_manager.broadcast("events", warning)
+            helper = bool(_browser_helper_status().get("connected"))
+            for moment in await asyncio.to_thread(proactive.run_checks, helper_connected=helper):
+                await ws_manager.broadcast("events", moment)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

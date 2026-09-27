@@ -50,7 +50,7 @@ class TestRules(unittest.TestCase):
         rules = CognitiveOrchestrator._action_mandate_block()
         for needed in ("Care and plans", "one recommendation", "don't do the fun part yet",
                        "his call", "manage_reminder", "NEW fact", "action=plan", "action=mark",
-                       "action=shift", "category exam or deadline", "Advice order"):
+                       "action=shift", "exam, deadline, interview, appointment", "Advice order"):
             self.assertIn(needed, rules)
         self.assertIn(rules.strip(), CognitiveOrchestrator._jarvis_static_prefix())  # cached once, both personas
 
