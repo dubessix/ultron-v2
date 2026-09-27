@@ -4,12 +4,15 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 echo "=============================================="
-echo "  ULTRON PERSONAL V1 - UBUNTU SETUP"
+echo "  ULTRON V2 - UBUNTU SETUP"
 echo "=============================================="
 
 missing=()
 command -v python3 >/dev/null 2>&1 || missing+=(python3)
-python3 -c 'import venv' >/dev/null 2>&1 || missing+=(python3-venv)
+# Ubuntu ships the venv module without pip (python3-venv adds it), so test for real.
+venv_probe="$(mktemp -d)"
+python3 -m venv "$venv_probe/probe" >/dev/null 2>&1 || missing+=(python3-venv)
+rm -rf "$venv_probe"
 python3 -c 'import tkinter' >/dev/null 2>&1 || missing+=(python3-tk)
 command -v git >/dev/null 2>&1 || missing+=(git)
 
