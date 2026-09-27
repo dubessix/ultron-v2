@@ -435,6 +435,9 @@ class LLMRouter:
         self.token_budget.record_usage(
             self._bucket(provider, key), usage if isinstance(usage, dict) else None
         )
+        from backend.app.brain import usage_meter
+
+        usage_meter.add(provider, usage if isinstance(usage, dict) else None)
 
     async def _respect_budget(
         self, provider: str, payload: dict[str, Any], key: Optional[str] = None

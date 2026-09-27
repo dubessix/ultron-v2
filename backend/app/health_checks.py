@@ -62,6 +62,23 @@ def check_models() -> list[Check]:
     return [("ok", line, "")]
 
 
+def check_usage_today() -> list[Check]:
+    from backend.app.brain import usage_meter
+    from backend.app.brain.api_key_manager import APIKeyManager, _looks_like_placeholder
+
+    try:
+        keys = [k for k in APIKeyManager().active_keys("groq") if not _looks_like_placeholder(k)]
+        line = usage_meter.summary_line(len(keys))
+        rows = usage_meter.today()
+    except Exception as exc:
+        return [("warn", f"Could not read today's AI use: {exc}", "")]
+    groq = rows.get("groq") or {}
+    if groq and groq.get("counted", 0) > 0.85 * 200_000 * max(1, len(keys)):
+        return [("warn", line, "Nearly at today's free limit; add a second free Groq key "
+                                "(another account) as GROQ_API_KEY_2.")]
+    return [("ok", line, "")]
+
+
 def check_browser_helper(port: int, fetch: Optional[Callable[[str], dict]] = None) -> list[Check]:
     """Asks a running Ultron whether the Chrome helper (extension) is connected."""
     url = f"http://127.0.0.1:{port}/api/health"
@@ -178,6 +195,7 @@ def run_all(*, home: Path, db_path: Path, backup_dir: Path, port: int) -> list[C
     for check in (
         check_keys,
         check_models,
+        check_usage_today,
         lambda: check_browser_helper(port),
         lambda: check_disk(home),
         lambda: check_database(db_path, backup_dir),

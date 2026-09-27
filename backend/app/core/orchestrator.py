@@ -33,6 +33,10 @@ from backend.app.core import widgets as widget_choice
 # subsequent chat requests (which each construct their own orchestrator).
 _SHARED_CODING_MODE = False
 
+# (owner chars, Ultron chars) by age: newest turn, the one before, older ones.
+_HISTORY_CAPS: tuple[tuple[int, int], ...] = ((800, 1200), (300, 400), (150, 200))
+
+
 class CognitiveOrchestrator:
     MAX_FAILURES_IN_A_ROW = 3
 
@@ -168,11 +172,20 @@ class CognitiveOrchestrator:
 
     @staticmethod
     def _format_prompt_history(turns: List[Dict[str, Any]]) -> str:
-        """Redact and bound untrusted history before adding it to a cloud prompt."""
+        """Redact and bound untrusted history before adding it to a cloud prompt.
+
+        This block is NOT cached (it changes every turn), so its tokens count on
+        every call. The newest turn stays almost whole ("ok do", "open the second
+        one" need it); older turns keep only their gist. Older detail is found
+        with manage_memory search. Worst case ~4,100 chars (was 5,000; typical ~800).
+        """
+        recent = list(turns or [])[-6:]
         lines = []
-        for turn in list(turns or [])[-6:]:
-            user = bounded_text(turn.get("user", ""), 1200)
-            assistant = bounded_text(turn.get("ai", ""), 1200)
+        for index, turn in enumerate(recent):
+            age = len(recent) - 1 - index  # 0 = newest turn
+            user_cap, ai_cap = _HISTORY_CAPS[min(age, len(_HISTORY_CAPS) - 1)]
+            user = bounded_text(turn.get("user", ""), user_cap)
+            assistant = bounded_text(turn.get("ai", ""), ai_cap)
             lines.append(f"Owner: {user}\nYou: {assistant}")
         return "\n".join(lines)[-7000:]
 
@@ -1210,7 +1223,8 @@ class CognitiveOrchestrator:
 
         return (
             "\n\n[ACTION MANDATE]\n"
-            "You are the owner's Jarvis. You don't just talk; you execute with REAL tools "
+            "You are the owner's assistant, like Jarvis but sharper (use your own name, never 'Jarvis'). "
+            "You don't just talk; you execute with REAL tools "
             "(native function calling) and YOU decide. The owner commands; you carry it out.\n"
             "- A request to DO something (open, play, find, organize, make, set up, remind...) "
             "means call tools now. Never describe what you would do or tell the owner to do it.\n"
