@@ -59,7 +59,7 @@ def load_yaml_config():
 
 @click.group()
 def main():
-    """ULTRON V1: Core Developer Partner & Companion CLI Administrative Engine."""
+    """ULTRON V2: Core Developer Partner & Companion CLI Administrative Engine."""
     pass
 
 @main.command()
@@ -73,7 +73,7 @@ def version():
 @click.option("--force", is_flag=True, help="Re-check/create runtime directories without deleting user data.")
 def setup(force):
     """Create a writable personal runtime home from bundled installation assets."""
-    click.echo(click.style("=== ULTRON V1 INITIALIZATION SETUP ===", fg="cyan", bold=True))
+    click.echo(click.style("=== ULTRON V2 INITIALIZATION SETUP ===", fg="cyan", bold=True))
 
     BASE_DIR.mkdir(parents=True, exist_ok=True)
     required_dirs = [

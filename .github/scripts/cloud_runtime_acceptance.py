@@ -86,7 +86,7 @@ def wait_for_page(process: subprocess.Popen, timeout: float = 30.0) -> str:
         try:
             with urllib.request.urlopen(FRONTEND_URL, timeout=3.0) as response:
                 page = response.read().decode("utf-8")
-            if '<div id="root"></div>' in page and "ULTRON V1" in page:
+            if '<div id="root"></div>' in page and "ULTRON V2" in page:
                 return page
             last_error = "root element or title was missing"
         except (OSError, UnicodeError, urllib.error.URLError) as exc:
