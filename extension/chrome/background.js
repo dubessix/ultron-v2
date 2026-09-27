@@ -123,6 +123,182 @@ function samePage(url) {
 
 const HISTORY_DAYS = 90;
 
+// ---------------------------------------------------------------- hands inside a page
+// These run INSIDE the web page (chrome.scripting.executeScript), so each one is
+// self-contained. Real DOM actions only: no OS mouse or keyboard.
+// Sending, posting, buying, paying or deleting is never done without the owner's
+// yes: the element's own words are checked right before the click.
+
+const PAGE_RISKY = '\\b(send|post|publish|tweet|reply|submit|buy|purchase|pay|payment|place (your )?order|order now|checkout|check out|confirm|subscribe|donate|delete|transfer|book now|reserve)\\b';
+const PAGE_MAX_ITEMS = 40;
+
+function pageHands(action, target, text, submit, confirmed, riskySource, maxItems) {
+  const SEL = 'a[href],button,input:not([type=hidden]),textarea,select,summary,[role=button],[role=link],[role=tab],' +
+    '[role=menuitem],[role=checkbox],[role=switch],[role=textbox],[role=searchbox],[role=combobox],[contenteditable=""],[contenteditable=true]';
+  const risky = new RegExp(riskySource, 'i');
+  const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  const visible = (el) => {
+    if (el.hidden || el.disabled || el.closest('[aria-hidden="true"],[inert]')) return false;
+    if (typeof el.checkVisibility === 'function') return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    const style = window.getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden';
+  };
+  const textTypes = ['', 'text', 'search', 'email', 'url', 'tel', 'number', 'password'];
+  const kindOf = (el) => {
+    const tag = el.tagName.toLowerCase();
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    if (tag === 'input' && type === 'password') return 'password';
+    if (tag === 'textarea' || el.isContentEditable || ['textbox', 'searchbox', 'combobox'].includes(role) ||
+        (tag === 'input' && textTypes.includes(type))) return 'field';
+    if (tag === 'select') return 'choice';
+    if ((tag === 'input' && (type === 'checkbox' || type === 'radio')) || role === 'checkbox' || role === 'switch') return 'checkbox';
+    if (tag === 'a' || role === 'link') return 'link';
+    return 'button';
+  };
+  const labelOf = (el) => {
+    const kind = kindOf(el);
+    const byId = el.getAttribute('aria-labelledby');
+    const labelled = byId ? byId.split(/\s+/).map((id) => (document.getElementById(id) || {}).innerText || '').join(' ') : '';
+    const img = el.querySelector && el.querySelector('img[alt]');
+    return clean(el.getAttribute('aria-label') || labelled || (el.labels && el.labels[0] && el.labels[0].innerText) ||
+      el.getAttribute('placeholder') || (kind === 'field' || kind === 'password' ? '' : (el.innerText || el.value)) ||
+      el.getAttribute('title') || el.getAttribute('name') || (img && img.alt) || '').slice(0, 60);
+  };
+  const isSearch = (el) => {
+    const type = (el.getAttribute('type') || '').toLowerCase();
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const hint = [el.getAttribute('name'), el.id, el.getAttribute('aria-label'), el.getAttribute('placeholder'),
+      el.form && el.form.getAttribute('role'), el.form && el.form.getAttribute('action')].join(' ').toLowerCase();
+    return type === 'search' || role === 'searchbox' || el.getAttribute('name') === 'q' || /search|find|query/.test(hint);
+  };
+  const all = () => Array.from(document.querySelectorAll(SEL)).filter(visible);
+  const find = (want, fieldsOnly) => {
+    const t = clean(want);
+    if (/^\d+$/.test(t)) return document.querySelector('[data-ultron-n="' + t + '"]');
+    let pool = all();
+    if (fieldsOnly) pool = pool.filter((el) => ['field', 'password'].includes(kindOf(el)));
+    if (!t) {
+      const active = document.activeElement;
+      if (fieldsOnly && active && pool.includes(active)) return active;
+      return pool.find(isSearch) || pool[0] || null;
+    }
+    const low = t.toLowerCase();
+    const named = pool.map((el) => [el, labelOf(el).toLowerCase()]);
+    for (const test of [(l) => l === low, (l) => l.startsWith(low), (l) => l.includes(low)]) {
+      const hit = named.find(([, l]) => l && test(l));
+      if (hit) return hit[0];
+    }
+    return null;
+  };
+
+  if (action === 'look') {
+    document.querySelectorAll('[data-ultron-n]').forEach((el) => el.removeAttribute('data-ultron-n'));
+    const height = window.innerHeight || 800;
+    const rows = [];
+    for (const el of all()) {
+      const kind = kindOf(el);
+      const label = labelOf(el);
+      if (!label && kind !== 'field') continue;
+      const box = el.getBoundingClientRect();
+      rows.push({ el, kind, label, onScreen: box.bottom > 0 && box.top < height, top: box.top });
+    }
+    rows.sort((a, b) => (b.onScreen - a.onScreen) || (a.top - b.top));
+    const items = rows.slice(0, maxItems).map((row, i) => {
+      row.el.setAttribute('data-ultron-n', String(i + 1));
+      const item = { n: i + 1, kind: row.kind, text: row.label || '(no label)' };
+      if (row.kind === 'field') {
+        if (isSearch(row.el)) item.search = true;
+        const now = clean(row.el.isContentEditable ? row.el.innerText : row.el.value);
+        if (now) item.value = now.slice(0, 40);
+      }
+      if (row.kind === 'checkbox') item.checked = !!(row.el.checked || row.el.getAttribute('aria-checked') === 'true');
+      return item;
+    });
+    return { title: document.title, url: location.href, items, more: Math.max(0, rows.length - items.length) };
+  }
+
+  if (action === 'scroll') {
+    const up = /up|top/i.test(String(target || ''));
+    if (/top|bottom/i.test(String(target || ''))) window.scrollTo(0, up ? 0 : document.body.scrollHeight);
+    else window.scrollBy(0, (up ? -0.8 : 0.8) * (window.innerHeight || 800));
+    const bottom = window.scrollY + (window.innerHeight || 800) >= document.body.scrollHeight - 4;
+    return { scrolled: up ? 'up' : 'down', at_top: window.scrollY <= 0, at_bottom: bottom };
+  }
+
+  if (action === 'click') {
+    const el = find(target, false);
+    if (!el) return { error: 'No button or link matches "' + clean(target) + '" on this page. Look at the page first.' };
+    const label = labelOf(el);
+    const formWords = el.form && (el.type === 'submit' || kindOf(el) === 'button') ? clean(el.form.getAttribute('aria-label')) : '';
+    if (!confirmed && risky.test(label + ' ' + formWords)) return { needs_yes: true, label };
+    el.scrollIntoView({ block: 'center' });
+    if (typeof el.focus === 'function') el.focus();
+    el.click();
+    return { clicked: label || '(no label)', kind: kindOf(el) };
+  }
+
+  if (action === 'type') {
+    const el = find(target, true);
+    if (!el) return { error: 'No text box matches "' + clean(target) + '" on this page. Look at the page first.' };
+    if (kindOf(el) === 'password') return { error: 'I do not type passwords. Please type it yourself, Sir.' };
+    const label = labelOf(el);
+    if (submit && !confirmed && !isSearch(el)) return { needs_yes: true, label: 'send "' + clean(text).slice(0, 60) + '" in ' + (label || 'this box') };
+    el.scrollIntoView({ block: 'center' });
+    el.focus();
+    const value = String(text || '');
+    if (el.isContentEditable) {
+      // execCommand is old but still the way editors (WhatsApp Web, Gmail) accept text.
+      const canExec = typeof document.execCommand === 'function';
+      if (canExec) document.execCommand('selectAll', false);
+      if (!canExec || !document.execCommand('insertText', false, value)) el.innerText = value;
+    } else {
+      const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, value);
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    const now = clean(el.isContentEditable ? el.innerText : el.value);
+    if (now !== clean(value)) return { error: 'The page did not accept the text (it shows "' + now.slice(0, 40) + '").' };
+    let sent = false;
+    if (submit) {
+      if (el.form && typeof el.form.requestSubmit === 'function') { el.form.requestSubmit(); sent = true; } else {
+        for (const type of ['keydown', 'keypress', 'keyup']) {
+          el.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+        }
+        sent = true;
+      }
+    }
+    return { typed: true, box: label || '(no label)', submitted: sent };
+  }
+  return { error: 'Unknown page action.' };
+}
+
+async function pageAction(action, args) {
+  const [tab] = await findTabs(args.which);
+  const url = String(tab.url || '');
+  if (!/^(https?|file):/i.test(url)) throw new Error('Chrome does not let helpers act on this kind of page (' + url.split(':')[0] + ').');
+  const [injected] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: pageHands,
+    args: [action, String(args.target || ''), String(args.text || ''), !!args.submit, !!args.confirmed, PAGE_RISKY, PAGE_MAX_ITEMS],
+  });
+  const result = (injected && injected.result) || {};
+  if (result.error) throw new Error(result.error);
+  if (result.needs_yes) {
+    return { done: false, needs_yes: true, label: result.label,
+      note: 'This sends, posts, buys or deletes. Ask the owner; after his yes call again with confirmed=true.' };
+  }
+  if (action === 'click' || (action === 'type' && result.submitted)) {
+    // Check what really happened: did the page change?
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const after = await chrome.tabs.get(tab.id).catch(() => null);
+    result.page_now = after ? { title: (after.title || '').slice(0, 80), url: (after.url || '').slice(0, 200) } : { closed: true };
+    result.page_changed = !after || after.url !== tab.url || after.title !== tab.title;
+  }
+  return { tab: (tab.title || '').slice(0, 80), ...result };
+}
+
 // ---------------------------------------------------------------- actions
 
 async function run(action, args) {
@@ -254,6 +430,11 @@ async function run(action, args) {
       }
       return { count: matches.length, matches, note: matches.length ? 'Open one with open_new_tab.' : `Nothing in the last ${HISTORY_DAYS} days matches.` };
     }
+    case 'look':
+    case 'click':
+    case 'type':
+    case 'scroll':
+      return pageAction(action, args);
     default:
       throw new Error(`Unknown browser action "${action}".`);
   }

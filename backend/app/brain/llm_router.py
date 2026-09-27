@@ -546,6 +546,10 @@ class LLMRouter:
             payload.pop("reasoning_effort", None)
             self._apply_groq_reasoning(payload)
 
+    # A mid-job wait longer than this goes to the next provider instead (if any),
+    # or is announced out loud (no provider to switch to).
+    _MIDJOB_SWITCH_SECONDS = 5.0
+
     async def _respect_budget(
         self, provider: str, payload: dict[str, Any], key: Optional[str] = None
     ) -> None:
@@ -555,7 +559,22 @@ class LLMRouter:
         if wait > 0:
             wait = min(wait, self._MAX_BUDGET_WAIT_SECONDS)
             print(f"[LLM_ROUTER] Pausing {wait:.1f}s to stay inside the {provider} per-minute limit.")
+            if wait >= self._MIDJOB_SWITCH_SECONDS:
+                await self._say_waiting(wait)  # never a long silence that feels broken
             await asyncio.sleep(wait)
+
+    @staticmethod
+    async def _say_waiting(seconds: float) -> None:
+        """One honest spoken line during a long limit pause (0 tokens)."""
+        try:
+            from backend.app.core import live_progress
+
+            await live_progress.publish({
+                "type": "ultron_progress", "speak": True, "tool": "", "session_id": "",
+                "text": f"One moment, Sir. The free AI limit frees up in about {max(5, round(seconds / 5) * 5)} seconds.",
+            })
+        except Exception:
+            pass
 
     @staticmethod
     def _apply_groq_reasoning(payload: dict[str, Any]) -> None:
@@ -754,6 +773,16 @@ class LLMRouter:
             print(f"[LLM_ROUTER] this step is too big for a free Groq key; continuing the job on {handover}.")
             provider_order = [handover]
             provider_lock = handover
+        elif provider_lock == "groq" and handover:
+            # Speed (final list step 3): every Groq key's minute is full. That is a
+            # real limit, so rather than a silent pause of up to 20 s the job goes
+            # on with the next provider and stays there (no jumping back).
+            full_for = self._provider_wait("groq", request_chars)
+            if full_for > self._MIDJOB_SWITCH_SECONDS:
+                print(f"[LLM_ROUTER] every groq key is full for ~{full_for:.0f}s; "
+                      f"continuing this job on {handover} instead of waiting.")
+                provider_order = [handover]
+                provider_lock = handover
         waited = 0.0
         for _round in range(self._MAX_COOLING_ROUNDS + 1):
             cooling: list[float] = []

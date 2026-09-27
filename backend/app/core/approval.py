@@ -78,6 +78,8 @@ def needs_ask(tool_id: str, arguments: dict, level: int) -> bool:
         return True
     if tool_id == "optimize_code" and args.get("apply_changes"):
         return True
+    if tool_id == "browser_page":
+        return bool(args.get("confirmed"))  # a send, post, buy or delete: always one yes
     return False
 
 
@@ -89,6 +91,11 @@ def _name(value: Any) -> str:
     if text.startswith(("http://", "https://")):
         return re.sub(r"^https?://(www\.)?", "", text).split("/")[0]
     return Path(text).name or text
+
+
+def _plain_words(value: Any, limit: int = 80) -> str:
+    """Words only (voice never reads symbols), cut short."""
+    return " ".join(re.sub(r"[^\w\s'.,?!-]", " ", str(value or "")).split())[:limit] or "that"
 
 
 def describe(tool_id: str, arguments: dict) -> str:
@@ -127,6 +134,14 @@ def describe(tool_id: str, arguments: dict) -> str:
         question = f"Should I close {a.get('name') or 'that app'}? Unsaved work there may be lost"
     elif tool_id == "pc_control":
         question = f"Should I {action or 'change'} the PC"
+    elif tool_id == "browser_page":
+        from backend.app.tools.browser_tools import pending_label
+
+        if action == "type" and a.get("submit"):
+            question = f"Should I send this: {_plain_words(a.get('text'))}"
+        else:
+            label = pending_label(str(a.get("target") or "")) or str(a.get("target") or "that button")
+            question = f"Should I press {_plain_words(label)}"
     elif tool_id == "close_browser":
         question = "Should I close the whole browser"
     elif tool_id == "github_integration":

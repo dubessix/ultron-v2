@@ -13,14 +13,14 @@ from backend.app.database.db import get_db_connection
 class TaskArgs(BaseModel):
     action: str = Field(..., description="Action to perform: create, update_status, update_priority, list, delete.")
     task_id: Optional[str] = Field(None, description="Target task UUID (required for status/priority updates or deletion).")
-    project_name: Optional[str] = Field("General", description="The project context (e.g. 'TrustQuiz').")
+    project_name: Optional[str] = Field("General", description="Project name; 'Goals' for a long goal like 'finish React by December'.")
     module_name: Optional[str] = Field("Root", description="The specific project module (e.g. 'Authentication', 'Dashboard').")
     title: Optional[str] = Field(None, description="The summary title of the task.")
     description: Optional[str] = Field(None, description="Optional extra task details.")
     priority: Optional[str] = Field("medium", description="Priority level: high, medium, low.")
     status: Optional[str] = Field("todo", description="Task state: todo, in_progress, done.")
     due_date: Optional[str] = Field(None, description="Target due date (ISO format, e.g., 'YYYY-MM-DD').")
-    parent_task_id: Optional[str] = Field(None, description="Parent task UUID for hierarchical subtask mapping.")
+    parent_task_id: Optional[str] = Field(None, description="Parent task id: makes this a subtask (a goal's steps).")
 
 class TaskTool(BaseTool):
     def __init__(self) -> None:

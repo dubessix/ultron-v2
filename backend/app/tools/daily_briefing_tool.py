@@ -261,7 +261,9 @@ class DailyBriefingTool(BaseTool):
     @staticmethod
     def _local_day(now: datetime.datetime, include_tasks: bool, include_schedule: bool) -> dict:
         end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=0)
-        events, reminders, tasks = [], [], []
+        events, reminders, tasks, goal_lines = [], [], [], []
+        from backend.app.core import goals
+
         with get_db_connection() as conn:
             if include_schedule:
                 for row in conn.execute("SELECT title, start_time, category FROM calendar_events LIMIT 500"):
@@ -282,7 +284,7 @@ class DailyBriefingTool(BaseTool):
                         reminders.append({"title": _clean(row["title"]), "at": when})
             if include_tasks:
                 for row in conn.execute(
-                    "SELECT title, priority, due_date, project_name FROM project_tasks "
+                    "SELECT title, priority, due_date, project_name, parent_task_id FROM project_tasks "
                     "WHERE status != 'done' LIMIT 300"
                 ):
                     due = _as_local(row["due_date"])
@@ -292,13 +294,14 @@ class DailyBriefingTool(BaseTool):
                     if due is not None and due <= end_of_day:
                         overdue = due.date() < now.date() if item["date_only"] else due < now
                         tasks.append({**item, "overdue": overdue})
-                    elif due is None and item["priority"] == "high":
+                    elif due is None and item["priority"] == "high" and not goals.is_goal(dict(row)):
                         tasks.append({**item, "overdue": False})
+                goal_lines = goals.weekly_lines(conn, now)
         rank = {"high": 0, "medium": 1, "low": 2}
         tasks.sort(key=lambda t: (not t["overdue"], rank.get(t["priority"], 1), t["due"] or end_of_day))
         events.sort(key=lambda e: e["start"])
         reminders.sort(key=lambda r: r["at"])
-        return {"events": events, "reminders": reminders, "tasks": tasks}
+        return {"events": events, "reminders": reminders, "tasks": tasks, "goals": goal_lines}
 
     # -- composing ---------------------------------------------------------
     @staticmethod
@@ -370,6 +373,8 @@ class DailyBriefingTool(BaseTool):
             suggestion = "Your day is clear, a good window for focused work."
         if suggestion:
             say.append(suggestion)
+        if include_tasks and day.get("goals"):
+            say.append(day["goals"][0])  # the nearest goal, one line
         if include_news and news.get("available"):
             say.append("I've put today's AI headlines on your screen.")
 
@@ -412,6 +417,10 @@ class DailyBriefingTool(BaseTool):
             else:
                 show.append("  Nothing due today.")
             show.append("")
+            if day.get("goals"):
+                show.append("GOALS")
+                show.extend(f"  - {line.removeprefix('Goal check, ')}" for line in day["goals"])
+                show.append("")
         if include_news:
             show.append("AI HEADLINES")
             if news.get("available"):

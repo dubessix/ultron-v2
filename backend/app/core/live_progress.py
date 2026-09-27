@@ -78,6 +78,8 @@ def line_for(tool_id: str, args: Optional[dict] = None) -> str:
                          "history": f"Searching your history for {name}" if name and name != "current"
                          else "Searching your history"}.get(action, "Checking your tabs"),
         "read_current_page": "Reading the page",
+        "browser_page": {"look": "Looking at the page", "scroll": "Scrolling",
+                         "type": "Typing it in", "click": "Clicking it"}.get(action, "Working on the page"),
         "close_browser": "Closing the browser tabs",
         "download_file": f"Downloading {_plain(a.get('save_path')) or 'the file'}",
         "git_clone": "Cloning the repository",

@@ -121,7 +121,7 @@ class TestLazyRegistryPreservation(unittest.TestCase):
             registry = ToolRegistry()
             ids = registry.get_registered_ids()
 
-        self.assertEqual(len(ids), 80)  # +show_widget (4), +6 PC tools (6), +jarvis_actions (7), +browser_tabs (V2 C), +routine (V2 D)
+        self.assertEqual(len(ids), 81)  # +show_widget (4), +6 PC tools (6), +jarvis_actions (7), +browser_tabs (V2 C), +routine (V2 D), +browser_page (final list 4)
         self.assertEqual(len(ids), len(set(ids)))
         self.assertIn("database_restore", ids)
         self.assertIn("spotify_current_track", ids)

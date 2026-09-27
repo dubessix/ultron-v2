@@ -362,3 +362,66 @@ class BrowserTabsTool(BaseTool):
         if action == "list":
             return await _tab_action("list")
         return await _tab_action(action, which=kwargs.get("which") or "current")
+
+
+# --- Hands inside the open page (final list step 4) ---
+
+class BrowserPageArgs(BaseModel):
+    action: Literal["look", "click", "type", "scroll"] = Field(
+        "look", description="look lists the page's buttons, links and boxes with numbers; then click, type or scroll.")
+    target: str = Field("", description="Number from look, or the item's words. Scroll: up, down, top, bottom.")
+    text: str = Field("", description="Text to type.")
+    submit: bool = Field(False, description="After typing, press Enter / send the form.")
+    confirmed: bool = Field(False, description="True only for a send, post, buy or delete the owner must approve.")
+    which: str = Field("current", description="Which tab: current, or words like 'amazon'.")
+
+
+# The last page step that needed the owner's yes, so the question can name it.
+_last_needs_yes: Dict[str, str] = {}
+
+
+def pending_label(target: str) -> str:
+    """Words of the button/box that needed a yes (for the spoken question)."""
+    if _last_needs_yes.get("target") == str(target or ""):
+        return _last_needs_yes.get("label", "")
+    return ""
+
+
+class BrowserPageTool(BaseTool):
+    def __init__(self) -> None:
+        super().__init__(
+            tool_id="browser_page",
+            name="Browser Page Hands",
+            description="Acts inside the open web page like a person: look (numbered buttons, links, boxes), click "
+                        "one, type into a box (submit=true presses Enter), scroll. Look first, act by number. "
+                        "Sending, posting, buying or deleting needs the owner's yes: it answers needs_yes, then call "
+                        "again with confirmed=true. Never types passwords.",
+            category="browser",
+            tags=["browser", "page", "click", "type", "fill", "form", "search box", "button", "scroll"],
+            permission_level=0,
+            args_model=BrowserPageArgs,
+            usage_examples=["browser_page(action='look')", "browser_page(action='click', target='3')",
+                            "browser_page(action='type', target='search', text='usb c cable', submit=True)"],
+        )
+
+    def permission_for_arguments(self, arguments: Dict[str, Any]) -> int:
+        return 2 if arguments.get("confirmed") else 0
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        from backend.app.core import browser_bridge
+
+        action = str(kwargs.get("action") or "look")
+        if action == "type" and not str(kwargs.get("text") or ""):
+            return {"success": False, "error": "Say what to type.", "data": {}}
+        args = {key: kwargs.get(key) for key in ("target", "text", "submit", "confirmed", "which")}
+        args["which"] = args["which"] or "current"
+        result = await browser_bridge.call(action, args, timeout=12.0)
+        error = str(result.get("error") or "")
+        if not result.get("success") and "Unknown browser action" in error:
+            result["error"] = ("The Ultron browser helper is an older version. Open chrome://extensions and press "
+                               "reload on Ultron Browser Hands once.")
+        data = result.get("data") or {}
+        if result.get("success") and data.get("needs_yes"):
+            _last_needs_yes.clear()
+            _last_needs_yes.update({"target": str(kwargs.get("target") or ""), "label": str(data.get("label") or "")})
+        return result

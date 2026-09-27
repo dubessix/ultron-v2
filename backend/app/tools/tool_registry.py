@@ -191,6 +191,7 @@ class ToolRegistry:
             "download_file": ("backend.app.tools.browser_tools", "DownloadFileTool"),
             "read_current_page": ("backend.app.tools.browser_tools", "ReadPageTool"),
             "browser_tabs": ("backend.app.tools.browser_tools", "BrowserTabsTool"),
+            "browser_page": ("backend.app.tools.browser_tools", "BrowserPageTool"),
             "google_search": ("backend.app.tools.web_search_tools", "GoogleSearchTool"),
             "github_search": ("backend.app.tools.web_search_tools", "GitHubSearchTool"),
             "stackoverflow_search": ("backend.app.tools.web_search_tools", "StackOverflowSearchTool"),

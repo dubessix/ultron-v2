@@ -112,7 +112,8 @@ def touch(moment: Optional[_dt.datetime] = None) -> None:
 # ---------------------------------------------------------------------------
 # data
 # ---------------------------------------------------------------------------
-def _gather(since: _dt.datetime, now: _dt.datetime) -> dict:
+def _gather(since: _dt.datetime, now: _dt.datetime, with_goals: bool = False) -> dict:
+    from backend.app.core import goals
     from backend.app.database.db import get_db_connection
 
     since_utc = since.astimezone(_dt.timezone.utc).isoformat()
@@ -121,15 +122,17 @@ def _gather(since: _dt.datetime, now: _dt.datetime) -> dict:
             "SELECT title, type, fired_at FROM reminder_inbox WHERE fired_at >= ? ORDER BY fired_at LIMIT 20",
             (since_utc,))]
         tasks = [dict(r) for r in conn.execute(
-            "SELECT title, priority, due_date, status FROM project_tasks WHERE status != 'done' LIMIT 200")]
+            "SELECT title, priority, due_date, status, project_name, parent_task_id FROM project_tasks "
+            "WHERE status != 'done' LIMIT 200")]
         events = [dict(r) for r in conn.execute("SELECT title, start_time FROM calendar_events LIMIT 500")]
+        goal_lines = goals.weekly_lines(conn, now) if with_goals else []
     end_of_day = now.replace(hour=23, minute=59, second=59)
     today_tasks = []
     for task in tasks:
         due = _as_local(task.get("due_date"))
         if due is not None and due <= end_of_day:
             today_tasks.append({**task, "_due": due, "overdue": due < now})
-        elif due is None and task.get("priority") == "high":
+        elif due is None and task.get("priority") == "high" and not goals.is_goal(task):
             today_tasks.append({**task, "_due": None, "overdue": False})
     rank = {"high": 0, "medium": 1, "low": 2}
     today_tasks.sort(key=lambda t: (not t["overdue"], rank.get(t.get("priority"), 1), t["_due"] or end_of_day))
@@ -150,7 +153,7 @@ def _gather(since: _dt.datetime, now: _dt.datetime) -> dict:
     if next_event and any(_clean(next_event["title"]) in line for line in plan):
         next_event = None  # the countdown already says it
     return {"missed": missed, "tasks": today_tasks, "next_event": next_event, "plan": plan,
-            "followup": proactive.briefing_followup(now, all_events)}
+            "followup": proactive.briefing_followup(now, all_events), "goals": goal_lines}
 
 
 def _greeting(now: _dt.datetime, owner: str) -> str:
@@ -186,6 +189,7 @@ def compose(data: dict, now: _dt.datetime, owner: str = "Sir") -> str:
     if parts:
         sentence = _join(parts)
         sentences.append(sentence[0].upper() + sentence[1:] + ".")
+    sentences.extend(data.get("goals") or [])  # once a week (step 5)
     if len(sentences) == 1:
         sentences.append("Nothing needs you right now.")
     return " ".join(sentences)
@@ -200,11 +204,23 @@ def briefing(force: bool = False, now: Optional[_dt.datetime] = None, owner: str
     if not force and (away is None or away < AWAY_SECONDS):
         return None
     since = seen or (now - _dt.timedelta(hours=12))
+    from backend.app.core.goals import week_key
+
+    week = week_key(now)
+    with_goals = _load().get("goal_week") != week  # the first status of each week
     try:
-        data = _gather(since, now)
+        data = _gather(since, now, with_goals=with_goals)
     except Exception as exc:
         print(f"[ARRIVAL] briefing data unavailable: {exc}")
         return None
+    if data.get("goals"):
+        with _lock:
+            state = _load()
+            state["goal_week"] = week
+            try:
+                _save(state)
+            except OSError:
+                pass
     return {
         "type": "arrival_briefing",
         "speech": compose(data, now, owner),
