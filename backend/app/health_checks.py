@@ -97,7 +97,38 @@ def check_browser_helper(port: int, fetch: Optional[Callable[[str], dict]] = Non
         return [("ok", f"Chrome helper is connected{version}: tab control works.", "")]
     return [("warn", "Chrome helper is not connected: close tab / switch tab will not work.",
              "Open chrome://extensions, turn on Developer mode, Load unpacked, "
-             "pick the browser_extension folder of ultron-v2.")]
+             "pick the folder ultron-v2/extension/chrome.")]
+
+
+def check_brain_state(port: int, fetch: Optional[Callable[[str], dict]] = None) -> list[Check]:
+    """While Ultron runs: which keys and models are resting right now."""
+    url = f"http://127.0.0.1:{port}/api/providers/status"
+    try:
+        if fetch is None:
+            import httpx
+
+            data = httpx.get(url, timeout=3.0).json()
+        else:
+            data = fetch(url)
+    except Exception:
+        return []  # Ultron is not running; the key check above already covers setup
+    checks: list[Check] = []
+    for provider, item in ((data or {}).get("providers") or {}).items():
+        if not isinstance(item, dict) or not item.get("configured"):
+            continue
+        states = item.get("key_states") or {}
+        line = (f"{provider} now: {states.get('active', 0)} keys ready, "
+                f"{states.get('cooling', 0)} resting, {states.get('failed', 0)} broken")
+        rests = item.get("model_rests") or []
+        if rests:
+            line += "; " + "; ".join(
+                f"{str(r.get('model', '')).rsplit('/', 1)[-1]} used up on {r.get('keys_resting', 0)} "
+                f"key(s), free in about {r.get('free_in_minutes', 0)} min" for r in rests)
+        if states.get("failed"):
+            checks.append(("warn", line + ".", f"A {provider} key is wrong or blocked: check it in .env."))
+        else:
+            checks.append(("ok", line + ".", ""))
+    return checks
 
 
 def check_disk(home: Path) -> list[Check]:
@@ -197,6 +228,7 @@ def run_all(*, home: Path, db_path: Path, backup_dir: Path, port: int) -> list[C
         check_models,
         check_usage_today,
         lambda: check_browser_helper(port),
+        lambda: check_brain_state(port),
         lambda: check_disk(home),
         lambda: check_database(db_path, backup_dir),
         lambda: check_data_folder(home),

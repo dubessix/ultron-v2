@@ -19,6 +19,10 @@ from backend.app.brain.smart_cache import SmartCache
 from backend.app.brain.token_budget import TokenBudget
 
 
+class RequestTooLargeError(RuntimeError):
+    """The provider says this one request is bigger than its per-minute limit (HTTP 413)."""
+
+
 class LLMRouter:
     _PROVIDERS: ClassVar[tuple[str, ...]] = ("groq", "gemini", "nvidia")
     _TEMPORARY_STATUS: ClassVar[set[int]] = {408, 425, 500, 502, 503, 504}
@@ -40,6 +44,10 @@ class LLMRouter:
         self.provider_attempts = settings["max_attempts"]
         self.backoff_base_seconds = settings["backoff_base_seconds"]
         self._rejected_models: dict[tuple[str, str], str] = {}
+        # P1: Groq counts DAILY limits per model. (provider, key id, model) -> rest
+        # until (epoch seconds). A daily limit on gpt-oss-120b leaves gpt-oss-20b
+        # free on the same key, so only that pair rests.
+        self._model_rest: dict[tuple[str, str, str], float] = {}
         # Free-tier guard, counted per API key (see _keys_share_limit).
         self.token_budget = TokenBudget()
         # Rejections expire so one transient 400/404 (bad payload, provider blip,
@@ -367,6 +375,11 @@ class LLMRouter:
 
     # Longest pause for the per-minute window before sending anyway.
     _MAX_BUDGET_WAIT_SECONDS: ClassVar[float] = 20.0
+    # P2: one request above this (tokens, incl. room for the answer) cannot fit a
+    # free Groq key's 8K-per-minute limit, so Groq would reject it outright.
+    _GROQ_MAX_REQUEST_TOKENS: ClassVar[int] = 7600
+    _GROQ_ANSWER_ROOM: ClassVar[int] = 2048  # max_tokens we ask for; Groq counts it too
+    _PER_MODEL_DAILY: ClassVar[frozenset[str]] = frozenset({"groq"})
 
     # -- budget per API key (keeps the old round-robin capacity) ----------
     @staticmethod
@@ -418,8 +431,14 @@ class LLMRouter:
         """
         pool_size = max(1, len(self._active_keys(provider)))
         best_key, best_wait = None, float("inf")
+        # P1: a key whose best model hit today's limit gives way to a key that
+        # still has it (the smarter model first); lighter models only after that.
+        target_rank = self._best_rank(provider) if provider in self._PER_MODEL_DAILY else 0
         for _ in range(pool_size):
             key = self.key_manager.get_active_key(provider)
+            if provider in self._PER_MODEL_DAILY and self._model_for_key(provider, key)[1] != target_rank:
+                self.key_manager.move_on(provider, key)
+                continue
             bucket = self._bucket(provider, key)
             wait = self.token_budget.room(bucket, self._payload_estimate(bucket, payload))
             if wait <= 0:
@@ -431,13 +450,101 @@ class LLMRouter:
             await self._respect_budget(provider, payload, key=best_key)
         return best_key or self.key_manager.get_active_key(provider)
 
-    def _record_usage(self, provider: str, key: Optional[str], usage: Any) -> None:
+    def _record_usage(
+        self, provider: str, key: Optional[str], usage: Any, model: Optional[str] = None
+    ) -> None:
         self.token_budget.record_usage(
             self._bucket(provider, key), usage if isinstance(usage, dict) else None
         )
         from backend.app.brain import usage_meter
 
-        usage_meter.add(provider, usage if isinstance(usage, dict) else None)
+        usage_meter.add(provider, usage if isinstance(usage, dict) else None, model=model)
+
+    # ---------------------------------------------------------- P2: jobs too big for Groq
+    def _too_big_for_groq(self, request_chars: int) -> bool:
+        return request_chars // 4 + self._GROQ_ANSWER_ROOM > self._GROQ_MAX_REQUEST_TOKENS
+
+    def _handover_provider(self) -> Optional[str]:
+        """Where a job too big for a free Groq key goes (big-context providers)."""
+        for provider in ("gemini", "nvidia"):
+            if self.key_manager.has_real_key(provider):
+                return provider
+        return None
+
+    # ---------------------------------------------------------- P1: per-model daily limits
+    @staticmethod
+    def _key_id(key: Optional[str]) -> str:
+        return hashlib.sha256(str(key or "").encode("utf-8")).hexdigest()[:12]
+
+    @staticmethod
+    def _model_ladder(provider: str) -> list[str]:
+        """Usable models, best first (owner's choice, then the fallback chain)."""
+        from backend.app.brain import model_fallback
+        from backend.app.brain.model_config import preferred_models
+
+        try:
+            ladder = model_fallback.usable_chain(provider, preferred_models(provider))
+        except Exception:
+            ladder = []
+        return ladder or [get_model(provider)]
+
+    def _model_for_key(self, provider: str, key: Optional[str]) -> tuple[Optional[str], int]:
+        """Best model this key may still use today, and its rank (0 = best)."""
+        ladder = self._model_ladder(provider)
+        if provider not in self._PER_MODEL_DAILY:
+            return ladder[0], 0
+        now, kid = time.time(), self._key_id(key)
+        for rank, model in enumerate(ladder):
+            until = self._model_rest.get((provider, kid, model))
+            if until is None:
+                return model, rank
+            if until <= now:
+                self._model_rest.pop((provider, kid, model), None)
+                return model, rank
+        return None, len(ladder)
+
+    def _best_rank(self, provider: str) -> int:
+        ranks = [self._model_for_key(provider, key)[1] for key in self._active_keys(provider)]
+        return min(ranks) if ranks else 0
+
+    def _rest_model(self, provider: str, key: str, model: str, seconds: int) -> None:
+        """Daily limit for this key + model: rest only that pair. When every model
+        of this key rests, the key itself cools until the first one is free."""
+        kid = self._key_id(key)
+        self._model_rest[(provider, kid, model)] = time.time() + max(60, seconds)
+        print(f"[LLM_ROUTER] {provider} {model}: daily limit on this key; resting it "
+              f"{max(60, seconds) / 3600:.1f} h, other models stay available.")
+        if self._model_for_key(provider, key)[0] is None:
+            soonest = min(until for (p, k, _m), until in self._model_rest.items() if p == provider and k == kid)
+            self.key_manager.mark_key_cooling(provider, key, duration_sec=int(max(1, soonest - time.time())))
+
+    @staticmethod
+    def _is_daily_limit(response: Any) -> bool:
+        try:
+            body = str(getattr(response, "text", "") or "").lower()
+        except Exception:
+            return False
+        return "per day" in body or "(tpd)" in body or "(rpd)" in body
+
+    def model_rest_summary(self, provider: str) -> list[dict[str, Any]]:
+        """For the Doctor: which models rest on how many keys, and for how long."""
+        now = time.time()
+        summary: dict[str, list[float]] = {}
+        for (p, _kid, model), until in list(self._model_rest.items()):
+            if p == provider and until > now:
+                summary.setdefault(model, []).append(until - now)
+        return [{"model": m, "keys_resting": len(w), "free_in_minutes": int(min(w) // 60) + 1}
+                for m, w in sorted(summary.items())]
+
+    def _apply_model_for_key(self, provider: str, key: str, payload: dict[str, Any]) -> None:
+        """Send the best model THIS key may still use (P1)."""
+        if provider not in self._PER_MODEL_DAILY:
+            return
+        model, _rank = self._model_for_key(provider, key)
+        if model and model != payload.get("model"):
+            payload["model"] = model
+            payload.pop("reasoning_effort", None)
+            self._apply_groq_reasoning(payload)
 
     async def _respect_budget(
         self, provider: str, payload: dict[str, Any], key: Optional[str] = None
@@ -471,9 +578,14 @@ class LLMRouter:
         return reason
 
     @staticmethod
-    def _gemini_contents(user_prompt: str, conversation: list[dict]) -> list[dict]:
+    def _gemini_contents(
+        user_prompt: str, conversation: list[dict], foreign_signature: Optional[str] = None
+    ) -> list[dict]:
+        """foreign_signature: Google's documented placeholder for tool calls another
+        model made (Gemini 3 rejects unsigned calls in the current turn)."""
         contents: list[dict] = [{"role": "user", "parts": [{"text": user_prompt}]}]
         pending_responses: list[dict] = []
+        foreign_ids: set[str] = set()
 
         def flush_tool_responses() -> None:
             if pending_responses:
@@ -497,7 +609,8 @@ class LLMRouter:
                 # Gemini 3.x pairs responses to calls by id when it supplied one.
                 # Locally synthesised fallback ids are never sent back.
                 call_id = str(item.get("tool_call_id") or "")
-                if call_id and not call_id.startswith("gemini-call-") and call_id != "call":
+                if (call_id and not call_id.startswith("gemini-call-") and call_id != "call"
+                        and call_id not in foreign_ids):
                     function_response["id"] = call_id
                 pending_responses.append({"functionResponse": function_response})
                 continue
@@ -514,14 +627,16 @@ class LLMRouter:
                 if item.get("content"):
                     parts.append({"text": str(item["content"])})
                 for call in item.get("tool_calls") or []:
-                    parts.append(
-                        {
-                            "functionCall": {
-                                "name": str(call.get("name") or ""),
-                                "args": call.get("arguments") or {},
-                            }
+                    foreign_ids.add(str(call.get("id") or ""))
+                    part: dict[str, Any] = {
+                        "functionCall": {
+                            "name": str(call.get("name") or ""),
+                            "args": call.get("arguments") or {},
                         }
-                    )
+                    }
+                    if foreign_signature and not any("functionCall" in p for p in parts):
+                        part["thoughtSignature"] = foreign_signature  # first call of the turn
+                    parts.append(part)
             contents.append({"role": "model", "parts": parts or [{"text": ""}]})
         flush_tool_responses()
         return contents
@@ -630,6 +745,15 @@ class LLMRouter:
         request_chars = len(system_prompt) + len(user_prompt) + len(
             json.dumps(history, default=str)
         ) + len(json.dumps(tools, default=str))
+        # P2: one request too big for a free Groq key (8K per minute) would be
+        # rejected outright. Hand THIS job to a big-context provider; the agent
+        # loop keeps the job there (no jumping back and forth).
+        too_big = self._too_big_for_groq(request_chars)
+        handover = self._handover_provider()
+        if provider_lock == "groq" and too_big and handover:
+            print(f"[LLM_ROUTER] this step is too big for a free Groq key; continuing the job on {handover}.")
+            provider_order = [handover]
+            provider_lock = handover
         waited = 0.0
         for _round in range(self._MAX_COOLING_ROUNDS + 1):
             cooling: list[float] = []
@@ -637,7 +761,11 @@ class LLMRouter:
                 if not self.key_manager.has_real_key(provider):
                     continue
                 configured_provider_seen = True
-                if not provider_lock and any(p in configured for p in provider_order[position + 1 :]):
+                later_configured = any(p in configured for p in provider_order[position + 1 :])
+                if provider == "groq" and too_big and not provider_lock and later_configured:
+                    print("[LLM_ROUTER] this job is too big for a free Groq key; starting it on the next provider.")
+                    continue
+                if not provider_lock and later_configured:
                     wait = self._provider_wait(provider, request_chars)
                     if wait > 0:
                         print(
@@ -665,7 +793,7 @@ class LLMRouter:
                             history,
                             temperature,
                         )
-                    model = get_model(provider)  # the model that answered (after any swap)
+                    model = result.pop("model_used", None) or get_model(provider)  # the model that answered
                     result.update(
                         {
                             "provider": provider,
@@ -680,6 +808,13 @@ class LLMRouter:
                     if isinstance(exc, APIKeyCoolingError):
                         cooling.append(float(exc.retry_after))
                     print(f"[LLM_ROUTER] Native tools unavailable on '{provider}': {exc}")
+                    if (isinstance(exc, RequestTooLargeError) and handover and provider != handover
+                            and handover not in provider_order):
+                        # Our size guess was low: the provider said too large. Hand over once.
+                        print(f"[LLM_ROUTER] continuing this job on {handover} (request too large).")
+                        provider_order.append(handover)
+                        provider_lock = handover if provider_lock else None
+                        continue
                     if provider_lock:
                         break
             # V2 Step E3: every configured provider failed only because all its keys
@@ -745,6 +880,7 @@ class LLMRouter:
                 payload["parallel_tool_calls"] = False
                 self._apply_groq_reasoning(payload)
             key = await self._acquire_key(provider, payload)
+            self._apply_model_for_key(provider, key, payload)
             if provider == "nvidia":
                 payload["chat_template_kwargs"] = {
                     "enable_thinking": True,
@@ -768,12 +904,15 @@ class LLMRouter:
                 await self._short_pause(attempt)
                 continue
             if response.status_code != 200:
-                if self._classify_http_failure(provider, key, response) == "pause":
+                if self._classify_http_failure(provider, key, response, model=payload["model"]) == "pause":
                     await self._short_pause(attempt)
                 continue
             body = response.json()
-            self._record_usage(provider, key, body.get("usage") if isinstance(body, dict) else None)
-            return self._parse_openai_native_message(body)
+            self._record_usage(provider, key, body.get("usage") if isinstance(body, dict) else None,
+                               model=payload["model"])
+            result = self._parse_openai_native_message(body)
+            result["model_used"] = payload["model"]
+            return result
         self._raise_if_cooling(provider)
         raise RuntimeError(f"{provider} native-tool key pool is unavailable")
 
@@ -795,7 +934,9 @@ class LLMRouter:
             )
             payload = {
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "contents": self._gemini_contents(user_prompt, conversation),
+                "contents": self._gemini_contents(
+                    user_prompt, conversation, self._foreign_signature(model)
+                ),
                 "tools": [
                     {
                         "functionDeclarations": [
@@ -832,9 +973,23 @@ class LLMRouter:
         self._raise_if_cooling(provider)
         raise RuntimeError("Gemini native-tool key pool is unavailable")
 
-    def _classify_http_failure(self, provider: str, key: str, response: httpx.Response) -> str:
+    @staticmethod
+    def _foreign_signature(model: str) -> Optional[str]:
+        """Gemini 3+ validates signatures on replayed calls; older models must not get one."""
+        import re
+
+        match = re.search(r"gemini-(\d+)", str(model or ""))
+        return "skip_thought_signature_validator" if match and int(match.group(1)) >= 3 else None
+
+    def _classify_http_failure(
+        self, provider: str, key: str, response: httpx.Response, model: Optional[str] = None
+    ) -> str:
         """Update key state safely and return 'retry' or raise a config/request error."""
         status = response.status_code
+        if status == 429 and model and provider in self._PER_MODEL_DAILY and self._is_daily_limit(response):
+            # P1: only this model's daily budget is used up on this key.
+            self._rest_model(provider, key, model, self._retry_after(response, cap=6 * 3600) or 3600)
+            return "retry"
         if status == 429:
             # V2 Step E3: the provider says exactly when this key is free again.
             self.key_manager.mark_key_cooling(
@@ -845,6 +1000,9 @@ class LLMRouter:
         if status in self._AUTH_STATUS:
             self.key_manager.mark_key_failed(provider, key)
             return "retry"
+        if status == 413:
+            # One request bigger than the key's per-minute limit: no key can take it.
+            raise RequestTooLargeError(f"{provider} says this request is too large for its limit")
         if status in self._TEMPORARY_STATUS:
             # Provider busy (5xx/timeout): the key is fine. Retry the SAME key
             # after a short pause; no fake "cooling" that makes keys jump.
@@ -856,7 +1014,7 @@ class LLMRouter:
 
         body = response.text or ""
         if model_fallback.is_model_gone_error(status, body):
-            used = get_model(provider)
+            used = model or get_model(provider)
             if retire_model(provider, used):
                 return "retry"
             raise RuntimeError(f"{provider} model {used} was retired and no fallback is left")
@@ -867,7 +1025,7 @@ class LLMRouter:
         detail = body.replace("\n", " ")[:200]
         message = f"{provider} rejected request with HTTP {status}: {detail}"
         if status in {400, 404, 422}:
-            rejected_key = (provider, get_model(provider))
+            rejected_key = (provider, model or get_model(provider))
             self._rejected_models[rejected_key] = message
             self._rejected_at[rejected_key] = time.monotonic()
         raise RuntimeError(message)
@@ -887,6 +1045,7 @@ class LLMRouter:
             }
             self._apply_groq_reasoning(payload)
             key = await self._acquire_key(provider, payload)
+            self._apply_model_for_key(provider, key, payload)
             try:
                 response = await self.client.post(
                     url,
@@ -900,12 +1059,12 @@ class LLMRouter:
                 await self._short_pause(attempt)
                 continue
             if response.status_code != 200:
-                if self._classify_http_failure(provider, key, response) == "pause":
+                if self._classify_http_failure(provider, key, response, model=payload["model"]) == "pause":
                     await self._short_pause(attempt)
                 continue
             try:
                 body = response.json()
-                self._record_usage(provider, key, body.get("usage"))
+                self._record_usage(provider, key, body.get("usage"), model=payload["model"])
                 return body["choices"][0]["message"]["content"]
             except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
                 raise RuntimeError("Groq returned an invalid response schema") from exc

@@ -1115,6 +1115,8 @@ class CognitiveOrchestrator:
                 provider_preference=provider_for_turn,
                 provider_lock=provider_lock,
             )
+            # A job too big for Groq is handed over once; keep it where it went.
+            provider_lock = response.get("provider") or provider_lock
 
     async def resume_agent_after_confirmation(
         self,

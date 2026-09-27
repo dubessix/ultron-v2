@@ -591,6 +591,7 @@ async def provider_status(live: bool = Query(False, description="Make one tiny l
             "configured": configured,
             "model": get_model(provider),
             "key_states": manager.runtime_status()[provider],
+            "model_rests": orchestrator.router.model_rest_summary(provider),
             "reachable": None,
             "error": None,
         }

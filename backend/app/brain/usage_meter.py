@@ -38,7 +38,8 @@ def _save(data: dict) -> None:
     tmp.replace(path)
 
 
-def add(provider: str, usage: Optional[dict[str, Any]], today: Optional[str] = None) -> None:
+def add(provider: str, usage: Optional[dict[str, Any]], today: Optional[str] = None,
+        model: Optional[str] = None) -> None:
     """Record one finished AI call (usage = the provider's `usage` block)."""
     try:
         usage = usage if isinstance(usage, dict) else {}
@@ -55,6 +56,10 @@ def add(provider: str, usage: Optional[dict[str, Any]], today: Optional[str] = N
             row["prompt"] += prompt
             row["cached"] += cached
             row["completion"] += completion
+            if model:
+                short = str(model).rsplit("/", 1)[-1][:40]
+                per_model = row.setdefault("models", {})
+                per_model[short] = per_model.get(short, 0) + max(0, prompt - cached) + completion
             for old in sorted(data)[:-_DAYS_KEPT]:
                 data.pop(old, None)
             _save(data)
@@ -68,6 +73,8 @@ def today(day: Optional[str] = None) -> dict[str, dict[str, int]]:
         rows = _load().get(day or datetime.date.today().isoformat(), {})
     result = {}
     for provider, row in rows.items():
+        if not isinstance(row, dict):
+            continue
         counted = max(0, row.get("prompt", 0) - row.get("cached", 0)) + row.get("completion", 0)
         result[provider] = {**row, "counted": counted}
     return result
@@ -84,5 +91,9 @@ def summary_line(groq_keys: int, day: Optional[str] = None) -> str:
         return f"AI use today: {calls} calls (no Groq calls)."
     limit = 200_000 * max(1, groq_keys)
     hit = round(100 * groq["cached"] / groq["prompt"]) if groq["prompt"] else 0
+    models = groq.get("models") or {}
+    split = ""
+    if len(models) > 1:
+        split = " (" + ", ".join(f"{m} {v / 1000:.0f}K" for m, v in sorted(models.items())) + ")"
     return (f"AI use today: {calls} calls, {groq['counted'] / 1000:.0f}K of "
-            f"{limit // 1000}K Groq tokens, cache hits {hit}%.")
+            f"{limit // 1000}K Groq tokens{split}, cache hits {hit}%.")

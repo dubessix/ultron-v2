@@ -121,6 +121,16 @@ def choose(provider: str, preferred: Iterable[str]) -> str:
     return chain[0] if chain else ""
 
 
+def usable_chain(provider: str, preferred: Iterable[str]) -> list[str]:
+    """Every model that is not gone, best first (Groq counts daily limits per model)."""
+    provider = provider.lower()
+    chain = _dedupe(list(preferred) + list(FALLBACK_CHAINS.get(provider, ())))
+    with _lock:
+        state = _load()
+        now = time.time()
+        return [m for m in chain if not _is_gone(state, provider, m, now)]
+
+
 def chain_exhausted(provider: str, preferred: Iterable[str]) -> bool:
     provider = provider.lower()
     chain = _dedupe(list(preferred) + list(FALLBACK_CHAINS.get(provider, ())))
