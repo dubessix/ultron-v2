@@ -939,6 +939,9 @@ class CognitiveOrchestrator:
                 from backend.app.core.approval import honest_reply
 
                 content = honest_reply(content, results)
+                from backend.app.core import next_action
+
+                content = next_action.suggest(content, results, coding_turn=coding_turn)
                 return {
                     "content": content,
                     "called_tool_ids": called,
