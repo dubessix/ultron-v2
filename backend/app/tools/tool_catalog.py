@@ -171,6 +171,44 @@ def build_tool_menu(registered_ids: Iterable[str], exclude: Iterable[str] = ()) 
     return "\n".join(lines)
 
 
+# One-call finish (token saver): simple actions may carry their own short "done"
+# line, so no second brain call is needed after a clean success. Tool -> allowed
+# actions (None = any). Lookups/reads are never here: their answer needs the result.
+DONE_LINE_ARG = "say_when_done"
+ONE_CALL_TOOLS: dict[str, frozenset[str] | None] = {
+    "apps": frozenset({"open", "close"}),
+    "browser_tabs": frozenset({"switch", "mute", "unmute", "sleep", "reopen", "dedupe"}),
+    "manage_reminder": frozenset({"create", "snooze", "dismiss"}),
+    "manage_task": frozenset({"create", "update_status", "update_priority"}),
+    "manage_calendar": frozenset({"create", "mark", "shift"}),
+    "pc_control": frozenset({"volume", "mute", "unmute", "brightness", "lock"}),
+    "clipboard": frozenset({"write", "save"}),
+    "file_actions": frozenset({"open", "reveal"}),
+    **{tool_id: None for tool_id in (
+        "close_tab", "close_browser", "open_new_tab", "open_url", "open_chrome", "open_vscode",
+        "open_calculator", "open_spotify", "refresh_page", "browser_back", "browser_forward",
+        "set_volume", "notify", "create_folder", "image_search", "video_search",
+        "play_music", "pause_music", "resume_music", "next_track", "previous_track", "stop_music",
+        "spotify_play", "spotify_playlist", "spotify_search_artist", "spotify_pause", "spotify_resume",
+        "spotify_next", "spotify_prev", "spotify_set_volume",
+    )},
+}
+DONE_LINE_SCHEMA = {
+    "type": "string",
+    "description": "Optional, simple actions only: the one short true line to say if it works, e.g. 'Firefox is open, Sir.'",
+}
+
+
+def one_call_ok(tool_id: str, arguments: dict | None) -> bool:
+    """May this call finish the turn with its own done line (after a clean success)?"""
+    if tool_id not in ONE_CALL_TOOLS:
+        return False
+    actions = ONE_CALL_TOOLS[tool_id]
+    if actions is None:
+        return True
+    return str((arguments or {}).get("action") or "").strip().lower() in actions
+
+
 def use_tool_metadata(registered_ids: Iterable[str]) -> dict:
     """Metadata for the universal meta-tool, in the orchestrator tool format.
 
@@ -198,6 +236,7 @@ def use_tool_metadata(registered_ids: Iterable[str]) -> dict:
                     "type": "string",
                     "description": "Arguments as a JSON object string. Use '{}' when the tool takes none.",
                 },
+                DONE_LINE_ARG: DONE_LINE_SCHEMA,
             },
             "required": ["tool", "arguments_json"],
         },
@@ -224,7 +263,7 @@ def parse_use_tool_call(arguments: dict) -> tuple[str, dict, str | None]:
         flattened = {
             key: value
             for key, value in arguments.items()
-            if key not in {"tool", "tool_id", "name"}
+            if key not in {"tool", "tool_id", "name", DONE_LINE_ARG}
         }
         return tool_id, flattened, None
     if isinstance(raw, dict):

@@ -36,7 +36,7 @@ Tests redirect database, cache, backup, logs, and generated files into temporary
 Effective models come from `config.yaml` or environment overrides:
 
 - Groq: `openai/gpt-oss-120b`
-- Gemini: `gemini-3.5-flash`
+- Gemini: `gemini-2.5-flash`
 - NVIDIA: `nvidia/nemotron-3-ultra-550b-a55b`
 - Embeddings: `gemini-embedding-001` (768 dimensions by default)
 

@@ -112,7 +112,7 @@ Models (change in `config.yaml` or with an environment variable):
 | Purpose | Default | Override |
 |---|---|---|
 | Groq chat | `openai/gpt-oss-120b` | `GROQ_CHAT_MODEL` |
-| Gemini chat | `gemini-3.5-flash` | `GEMINI_CHAT_MODEL` |
+| Gemini chat | `gemini-2.5-flash` | `GEMINI_CHAT_MODEL` |
 | NVIDIA coding | `nvidia/nemotron-3-ultra-550b-a55b` | `NVIDIA_CHAT_MODEL` |
 | Gemini embedding | `gemini-embedding-001` | `GEMINI_EMBEDDING_MODEL` |
 

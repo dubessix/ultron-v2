@@ -28,8 +28,9 @@ from backend.app.runtime_paths import runtime_data_path
 # (Checked against console.groq.com/docs/models and ai.google.dev models, 2026-09.)
 FALLBACK_CHAINS: dict[str, tuple[str, ...]] = {
     "groq": ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"),
-    "gemini": ("gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.7-flash",
-               "gemini-3.8-flash", "gemini-3.5-flash-lite"),
+    # Owner's choice: gemini-2.5-flash always. The rest are used ONLY if Google
+    # retires 2.5-flash one day (model gone), so Ultron keeps working for years.
+    "gemini": ("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash"),
     "nvidia": ("nvidia/nemotron-3-ultra-550b-a55b",),
     "embedding": ("gemini-embedding-001",),
 }

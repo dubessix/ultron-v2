@@ -494,6 +494,7 @@ class CognitiveOrchestrator:
                 "error": result.get("error"),
             }
         )
+        safe = cls._compact_result(safe)
         encoded = json.dumps(safe, separators=(",", ":"), default=str)
         if len(encoded) > 12000:
             encoded = json.dumps(
@@ -506,6 +507,27 @@ class CognitiveOrchestrator:
                 separators=(",", ":"),
             )
         return encoded
+
+    @classmethod
+    def _compact_result(cls, value: Any, top: bool = True) -> Any:
+        """Same facts, fewer tokens: empty fields dropped, long decimals shortened.
+
+        Only dict fields that are None or {} go. "" and [] stay: an empty file or
+        "no matches" is a real fact. List items, strings and numbers stay exact
+        (file text must stay exact). "tool" and "success" always stay."""
+        if isinstance(value, dict):
+            out = {}
+            for key, item in value.items():
+                item = cls._compact_result(item, top=False)
+                if not (top and key in {"tool", "success"}) and (item is None or item == {}):
+                    continue
+                out[key] = item
+            return out
+        if isinstance(value, list):
+            return [cls._compact_result(item, top=False) for item in value]
+        if isinstance(value, float) and value == value and value not in (float("inf"), float("-inf")):
+            return round(value, 2) if abs(value) >= 1 else float(f"{value:.3g}")
+        return value
 
     @staticmethod
     def _agent_pending_confirmation(result: dict, tool_id: str) -> dict:
@@ -906,6 +928,65 @@ class CognitiveOrchestrator:
                 self._mark_coding_inspection(session_id, filepath)
         return arguments, result
 
+    @staticmethod
+    def _take_done_line(call: dict, wire_call: dict) -> tuple[dict, str]:
+        """Take the optional say_when_done line off the call; tools never see it."""
+        from backend.app.tools.tool_catalog import DONE_LINE_ARG
+
+        line = ""
+        arguments = call.get("arguments")
+        if isinstance(arguments, dict) and DONE_LINE_ARG in arguments:
+            arguments = dict(arguments)
+            line = arguments.pop(DONE_LINE_ARG)
+            call = {**call, "arguments": arguments}
+        wire_args = wire_call.get("arguments")
+        if not line and isinstance(wire_args, dict):
+            line = wire_args.get(DONE_LINE_ARG) or ""
+        line = " ".join(str(line or "").split())[:300]
+        return call, line
+
+    @staticmethod
+    def _one_call_finish_ok(tool_id: str, arguments: dict, result: dict, line: str) -> bool:
+        """Only a clean success of a simple action, with nothing to ask or report."""
+        from backend.app.tools.tool_catalog import one_call_ok
+
+        if not line or len(line.split()) < 2 or not result.get("success") or not one_call_ok(tool_id, arguments):
+            return False
+        if result.get("status") == "PENDING_CONFIRMATION" or result.get("error"):
+            return False
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        blockers = {"choices", "question", "note", "warning", "need_choice", "needs_yes", "trust_question"}
+        if blockers & set(data) or data.get("verified") is False or data.get("partial"):
+            return False
+        return "?" not in str(data.get("message") or "")
+
+    async def _retry_unbacked_claim(self, response: dict, system_prompt: str, user_prompt: str,
+                                    tools: list[dict], provider_for_turn: str) -> dict:
+        """The brain said 'done' but called no tool: ask it ONCE to really do it.
+
+        Costs one extra call only in that case. If it still only talks, the
+        owner hears the truth instead of a false 'done'."""
+        from backend.app.core import reply_guard
+
+        if not reply_guard.claims_action(response.get("content")):
+            return response
+        self._dispatch_log("info", "Said done without a tool; asking the brain to really do it.")
+        try:
+            retry = await self.router.get_completions_with_tools(
+                system_prompt,
+                user_prompt + reply_guard.RETRY_NOTE,
+                tools,
+                temperature=0.3,
+                provider_preference=provider_for_turn,
+                provider_lock=response.get("provider"),
+            )
+        except Exception as exc:
+            print(f"[COGNITIVE_ORCHESTRATOR] claim retry failed: {exc}")
+            retry = {}
+        if retry.get("tool_calls") or (retry.get("content") and not reply_guard.claims_action(retry.get("content"))):
+            return {**response, **retry}
+        return {**response, "content": reply_guard.unfinished_claim_reply(), "tool_calls": []}
+
     async def _run_native_agent_loop(
         self,
         response: dict,
@@ -934,11 +1015,13 @@ class CognitiveOrchestrator:
             calls = response.get("tool_calls") or []
             if not calls:
                 content = str(response.get("content") or "").strip()
-                if not content and results:
-                    content = "The requested verified tool work completed."
+                from backend.app.core import reply_guard
                 from backend.app.core.approval import honest_reply
 
+                if not content and results:
+                    content = reply_guard.fallback_line(results)
                 content = honest_reply(content, results)
+                content = reply_guard.scrub(content, results)
                 from backend.app.core import next_action
 
                 content = next_action.suggest(content, results, coding_turn=coding_turn)
@@ -959,8 +1042,10 @@ class CognitiveOrchestrator:
                 }
             )
             step_limit = self.max_coding_steps if coding_turn else self.max_agent_steps
+            finish_line = ""
             for index, wire_call in enumerate(calls):
                 call, meta_error = self._unwrap_meta_call(wire_call, registry)
+                call, done_line = self._take_done_line(call, wire_call)
                 tool_id = str(call.get("name") or "")
                 wire_name = str(wire_call.get("name") or tool_id)
                 from backend.app.core import stop_signal
@@ -1109,7 +1194,15 @@ class CognitiveOrchestrator:
                         }
                 else:
                     self._dispatch_log("success", f"Tool completed: {tool_id}")
+                    if len(calls) == 1 and len(results) == 1 and not coding_turn and self._one_call_finish_ok(
+                            tool_id, arguments, result, done_line):
+                        finish_line = done_line
 
+            if finish_line:
+                # One-call finish: a simple action worked cleanly and the brain
+                # already wrote its short line; no second call (saves ~3.5K tokens).
+                response = {**response, "content": finish_line, "tool_calls": []}
+                continue
             response = await self.router.get_completions_with_tools(
                 system_prompt,
                 user_prompt,
@@ -1627,6 +1720,10 @@ class CognitiveOrchestrator:
                 )
                 ai_response = str(native_response.get("content") or "")
                 native_protocol_active = bool(native_response.get("native_tools"))
+                if native_protocol_active and not native_response.get("tool_calls"):
+                    native_response = await self._retry_unbacked_claim(
+                        native_response, system_prompt, user_prompt, tool_definitions, provider_for_turn)
+                    ai_response = str(native_response.get("content") or "")
                 if native_protocol_active and native_response.get("tool_calls"):
                     agent_result = await self._run_native_agent_loop(
                         native_response,
@@ -1644,6 +1741,10 @@ class CognitiveOrchestrator:
                     tool_results = agent_result["tool_results"]
                     native_pending_confirmation = agent_result["pending_confirmation"]
                     restart_as_coding = bool(agent_result.get("restart_as_coding"))
+                elif native_protocol_active:
+                    from backend.app.core import reply_guard
+
+                    ai_response = reply_guard.scrub(ai_response, [])
             else:
                 ai_response = await self.router.get_completions(
                     system_prompt=system_prompt,

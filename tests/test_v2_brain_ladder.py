@@ -171,7 +171,9 @@ class TestP2BigJobsGoToGemini(RouterCase):
         self.assertEqual(result["provider"], "gemini")
         self.assertEqual([s[0] for s in self.sent], ["gemini"])  # Groq was never sent a doomed request
         model_turn = self.sent[0][3]["contents"][1]
-        self.assertEqual(model_turn["parts"][0]["thoughtSignature"], "skip_thought_signature_validator")
+        # gemini-2.5-flash (the owner's model) must NOT get Gemini 3's placeholder signature
+        self.assertNotIn("thoughtSignature", model_turn["parts"][0])
+        self.assertIn("functionCall", model_turn["parts"][0])
         response_part = self.sent[0][3]["contents"][2]["parts"][0]["functionResponse"]
         self.assertNotIn("id", response_part)  # Groq's call id is not a Gemini id
 

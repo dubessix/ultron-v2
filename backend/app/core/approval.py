@@ -159,7 +159,8 @@ def describe(tool_id: str, arguments: dict) -> str:
 # ------------------------------------------------------------ honesty
 _CLAIM = re.compile(
     r"\b(done|closed|opened|created|moved|deleted|written|saved|launched|started|finished|completed|"
-    r"renamed|copied|installed|downloaded|sent|played|set|turned|killed|kar diya|ho gaya|hoye geche)\b",
+    r"renamed|copied|installed|downloaded|sent|played|set|turned|killed|scheduled|marked|booked|"
+    r"added|updated|removed|paused|muted|stopped|reminded|kar diya|ho gaya|hoye geche)\b",
     re.IGNORECASE,
 )
 _ADMITS = re.compile(r"\b(couldn'?t|could not|can'?t|cannot|failed|unable|not|error|didn'?t|sorry)\b", re.I)

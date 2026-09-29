@@ -88,3 +88,71 @@ class TestNoGeminiSaysOneLine(base.RouterCase):
             await self.router._respect_budget("groq", {"model": "m", "messages": []})
         sleep.assert_awaited_once_with(3.0)
         self.assertEqual(said, [])
+
+
+def _gemini_busy_then_quota():
+    """What the owner's log showed: 503 high demand, then 429 daily free quota."""
+    req = base.httpx.Request("POST", "https://generativelanguage.googleapis.com")
+    busy = base.httpx.Response(503, request=req, json={"error": {
+        "code": 503, "message": "This model is currently experiencing high demand.", "status": "UNAVAILABLE"}})
+    quota = base.httpx.Response(429, request=req, headers={"retry-after": "40"}, json={"error": {
+        "code": 429, "message": "Quota exceeded for metric: generate_content_free_tier_requests, limit: 20",
+        "status": "RESOURCE_EXHAUSTED"}})
+    return [busy, quota]
+
+
+class TestGeminiFailingNeverFailsTheTurn(base.RouterCase):
+    env_keys = {**base.GROQ, **base.GEMINI}
+
+    def route(self, gemini_answers):
+        self.sent = []
+
+        async def post(url, headers=None, json=None, timeout=None):
+            if "googleapis" in url:
+                self.sent.append("gemini")
+                return gemini_answers.pop(0) if gemini_answers else _gemini_busy_then_quota()[0]
+            self.sent.append("groq")
+            return base._groq_ok("Done on Groq, Sir.")
+
+        self.router.client.post = post
+
+    async def test_mid_job_switch_goes_back_to_groq_when_gemini_is_busy(self):
+        _fill(self.router, base.GROQ.values())
+        self.route(_gemini_busy_then_quota())
+        with patch("asyncio.sleep", new=AsyncMock()), \
+                patch("backend.app.core.live_progress.publish", new=AsyncMock()):
+            result = await self.router.get_completions_with_tools("sys", "hi", TOOLS, provider_lock="groq")
+        self.assertEqual(result["provider"], "groq")
+        self.assertEqual(result["content"], "Done on Groq, Sir.")
+        self.assertEqual(self.sent[0], "gemini")
+        self.assertEqual(self.sent[-1], "groq")
+
+    async def test_new_job_on_gemini_goes_back_to_groq_too(self):
+        _fill(self.router, base.GROQ.values())
+        self.route(_gemini_busy_then_quota())
+        with patch("asyncio.sleep", new=AsyncMock()), \
+                patch("backend.app.core.live_progress.publish", new=AsyncMock()):
+            result = await self.router.get_completions_with_tools("sys", "hi", TOOLS)
+        self.assertEqual(result["provider"], "groq")
+        self.assertIn("gemini", self.sent)
+
+    async def test_the_log_shows_the_real_reason_without_keys(self):
+        _fill(self.router, base.GROQ.values())
+        self.route(_gemini_busy_then_quota())
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), patch("asyncio.sleep", new=AsyncMock()), \
+                patch("backend.app.core.live_progress.publish", new=AsyncMock()):
+            await self.router.get_completions_with_tools("sys", "hi", TOOLS, provider_lock="groq")
+        log = out.getvalue()
+        self.assertIn("gemini answered HTTP 503: This model is currently experiencing high demand.", log)
+        self.assertNotIn("AIza", log)
+
+    async def test_a_job_too_big_for_groq_does_not_bounce_back(self):
+        self.route([])
+        with patch("asyncio.sleep", new=AsyncMock()):
+            with self.assertRaises(RuntimeError):
+                await self.router.get_completions_with_tools("sys", "x" * 40000, TOOLS, provider_lock="groq")
+        self.assertNotIn("groq", self.sent)  # Groq would reject it anyway

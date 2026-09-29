@@ -24,7 +24,7 @@ ai:
   # Verified against provider documentation on 2026-08-23.
   models:
     groq: "openai/gpt-oss-120b"
-    gemini: "gemini-3.5-flash"
+    gemini: "gemini-2.5-flash"
     nvidia: "nvidia/nemotron-3-ultra-550b-a55b"
     embedding: "gemini-embedding-001"
   embedding_dimensions: 768

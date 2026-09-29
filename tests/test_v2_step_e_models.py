@@ -19,7 +19,7 @@ GROQ_GONE = (
     '"type":"invalid_request_error","code":"model_decommissioned"}}'
 )
 GEMINI_GONE = (
-    '{"error":{"code":404,"message":"models/gemini-3.5-flash is not found for API version '
+    '{"error":{"code":404,"message":"models/gemini-2.5-flash is not found for API version '
     'v1beta, or is not supported for generateContent.","status":"NOT_FOUND"}}'
 )
 TOOL_CALL = {"choices": [{"message": {"content": "Done.", "tool_calls": []}}]}
@@ -130,9 +130,9 @@ class TestRouterSwitchesByItself(Clean, unittest.IsolatedAsyncioTestCase):
         finally:
             await router.close()
         urls = [call.args[0] for call in router.client.post.await_args_list]
-        self.assertIn("gemini-3.5-flash:", urls[0])
-        self.assertIn("gemini-3.6-flash:", urls[1])
-        self.assertEqual(result["model"], "gemini-3.6-flash")
+        self.assertIn("gemini-2.5-flash:", urls[0])
+        self.assertIn("gemini-2.5-flash-lite:", urls[1])
+        self.assertEqual(result["model"], "gemini-2.5-flash-lite")
 
 
 class TestPicksFromTodaysList(Clean):

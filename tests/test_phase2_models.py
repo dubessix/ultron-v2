@@ -2,7 +2,7 @@
 Phase 2 regression — model/provider configuration.
 
 Ensures retired models are gone and the brain is config-driven:
-  - gemini chat uses a current model (default gemini-3.5-flash), NOT the retired
+  - gemini chat uses a current model (default gemini-2.5-flash), NOT the retired
     gemini-1.5-flash.
   - embeddings use gemini-embedding-001 with outputDimensionality=768 (matches
     stored 768-dim vectors) — NOT the retired text-embedding-004.
@@ -40,7 +40,7 @@ class TestModelConfig(unittest.TestCase):
             os.environ.pop(var, None)
 
     def test_no_retired_gemini_model(self):
-        self.assertEqual(get_model("gemini"), "gemini-3.5-flash")
+        self.assertEqual(get_model("gemini"), "gemini-2.5-flash")  # owner: 2.5-flash always
         self.assertNotIn("1.5", get_model("gemini"))
 
     def test_embedding_model_and_dims(self):

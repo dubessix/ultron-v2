@@ -46,6 +46,8 @@ class TokenBudget:
         self._clock = clock or time.monotonic
         self._events: dict[str, deque[tuple[float, int]]] = {}
         self._last_cached: dict[str, int] = {}
+        # Groq's own numbers from the last answer: (when, tokens left, tokens per minute).
+        self._live: dict[str, tuple[float, int, int]] = {}
 
     # -- configuration -------------------------------------------------
     @staticmethod
@@ -79,6 +81,39 @@ class TokenBudget:
         self._window(provider).append((self._clock(), counted))
         return counted
 
+    def observe_headers(self, provider: str, headers) -> None:
+        """Remember Groq's real 'tokens left this minute' (x-ratelimit-remaining-tokens).
+
+        Groq refills the minute budget a little every second, while our own
+        window waits for a full 60 s, so its number is the truth: fewer and
+        shorter pauses. Missing or odd headers are simply ignored."""
+        try:
+            remaining = int(float(headers.get("x-ratelimit-remaining-tokens")))
+            limit = int(float(headers.get("x-ratelimit-limit-tokens") or self.limits(provider)[0]))
+        except (TypeError, ValueError, AttributeError):
+            return
+        if limit > 0 and 0 <= remaining <= limit:
+            self._live[provider] = (self._clock(), remaining, limit)
+
+    def _live_room(self, provider: str, estimate: int) -> Optional[float]:
+        """Seconds to wait by Groq's own numbers (None = no fresh numbers)."""
+        live = self._live.get(provider)
+        if live is None:
+            return None
+        stamp, remaining, limit = live
+        age = self._clock() - stamp
+        if age >= _WINDOW_SECONDS:
+            self._live.pop(provider, None)
+            return None
+        refill = limit / _WINDOW_SECONDS
+        room_now = min(limit, remaining + age * refill) * _HEADROOM
+        if estimate <= room_now:
+            return 0.0
+        if estimate > limit * _HEADROOM:
+            return 0.0  # one oversized request: let the provider decide
+        # wait until (left + t * refill) * headroom covers the request
+        return max(0.0, (estimate / _HEADROOM - min(limit, remaining + age * refill)) / refill)
+
     def estimate(self, provider: str, payload_chars: int, max_output: int = 600) -> int:
         """Rough counted-token estimate for a request about to be sent.
 
@@ -99,6 +134,9 @@ class TokenBudget:
         tokens_used = sum(tokens for _, tokens in events)
         fits_tokens = not tpm or tokens_used + estimate <= tpm * _HEADROOM
         fits_requests = not rpm or len(events) + 1 <= rpm
+        live_wait = self._live_room(provider, estimate) if tpm else None
+        if live_wait is not None and fits_requests:
+            return live_wait  # Groq's own numbers beat our 60 s guess
         if fits_tokens and fits_requests:
             return 0.0
         if not events:

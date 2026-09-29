@@ -20,7 +20,7 @@ from backend.app.tools.context_builder import ToolContextBuilder
 from backend.app.tools.tool_registry import ToolRegistry
 
 
-def _native_reply(content: str = "Done.") -> dict:
+def _native_reply(content: str = "Good evening, Sir.") -> dict:
     return {
         "content": content,
         "tool_calls": [],

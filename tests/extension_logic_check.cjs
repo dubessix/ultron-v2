@@ -172,5 +172,30 @@ function makeWorld(extra) {
   r = await w.ask('history', { which: 'dinosaurs' });
   assert.strictEqual(r.data.count, 0);
 
+  // fuzzy names: one letter off still finds the tab, but only on one site; typos never pick a stranger.
+  w = makeWorld();
+  await new Promise((r2) => setTimeout(r2, 5));
+  r = await w.ask('close', { which: 'githib' });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.ok(!w.tabs().some((t) => t.id === 4));
+  r = await w.ask('close', { which: 'lofi beets' });
+  assert.ok(r.ok, JSON.stringify(r));
+  assert.deepStrictEqual(w.tabs().map((t) => t.id).sort((a, b) => a - b), [1, 3]);
+  r = await w.ask('close', { which: 'gmail' });
+  assert.ok(!r.ok && /No open tab matches/.test(r.error));
+  r = await w.ask('close', { which: 'yt' });
+  assert.ok(!r.ok);
+  w = makeWorld([{ id: 5, windowId: 1, title: 'Notes', url: 'https://notez.io/', lastAccessed: 1 },
+    { id: 6, windowId: 1, title: 'Nodes', url: 'https://nodes.dev/', lastAccessed: 1 }]);
+  await new Promise((r2) => setTimeout(r2, 5));
+  r = await w.ask('close', { which: 'notes' });  // exact match wins: only 'Notes'
+  assert.deepStrictEqual(w.tabs().map((t) => t.id).sort((a, b) => a - b), [1, 2, 3, 4, 6]);
+  w = makeWorld([{ id: 5, windowId: 1, title: 'Notez', url: 'https://notez.io/', lastAccessed: 1 },
+    { id: 6, windowId: 1, title: 'Nodes', url: 'https://nodes.dev/', lastAccessed: 1 }]);
+  await new Promise((r2) => setTimeout(r2, 5));
+  r = await w.ask('close', { which: 'nodez' });  // near two different sites: refuse, close nothing
+  assert.ok(!r.ok);
+  assert.strictEqual(w.tabs().length, 6);
+
   console.log('ALL OK');
 })().catch((e) => { console.error(e); process.exit(1); });

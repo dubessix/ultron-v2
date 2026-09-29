@@ -6,6 +6,7 @@ import asyncio
 import contextvars
 import hashlib
 import json
+import re
 import os
 import time
 from typing import Any, ClassVar, Optional
@@ -320,6 +321,12 @@ class LLMRouter:
                 }
             ),
         }
+        from backend.app.tools.tool_catalog import DONE_LINE_ARG, DONE_LINE_SCHEMA, ONE_CALL_TOOLS
+
+        if name in ONE_CALL_TOOLS:
+            params = dict(declaration["parameters"])
+            params["properties"] = {**(params.get("properties") or {}), DONE_LINE_ARG: DONE_LINE_SCHEMA}
+            declaration["parameters"] = params
         if openai_style:
             return {"type": "function", "function": declaration}
         return declaration
@@ -769,6 +776,7 @@ class LLMRouter:
         # loop keeps the job there (no jumping back and forth).
         too_big = self._too_big_for_groq(request_chars)
         handover = self._handover_provider()
+        switched_for_room = False
         if provider_lock == "groq" and too_big and handover:
             print(f"[LLM_ROUTER] this step is too big for a free Groq key; continuing the job on {handover}.")
             provider_order = [handover]
@@ -783,7 +791,9 @@ class LLMRouter:
                       f"continuing this job on {handover} instead of waiting.")
                 provider_order = [handover]
                 provider_lock = handover
+                switched_for_room = True
         waited = 0.0
+        left_groq_for_room = False  # the job left Groq only because its minute was full
         for _round in range(self._MAX_COOLING_ROUNDS + 1):
             cooling: list[float] = []
             for position, provider in enumerate(provider_order):
@@ -802,6 +812,7 @@ class LLMRouter:
                             f"(free in ~{wait:.0f}s); starting this job on the next provider."
                         )
                         cooling.append(float(wait))
+                        left_groq_for_room = left_groq_for_room or provider == "groq"
                         continue
                 await self._maybe_discover(provider)
                 try:
@@ -874,6 +885,20 @@ class LLMRouter:
                 "native_tools": False,
                 "provider_state": None,
             }
+        if (switched_for_room or left_groq_for_room) and not too_big and self.key_manager.has_real_key("groq"):
+            # The other provider failed (busy, daily limit...). A turn must never fail
+            # for that: go back to Groq and wait for its minute (said out loud).
+            print(f"[LLM_ROUTER] {provider_lock or 'the next provider'} failed ({last_error}); waiting for Groq instead.")
+            try:
+                result = await self._execute_openai_native_tools(
+                    "groq", system_prompt, user_prompt, tools, history, temperature)
+                model = result.pop("model_used", None) or get_model("groq")
+                result.update({"provider": "groq", "model": model, "native_tools": True})
+                self._set_route("groq", model, cached=False)
+                return result
+            except Exception as exc:
+                last_error = exc
+                print(f"[LLM_ROUTER] Groq could not take it either: {exc}")
         self._set_route("unavailable", None, cached=False)
         raise RuntimeError(f"Native tool provider failed: {last_error}")
 
@@ -937,6 +962,8 @@ class LLMRouter:
                     await self._short_pause(attempt)
                 continue
             body = response.json()
+            if provider == "groq":
+                self.token_budget.observe_headers(self._bucket(provider, key), getattr(response, "headers", None))
             self._record_usage(provider, key, body.get("usage") if isinstance(body, dict) else None,
                                model=payload["model"])
             result = self._parse_openai_native_message(body)
@@ -1015,6 +1042,7 @@ class LLMRouter:
     ) -> str:
         """Update key state safely and return 'retry' or raise a config/request error."""
         status = response.status_code
+        self._log_http_failure(provider, response)
         if status == 429 and model and provider in self._PER_MODEL_DAILY and self._is_daily_limit(response):
             # P1: only this model's daily budget is used up on this key.
             self._rest_model(provider, key, model, self._retry_after(response, cap=6 * 3600) or 3600)
@@ -1059,6 +1087,18 @@ class LLMRouter:
             self._rejected_at[rejected_key] = time.monotonic()
         raise RuntimeError(message)
 
+    @staticmethod
+    def _log_http_failure(provider: str, response: httpx.Response) -> None:
+        """One line with the provider's own words, so the log shows the real reason."""
+        try:
+            body = response.json()
+            error = body.get("error") if isinstance(body, dict) else None
+            text = error.get("message") if isinstance(error, dict) else (error or response.text)
+        except Exception:
+            text = getattr(response, "text", "") or ""
+        text = re.sub(r"(AIza|gsk_|nvapi-)[A-Za-z0-9_-]+", r"\1***", " ".join(str(text).split()))[:180]
+        print(f"[LLM_ROUTER] {provider} answered HTTP {getattr(response, 'status_code', '?')}: {text}")
+
     async def _execute_groq_pipeline(self, system_prompt: str, user_prompt: str, temperature: float) -> str:
         url = "https://api.groq.com/openai/v1/chat/completions"
         provider = "groq"
@@ -1093,6 +1133,7 @@ class LLMRouter:
                 continue
             try:
                 body = response.json()
+                self.token_budget.observe_headers(self._bucket(provider, key), getattr(response, "headers", None))
                 self._record_usage(provider, key, body.get("usage"), model=payload["model"])
                 return body["choices"][0]["message"]["content"]
             except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:

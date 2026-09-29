@@ -25,7 +25,7 @@ from backend.app.install_paths import CONFIG_PATH
 # (still overridable via GROQ_CHAT_MODEL).
 _DEFAULTS = {
     "groq": "openai/gpt-oss-120b",
-    "gemini": "gemini-3.5-flash",
+    "gemini": "gemini-2.5-flash",  # owner: 2.5-flash always (3.5-flash free tier = 20 requests/day)
     "nvidia": "nvidia/nemotron-3-ultra-550b-a55b",
     "embedding": "gemini-embedding-001",
     "embedding_dims": 768,

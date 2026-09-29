@@ -101,8 +101,40 @@ async function findTabs(which) {
     const hay = ((t.title || '') + ' ' + (t.url || '')).toLowerCase();
     return keys.every((k) => hay.includes(k));
   });
-  if (!hits.length) throw new Error(`No open tab matches "${which}".`);
-  return hits;
+  if (hits.length) return hits;
+  const near = fuzzyTabs(await allTabs(), keys);
+  if (near.length) return near;
+  throw new Error(`No open tab matches "${which}".`);
+}
+
+// True when a and b differ by one letter (added, dropped or changed): "youtub" ~ "youtube".
+function oneEditApart(a, b) {
+  if (a === b) return true;
+  const la = a.length, lb = b.length;
+  if (la - lb > 1 || lb - la > 1) return false;
+  let i = 0;
+  while (i < la && i < lb && a[i] === b[i]) i += 1;
+  if (la === lb) return a.slice(i + 1) === b.slice(i + 1);
+  return la > lb ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
+}
+
+function hostOf(url) {
+  const m = /^[a-z]+:\/\/([^/?#]+)/i.exec(String(url || ''));
+  return m ? m[1].toLowerCase() : String(url || '');
+}
+
+// A spoken name one letter off ("youtub", "githib"). Used only when nothing matched
+// exactly, only for words of 4+ letters, and only when every hit is the same site,
+// so a typo can never pick an unrelated tab.
+function fuzzyTabs(tabs, keys) {
+  if (!keys.every((k) => k.length >= 4)) return [];
+  const hits = tabs.filter((t) => {
+    if (isUltron(t)) return false;
+    const hay = words((t.title || '') + ' ' + (t.url || ''));
+    return keys.every((k) => hay.some((w) => w.length >= 4 && oneEditApart(k, w)));
+  });
+  const sites = new Set(hits.map((t) => hostOf(t.url)));
+  return sites.size === 1 ? hits : [];
 }
 
 async function stillOpen(ids) {

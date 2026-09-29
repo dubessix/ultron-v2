@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ultron Browser Hands",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Your own Ultron (this PC only) handles your tabs and history, and clicks or types in pages. Asks before sending or buying.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1z0gXtDUDRqQg2xTLn0R2+eqsrQbtv0AWzBphoCq0eN+nUCLNs3TnqAEodjdY7nx9ZLcD9S0rk0AIAC1pW64bj0TPVDcchJmMcRZFJCTR7XDOBP06qIAM1b/XX7oLroJR6n/WqCl9WPH/lnr1UaPqlw9YZLxrMvoYhXxPtJNulRh4Pc3EasBavpexBG7nNtnpBAnTzv8iChD3wAibeR/1HD+oX8LWHMIFgsy0kgshU3sdnAz5i/mpwrwENj76RAMEWIWL2PEYfVHswjTvlPeHsP9LbrMHxPT1jTXE+qzfn4GtuRKzIooyAdkCpasMZbyi4hU5Y3iJtBxI1+Dc20SlwIDAQAB",
